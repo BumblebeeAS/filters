@@ -1,277 +1,198 @@
+from typing import List
+import sys
+import argparse
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2, PointField
-from sensor_msgs_py.point_cloud2 import read_points, read_points_numpy, create_cloud
-from sensor_msgs.msg import CameraInfo
-
+from sensor_msgs.msg import Image, CompressedImage, CameraInfo
+from typing import Union
+from rclpy.clock import Clock
+import message_filters
+from sensor_msgs.msg import PointCloud2
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from tf2_geometry_msgs.tf2_geometry_msgs import _transform_to_affine
+from sensor_msgs_py.point_cloud2 import read_points_numpy
 import numpy as np
-import cv2
-from std_msgs.msg import Header
-
-from geometry_msgs.msg import Point
-from geometry_msgs.msg import Pose
-from geometry_msgs.msg import PoseStamped
-from geometry_msgs.msg import Quaternion
-from geometry_msgs.msg import Transform
-from geometry_msgs.msg import TransformStamped
-from geometry_msgs.msg import Vector3
-
-from geometry_msgs.msg import Point
-import tf_transformations
-
-import message_filters
-import numpy as np
-import cv2
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image, CompressedImage, NavSatFix
-from bb_msgs.msg import DetectedObjectsStamped
-from visualization_msgs.msg import MarkerArray, Marker
-from copy import deepcopy
-from std_msgs.msg import ColorRGBA
-from rclpy.duration import Duration
-from tf2_geometry_msgs import PoseStamped as TF2PoseStamped
-from operator import attrgetter
-
+import cv2
 
 class LidarBackproject(Node):
 
-    bridge = CvBridge()
+    def __init__(self, node_name, topics, cam_info_topics, pointcloud_topic, debug=False, namespace="", **kwargs) -> None:
+        super().__init__(node_name, namespace=namespace)
 
-    def __init__(self):
-        super().__init__('lidar_backproject')
+        self.get_logger().info(f"Starting {node_name} node")
 
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self.debug = debug
 
-        self.tf_buffer = Buffer(Duration(seconds=15), self)
-        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+        self.namespace = namespace
 
-        self.camera_k = np.array([
-            [762.72232056, 0., 640],
-            [0., 762.72231102, 360],
-            [0.,      0.,       1.]
-        ])
-        self.camera_k = self.camera_k / self.camera_k[2][2]
+        self.topics = [
+            (self.resolve_topic_name(f"/{self.namespace}/{topic}") if topic[0] != "/"  else topic) for topic in topics
+        ]
 
-        self.detections = []
+        self.cam_info_topics = [
+            (self.resolve_topic_name(f"/{self.namespace}/{topic}") if topic[0] != "/"  else topic) for topic in cam_info_topics\
+        ]
 
-        self.publisher_ = self.create_publisher(
-            MarkerArray, '/stereo_visualization', 10)
+        self.pc_topic = self.resolve_topic_name(f"/{self.namespace}/{pointcloud_topic}") if pointcloud_topic[0] != "/"  else pointcloud_topic
 
-        # self.detections_pub_3d = self.create_publisher(
-        #     DetectedObjectsStamped, '/wamv/vision/stereo/detected', 10)
+        self.timer = [
+            self.create_timer(
+                5,
+                lambda: self.subscriber_timeout_cb(i),
+                clock=Clock()
+            )
+            for i in range(len(topics))
+        ]
+        self.timeouts = [True] * len(topics)
 
-        self.detections_pub_3d = self.create_publisher(
-            # DetectedObjectsStamped, '/wamv/vision/fused_detections', 10)
-            DetectedObjectsStamped, '/wamv/vision/lidar/detected_stamped', 10)
-
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo, 
-            '/wamv/sensors/cameras/mid_cam_sensor/optical/camera_info',
-            self.info_cb,
-            1)
-
-        self.leftSub = message_filters.Subscriber(
-            self,
-            CompressedImage,
-            self.resolve_topic_name('/wamv/sensors/cameras/mid_cam_sensor/optical/image_rect_color/compressed')
+        self.pc_timer = self.create_timer(
+            5,
+            self.pc_timeout_cb,
+            clock=Clock()
         )
+        self.pc_timeout = True
 
-        self.pointcloud_subscriber = message_filters.Subscriber(
+        self.pc_sub = message_filters.Subscriber(
             self,
             PointCloud2,
-            "/nonground"
+            self.pc_topic
         )
 
-        self.ml_detection_sub = message_filters.Subscriber(
-            self,
-            DetectedObjectsStamped,
-            self.resolve_topic_name('/wamv/vision/external/detected_stamped')
-        )
+        self.image_subs = [
+            message_filters.Subscriber(
+                self,
+                CompressedImage if topic.endswith("compressed") else Image,
+                topic,
+            )
+            for topic in self.topics
+        ]
 
-        self.ApproxTime = message_filters.ApproximateTimeSynchronizer(
-            [self.leftSub, self.pointcloud_subscriber, self.ml_detection_sub],
+        self.subs = [
+            message_filters.ApproximateTimeSynchronizer(
+            [self.pc_sub, image_sub],
             1,
             0.1)
+            for image_sub in self.image_subs
+        ]
+
+        for i, image_sub in enumerate(self.subs):
+            image_sub.registerCallback(lambda msg: self.img_cb(msg, i))
+
+        self.cam_info_subs = [
+            self.create_subscription(
+                CameraInfo,
+                topic,
+                self.cam_info_cb,
+                1,
+            )
+            for i, topic in enumerate(self.cam_info_topics)
+        ]
+
         
-        self.ApproxTime.registerCallback(self.sync_callback)
+        self.tf_buffers = [Buffer() for i in self.topics]
+        self.tf_listeners = [TransformListener(buffer, self) for buffer in self.tf_buffers]
 
-        h = np.expand_dims(np.arange(0,128, 0.5), 1)
-        sv = np.ones((256, 2))*255
-        hsv = np.hstack((h, sv))
-        hsv[0] = [0,0,0]
-        self.custom_cmap = cv2.cvtColor(np.expand_dims(hsv, 1).astype(np.uint8), cv2.COLOR_HSV2BGR)
+        self.pub_topics = [
+            f"{topic.split('image_')[0]}backprojection/compressed" for topic in self.topics
+        ]
+        self.proj_pubs = [
+            self.create_publisher(
+                CompressedImage,
+                pub_topic,
+                1
+            ) for pub_topic in self.pub_topics
+        ]
 
-    def sync_callback(self, img: CompressedImage, pc: PointCloud2, detected_objects : DetectedObjectsStamped):
+        if self.debug:
+            self.debug_pubs = [
+                self.create_publisher(
+                    CompressedImage,
+                    f"{topic.split('image_')[0]}backprojection/debug/compressed",
+                    1
+                ) for topic in self.topics
+            ]
 
-        detected_objects_3d = DetectedObjectsStamped()
-        detected_objects_3d.header = detected_objects.header
-        detected_objects_3d.header.frame_id = 'wamv/wamv/base_link'
+        self.bridge = CvBridge()
 
-        if len(detected_objects.detected) > 0:
-            markers = MarkerArray()
-            marker = Marker()
-            marker.header = img.header
-            marker.scale = Vector3(x=1.0, y=1.0, z=1.0)
-            marker.pose.orientation = Quaternion(
-                w=0.707, x=0.707, y=0.0, z=0.0)
-            marker.action = Marker.DELETEALL
-            markers.markers.append(marker)
-            marker.action = Marker.ADD
+        self.get_logger().info(f"Subscribing to PointCloud [{self.pc_topic}]")
+        for topic in self.topics:
+            self.get_logger().info(f"Subscribing to Camera [{topic}]")
 
-            try:
-                t = self._tf_buffer.lookup_transform(
-                    'wamv/wamv/base_link/mid_cam_sensor_optical',
-                    'wamv/wamv/os1_link',
-                    rclpy.time.Time()
-                )
+        for topic in self.pub_topics:
+            self.get_logger().info(f"Publishing to [{topic}]")
 
+    def img_cb(self, pc: PointCloud2, img: Union[CompressedImage, Image], i, compressed=False):
+        if not img.header.frame_id in self.cam_info:
+            self.get_logger().warn(f"Waiting for {img.header.frame_id} camera info")
+            return
+        camera_info: CameraInfo = self.cam_info[img.header.frame_id]
+        self.timeouts[i] = False
+        self.pc_timeout = False
+
+        try:
+            t = self.tf_buffers[i].lookup_transform(
+                img.header.frame_id,
+                pc.header.frame_id,
+                rclpy.time.Time()
+            )
+
+            # Read PC
+            xyz = read_points_numpy(pc)
+            xyz[:, 3] = 1
+
+            # Transform to camera frame
+            t_mat = self.msg_to_se3(t)
+            camera_xyz = xyz.dot(t_mat.T)
+
+            # Filter Points Behind Camera
+            camera_xyz = camera_xyz[camera_xyz[:,2] > 0]
+
+            #Transform to image frame
+            camera_k = np.reshape(np.array(camera_info.k), (3, -1))
+            i_mat = np.hstack((camera_k, np.zeros((3,1))))
+            image_pts = camera_xyz.dot(i_mat.T)
+
+            # Take those in camera frame
+            image = np.zeros((camera_info.height, camera_info.width))
+            image_pts[:,0] /= image_pts[:,2]
+            image_pts[:,1] /= image_pts[:,2]
+            image_pts = image_pts[((0 <= image_pts[:,0]) & (image_pts[:,0] < 1280) & (0 <= image_pts[:,1]) & (image_pts[:,1] < 720))]
+            for u, v, w  in image_pts:
+                image[int(v), int(u)] = w
+
+            pub_msg = self.bridge.cv2_to_compressed_imgmsg(image)
+            self.proj_pubs[i].publish(pub_msg)
+
+            if self.debug:
                 # Get Image
                 img = self.bridge.compressed_imgmsg_to_cv2(img)
-
-                # Read Point Cloud
-                xyz = read_points_numpy(pc)
-                xyz[:, 3] = 1
-
-                # Transform to camera frame
-                t_mat = self.msg_to_se3(t)
-                camera_xyz = xyz.dot(t_mat.T)
-
-                # Filter Points Behind Camera
-                camera_xyz = camera_xyz[camera_xyz[:,2] > 0]
-
-                #Transform to image frame
-                i_mat = np.hstack((self.camera_k, np.zeros((3,1))))
-                image_pts = camera_xyz.dot(i_mat.T)
-
-                # Take those in camera grame
-                image = np.zeros((720, 1280))
-                image_pts[:,0] /= image_pts[:,2]
-                image_pts[:,1] /= image_pts[:,2]
-                image_pts = image_pts[((0 <= image_pts[:,0]) & (image_pts[:,0] < 1280) & (0 <= image_pts[:,1]) & (image_pts[:,1] < 720))]
-                for u, v, w  in image_pts:
-                    # if 0 <= u < 1280 and 0 <= v < 720:
-                    image[int(v), int(u)] = w
-
-                # Overlay Lidar
-                depth = image.copy()
                 image *= (255.0/image.max())
                 mask = cv2.applyColorMap(image.astype(np.uint8), self.custom_cmap)
                 out = cv2.addWeighted(cv2.cvtColor(img, cv2.COLOR_RGB2BGR), 0.5, mask, 0.5, 0.0)
+                debug_msg = self.bridge.cv2_to_compressed_imgmsg(out)
+                self.debug_pubs[i].publish(debug_msg)
 
-                # Process Detections
-                for i, obj in enumerate(detected_objects.detected):
-                    marker.id = i
-                    cnt = np.array(obj.contour).reshape(-1, 2).astype(np.int32)
-                    mask = np.zeros_like(depth, np.uint8)
-                    cv2.drawContours(mask, [cnt.astype(np.int32)], 0, (1), -1)
-                    cluster = np.multiply(depth, mask)
-                    cluster = cluster[cluster!=0]
-                    objDepth = np.median(cluster)
-                    self.get_logger().info(f"LidarFuse {i} {obj.name} {objDepth}")
-                    
-                    M = cv2.moments(cnt.astype(np.int32))
-                    cX = M["m10"]/max(M["m00"], 1e-8)  # Avoid Division by Zero
-                    cY = M["m01"]/max(M["m00"], 1e-8)
+        except TransformException as e:
+            self.get_logger().warn(f"Failed lookup of {img.header.frame_id} to {pc.header.frame_id}")
 
-                    # Calculate Ray
-                    r = np.dot(np.linalg.inv(self.camera_k), np.array([cX, cY, 1.0]).T)
 
-                    ny = np.array([0, 1, 0])
-                    nx = np.array([1, 0, 0])
 
-                    color = ColorRGBA()
-                    if "round" in obj.name:
-                        marker.type = Marker.SPHERE
-                    else:
-                        marker.type = Marker.CYLINDER
+    def cam_info_cb(self, camera_info: CameraInfo):
+        self.cam_info[camera_info.header.frame_id] = camera_info
 
-                    if "green" in obj.name:
-                        color.r = 0.0
-                        color.g = 1.0
-                        color.b = 0.0
-                    elif "red" in obj.name:
-                        color.r = 1.0
-                        color.g = 0.0
-                        color.b = 0.0
-                    elif "black" in obj.name:
-                        color.r = 0.0
-                        color.g = 0.0
-                        color.b = 0.0
-                    elif "orange" in obj.name:
-                        color.r = 1.0
-                        color.g = 0.64
-                        color.b = 0.0
-                    elif "white" in obj.name:
-                        color.r = 1.0
-                        color.g = 1.0
-                        color.b = 1.0
-                    elif "rgb" in obj.name:
-                        color.r = 0.0
-                        color.g = 0.0
-                        color.b = 1.0
-                    else:
-                        print(obj.name)
-                    color.a = 1.0
-
-                    p = Point()
-                    p.x = objDepth * np.dot(r, nx)
-                    p.y = objDepth * np.dot(r, ny)
-                    p.z = 1.0 * objDepth
-
-                    marker.color = color
-                    marker.pose.position = p
-                    markers.markers.append(deepcopy(marker))
-
-                    try:
-                        tf2_pose = TF2PoseStamped()
-                        tf2_pose.header = marker.header
-                        tf2_pose.pose = marker.pose
-                        # tf2_pose.header.stamp.sec = marker.header.stamp.sec - 1
-                        world_pose = self.tf_buffer.transform(
-                            tf2_pose, "world_ned", Duration(seconds=0.0))
-                        obj.world_coords = list(
-                            attrgetter("x", "y", "z")(world_pose.pose.position))
-                        if np.isnan(obj.world_coords[0]):
-                            continue
-                    except Exception as e:
-                        self.get_logger().warn(
-                            f"Failed to convert to world {e}")
-                    try:
-                        world_pose = self.tf_buffer.transform(
-                            tf2_pose, "wamv/wamv/base_link_ned", Duration(seconds=0.0))
-                        obj.move_coords = 2
-                        obj.rel_coords = list(
-                            attrgetter("x", "y", "z")(world_pose.pose.position))
-                        obj.tracker_confidence.append(obj.extra[0])
-                        obj.real_dims = [0.5, 0.5, 0.5]
-                    except Exception as e:
-                        self.get_logger().warn(
-                            f"Failed to convert to world_ned {e}")
-                    detected_objects_3d.detected.append(obj)
-                self.detections_pub_3d.publish(detected_objects_3d)
-                self.publisher_.publish(markers)
-
-            except TransformException as e:
-                print(e)
+    def subscriber_timeout_cb(self, i):
+        if self.timeouts[i]:
+            self.get_logger().warn(f"Topic [{self.topics[i]}] does not appear to be publishing")
         else:
-            print(detected_objects_3d)
-        
-        # print(xyz)
+            self.timeouts[i] = True
 
-    def detection_cb(self, msg):
-        self.detections = []
-
-        for detected in msg.detected:
-            cnts = np.vstack((detected.contour[0::2], detected.contour[1::2])).T.astype(np.int32)
-            self.detections.append([detected.name, cnts])
-
-    def info_cb(self, msg):
-        self.camera_k = np.reshape(np.array(msg.k), (3, -1))
+    def pc_timeout_cb(self):
+        if self.pc_timeout:
+            self.get_logger().warn(f"Topic [{self.pc_topic}] does not appear to be publishing")
+        else:
+            self.pc_timeout = True
 
     def pose_to_pq(msg):
         """Convert a C{geometry_msgs/Pose} into position/quaternion np arrays
@@ -352,16 +273,48 @@ class LidarBackproject(Node):
         g[0:3, -1] = p
         return g
 
-def main(args=None):
-    rclpy.init(args=args)
+def main(argv=sys.argv[1:]):
+    try:
+        parser = argparse.ArgumentParser()
 
-    lidar_backproject = LidarBackproject()
+        parser.add_argument(
+            "-n", "--namespace", choices=["auv3", "auv4", "asv4", "wamv"], required=True
+        )
+        parser.add_argument(
+            "-t", "--topics", nargs="+", help="input topic name(s)", metavar="TOPIC"
+        )
+        parser.add_argument(
+            "--cam_info_topics", nargs="+", help="camera info topic name(s)", metavar="CAM_INFO_TOPIC"
+        )
+        parser.add_argument(
+            "-pc", "--pointcloud", help="point cloud topic name(s)", metavar="POINTCLOUD_TOPIC"
+        )
+        parser.add_argument(
+            "--debug", help="enable debug mode", metavar="DEBUG"
+        )
 
-    rclpy.spin(lidar_backproject)
+        opt, rest = parser.parse_known_args(argv[argv.index("--")+1 if "--" in argv else 0:])
 
-    rclpy.shutdown()
+        opt.topics = opt.topics or ["front_cam/image_rect_color/compressed"]
+        opt.cam_info_topics = opt.cam_info_topics or [f"{topic.split('image_')[0]}camera_info" for topic in opt.topics]
+        opt.pointcloud = opt.pointcloud or "merged_cloud"
 
+        rclpy.init()
+
+        lidar_backproject = LidarBackproject(
+            "lidar_backproject", 
+            topics=opt.topics, 
+            cam_info_topics=opt.cam_info_topics,
+            pointcloud_topic=opt.pointcloud,
+            debug=opt.debug,
+            namespace=opt.namespace)
+
+        rclpy.spin(lidar_backproject)
+
+        rclpy.shutdown()
+
+    except rclpy.exceptions.ROSInterruptException:
+        pass
 
 if __name__ == '__main__':
     main()
-    
