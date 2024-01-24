@@ -91,7 +91,7 @@ class UKF_Tracker(Node):
             deleter=self.deleter,
             data_associator=GlobalNearestNeighbour(init_hypothesiser),
             updater=self.updater,
-            min_points=5
+            min_points=3
         )
 
         # Detections
@@ -100,7 +100,7 @@ class UKF_Tracker(Node):
         # Detected Object Sub
         self.detection_sub = self.create_subscription(
             DetectedObjectsStamped,
-            '/wamv/vision/lidar_backproject/detected',
+            '/asv4/vision/lidar/detected_stamped',
             self.detection_callback,
             10
         )
@@ -124,7 +124,7 @@ class UKF_Tracker(Node):
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
     def detection_callback(self, detections: DetectedObjectsStamped):
-        # self.get_logger().info("Det")
+        #self.get_logger().info("Det")
         start = time.time()
         if len(detections.detected) > 0:
             # Process Detections
@@ -190,6 +190,7 @@ class UKF_Tracker(Node):
 
                     self.all_tracks[name] |= self.tracks[name]
 
+                    self.get_logger().info("Processed in %.4f seconds" % (time.time() - start))
             self.get_logger().info("Processed in %.4f seconds" % (time.time() - start))
 
             # Plots
