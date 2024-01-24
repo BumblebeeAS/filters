@@ -13,8 +13,8 @@ class LidarTrackerFilter(Node):
     def __init__(self):
         super().__init__('motracker_lidar_iou_tracker_node')
         self.declare_parameter("fused_dets_pub_topic", "/wamv/vision/fused_detections")
-        self.declare_parameter("detections_2d_topic", "/wamv/vision/external/detected_stamped")
-        self.declare_parameter("detections_3d_topic", "/wamv/vision/lidar/detected_stamped")
+        self.declare_parameter("detections_2d_topic", "/asv4/vision/external/detected_stamped")
+        self.declare_parameter("detections_3d_topic", "/asv4/vision/lidar/detected_stamped")
         self.fused_dets_pub_topic = self.get_parameter("fused_dets_pub_topic")\
                                         .get_parameter_value().string_value
         self.detections_2d_topic = self.get_parameter("detections_2d_topic")\
@@ -73,15 +73,15 @@ class LidarTrackerFilter(Node):
         for det in msg.detected:
             if det.move_coords == 2 and len(det.world_coords) != 0:
                 id = self.name_to_id(det.name)
-                if det.world_coords[2] < -3 or det.world_coords[2] > 3:
+                if det.world_coords[2] < -3 or det.world_coords[2] > 20:
                     continue
-                if det.real_dims[0] > 4 or det.real_dims[1] > 4 or det.real_dims[2] > 4:
+                if det.real_dims[0] > 4 or det.real_dims[1] > 4 or det.real_dims[2] > 20:
                     # self.get_logger().info("object dims out of bounds")
                     continue
                 if det.real_dims[0] < 0.01 and det.real_dims[1] < 0.01 and det.real_dims[0] < 0.01:
                     continue
                 confidence = det.extra[0] if len(det.extra)>0 else 0.8
-                if confidence < 0.5:
+                if confidence < 0.1:
                     continue
                 bboxes.append([det.world_coords[0],
                             det.world_coords[1],
@@ -132,7 +132,7 @@ class LidarTrackerFilter(Node):
 
         markers = MarkerArray()
         header = Header()
-        header.frame_id = "world_ned"
+        header.frame_id = "map_ned"
         header.stamp = msg.header.stamp
         marker = Marker()
         marker.action = Marker.DELETEALL
