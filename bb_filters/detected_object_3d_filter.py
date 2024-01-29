@@ -10,8 +10,8 @@ from motrackers import IOUTracker, SORT
 class TrackerFilter(Node):
     def __init__(self):
         super().__init__('motracker_iou_tracker_node')
-        self.declare_parameter("raw_topic", "/wamv/vision/external/detected_stamped")
-        self.declare_parameter("filtered_topic", "/wamv/vision/fused_detections")
+        self.declare_parameter("raw_topic", "/asv4/vision/lidar/detected_stamped")
+        self.declare_parameter("filtered_topic", "/asv4/vision/external/fused_detections")
         self.raw_topic = self.get_parameter("raw_topic")\
                                         .get_parameter_value().string_value
         self.filtered_topic = self.get_parameter("filtered_topic")\
@@ -40,6 +40,7 @@ class TrackerFilter(Node):
             "mb_marker_buoy_green": 3,
             "mb_marker_buoy_black": 4,
             "mb_marker_buoy_white": 5,
+            "pillar": 6,
         }
 
     @property
@@ -63,7 +64,7 @@ class TrackerFilter(Node):
                     det.world_coords[1] + 0.2,
                 ]
             )
-            confidences.append(det.extra[0])
+            confidences.append(det.extra[0] if len(det.extra) > 0 else 0.6)
             ids.append(self.name_to_id[det.name])
 
         tracked_objects = self.tracker.update(

@@ -6,8 +6,8 @@ from operator import attrgetter
 import matplotlib.markers
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-from stonesoup.dataassociator.neighbour import GlobalNearestNeighbour
-from stonesoup.dataassociator.probability import JPDA
+from stonesoup.dataassociator.neighbour import NearestNeighbour, GlobalNearestNeighbour, GNNWith2DAssignment
+from stonesoup.dataassociator.probability import PDA, JPDA
 from stonesoup.deleter.error import CovarianceBasedDeleter
 from stonesoup.functions import gm_reduce_single
 from stonesoup.hypothesiser.probability import PDAHypothesiser
@@ -46,9 +46,9 @@ class UKF_Tracker(Node):
 
         self.transition_model = CombinedLinearGaussianTransitionModel(
             [
-                RandomWalk(1),  # x
-                RandomWalk(1),  # y
-                RandomWalk(0.01)  # z
+                RandomWalk(0.1),  # x
+                RandomWalk(0.1),  # y
+                RandomWalk(0.1)  # z
             ]
         )
 
@@ -56,7 +56,7 @@ class UKF_Tracker(Node):
         self.measurement_model = LinearGaussian(
             ndim_state=3,
             mapping=[0, 1, 2],
-            noise_covar=np.diag([1, 1, 0.01])
+            noise_covar=np.diag([1.0, 1.0, 0.1])
         )
 
         # UKF Predictor
@@ -81,7 +81,7 @@ class UKF_Tracker(Node):
         # Stricter Hypothesiser for Initiator
         init_hypothesiser = PDAHypothesiser(predictor=self.predictor,
                                             updater=self.updater,
-                                            clutter_spatial_density=0.75,
+                                            clutter_spatial_density=0.45,
                                             prob_detect=prob_detect)
 
         # Detection Initiator
@@ -89,9 +89,9 @@ class UKF_Tracker(Node):
             prior_state=GaussianState([0, 0, 0], np.diag([0.1, 0.1, 0.1])),
             measurement_model=self.measurement_model,
             deleter=self.deleter,
-            data_associator=GlobalNearestNeighbour(init_hypothesiser),
+            data_associator=GNNWith2DAssignment(init_hypothesiser),
             updater=self.updater,
-            min_points=3
+            min_points=5
         )
 
         # Detections
@@ -114,7 +114,7 @@ class UKF_Tracker(Node):
 
         # Marker Pub
         self.publisher_ = self.create_publisher(
-            MarkerArray, '/stereo_visualization', 10)
+            MarkerArray, '/stereo_visualization', 1)
 
         # Plot Pub
         self.publisher_plot = self.create_publisher(
@@ -122,6 +122,8 @@ class UKF_Tracker(Node):
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
+
+        self.bridge = CvBridge()
 
     def detection_callback(self, detections: DetectedObjectsStamped):
         #self.get_logger().info("Det")
@@ -195,6 +197,7 @@ class UKF_Tracker(Node):
 
             # Plots
             # Marker
+            id=0
             markers = MarkerArray()
             marker = Marker()
             marker.header = obj.header
@@ -212,7 +215,7 @@ class UKF_Tracker(Node):
                     coords = track.state_vector.flatten()
 
                     # Using back of Track id
-                    self.get_logger().info(f"Tracking {coords} {name}@{track.id.split('-')[-1]} at ")
+                    self.get_logger().info(f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
 
                     color = ColorRGBA()
                     if "round" in name:
@@ -253,7 +256,10 @@ class UKF_Tracker(Node):
                         color.b = 1.0
                         plot_color = "blue"
                     else:
-                        print(obj.name)
+                        color.r = 1.0
+                        color.g = 1.0
+                        color.b = 1.0
+                        plot_color = "white"
                     color.a = 1.0
 
                     p = Point()
@@ -264,47 +270,56 @@ class UKF_Tracker(Node):
                     marker.color = color
                     marker.pose.position = p
                     marker.id = id
+                    marker.header.frame_id = "map_ned"
                     id += 1
 
                     # TODO verify uncertainty marker
                     uncertainty_marker, text = self.get_uncertainty_marker(track, [0, 1, 2], color)
-                    uncertainty_marker.id = id
-                    id += 1
+#                    uncertainty_marker.id = id
+#                    uncertainty_marker.header.frame_id = "map_ned"
+#                    id += 1
+                    text.header.frame_id = "map_ned"
                     text.id = id
                     id += 1
-                    try:
-                        tf2_pose = TF2PoseStamped()
-                        tf2_pose.header = marker.header
-                        tf2_pose.header.frame_id = 'world'
-                        tf2_pose.pose = marker.pose
-                        target_pose = "wamv/wamv/base_link"
-                        base_link = self._tf_buffer.transform(
-                            tf2_pose, target_pose, Duration(seconds=0.0))
-                        # base_link_coords = list(
-                        #     attrgetter("x", "y", "z")(base_link.pose.position))
-                        marker.pose.position = base_link.pose.position
-                        marker.header.frame_id = target_pose
 
-                        # Plot Uncertainty Markers
-                        uncertainty_marker.pose.position = base_link.pose.position
-                        uncertainty_marker.header.frame_id = target_pose
-                        text.pose.position = base_link.pose.position
-                        text.header.frame_id = target_pose
-
-                        # print(marker)
-                        markers.markers.append(deepcopy(marker))
-                        markers.markers.append(deepcopy(uncertainty_marker))
-                        markers.markers.append(deepcopy(text))
-                    except Exception as e:
-                        self.get_logger().warn(
-                            f"Failed to convert to base_link {e}")
-
-                    # Plot on 2d map
-                    self.draw_uncertainty(track, [0, 1], self.ax, plot_color, plot_marker)
+                    markers.markers.append(marker)
+#                    markers.markers.append(uncertainty_marker)
+                    markers.markers.append(text)
+#                    try:
+#                        tf2_pose = TF2PoseStamped()
+#                        tf2_pose.header = marker.header
+#                        tf2_pose.header.frame_id = 'map_ned'
+#                        tf2_pose.pose = marker.pose
+#                        target_pose = "asv4/base_link"
+#                        base_link = self._tf_buffer.transform(
+#                            tf2_pose, target_pose, Duration(seconds=0.0))
+#                        # base_link_coords = list(
+#                        #     attrgetter("x", "y", "z")(base_link.pose.position))
+#                        marker.pose.position = base_link.pose.position
+#                        marker.header.frame_id = target_pose
+#
+#                        # Plot Uncertainty Markers
+#                        uncertainty_marker.pose.position = base_link.pose.position
+#                        uncertainty_marker.header.frame_id = target_pose
+#                        text.pose.position = base_link.pose.position
+#                        text.header.frame_id = target_pose
+#
+#                        # print(marker)
+#                        markers.markers.append(deepcopy(marker))
+#                        markers.markers.append(deepcopy(uncertainty_marker))
+#                        markers.markers.append(deepcopy(text))
+#                    except Exception as e:
+#                        self.get_logger().warn(
+#                            f"Failed to convert to base_link {e}")
+#
+#                    # Plot on 2d map
+#                    self.draw_uncertainty(track, [0, 1], self.ax, plot_color, plot_marker)
 
             # Prepare Plot Image
             self.fig.canvas.draw()
             graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
+            img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
+            self.publisher_plot.publish(img_msg)
             # TODO: Add Plot - CV - ROS Pub
 
             self.publisher_.publish(markers)
@@ -326,7 +341,7 @@ class UKF_Tracker(Node):
         marker.scale = Vector3(
             x=2 * np.sqrt(w[max_ind]),
             y=2 * np.sqrt(w[min_ind]),
-            z=0)
+            z=0.0)
 
         # TODO fix angle for marker
         marker.pose.orientation = Quaternion(
@@ -355,9 +370,14 @@ class UKF_Tracker(Node):
         state = track[-1]
         data = state.state_vector[mapping[:2], :]
         w, v = np.linalg.eig(HH @ state.covar @ HH.T)
+        v = np.real_if_close(v, tol=1)
+        w = np.real_if_close(w, tol=1)
         max_ind = np.argmax(w)
         min_ind = np.argmin(w)
-        orient = np.arctan2(v[1, max_ind], v[0, max_ind])
+        try:
+            orient = np.arctan2(v[1, max_ind], v[0, max_ind])
+        except TypeError:
+            orient = np.array([0])
         return state, data, min_ind, max_ind, orient, w, v
 
 def main(args=None):
