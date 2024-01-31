@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from operator import attrgetter
 
@@ -8,10 +8,13 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from stonesoup.dataassociator.neighbour import NearestNeighbour, GlobalNearestNeighbour, GNNWith2DAssignment
 from stonesoup.dataassociator.probability import PDA, JPDA
+from stonesoup.deleter.time import UpdateTimeDeleter
 from stonesoup.deleter.error import CovarianceBasedDeleter
+from stonesoup.deleter.multi import CompositeDeleter
 from stonesoup.functions import gm_reduce_single
 from stonesoup.hypothesiser.probability import PDAHypothesiser
 from stonesoup.initiator.simple import MultiMeasurementInitiator
+from stonesoup.initiator.wrapper import StatesLengthLimiter
 from stonesoup.models.measurement.linear import LinearGaussian
 from stonesoup.models.transition.linear import CombinedLinearGaussianTransitionModel, RandomWalk
 import numpy as np
@@ -56,7 +59,7 @@ class UKF_Tracker(Node):
         self.measurement_model = LinearGaussian(
             ndim_state=3,
             mapping=[0, 1, 2],
-            noise_covar=np.diag([1.0, 1.0, 0.1])
+            noise_covar=np.diag([0.975, 0.975, 0.1])
         )
 
         # UKF Predictor
@@ -66,7 +69,9 @@ class UKF_Tracker(Node):
         self.updater = UnscentedKalmanUpdater(self.measurement_model)
 
         # Track Deleter
-        self.deleter = CovarianceBasedDeleter(covar_trace_thresh=4)  # Higher Value Longer Persistence
+        covar_deleter = CovarianceBasedDeleter(covar_trace_thresh=1.5)  # Higher Value Longer Persistence
+        time_deleter = UpdateTimeDeleter(timedelta(seconds=5)) # Time Since Last Update
+        self.deleter = CompositeDeleter([covar_deleter, time_deleter], intersect=False) # Any fail will cause deletion
 
         # Hypothesiser
         prob_detect = 0.9
@@ -82,7 +87,7 @@ class UKF_Tracker(Node):
         init_hypothesiser = PDAHypothesiser(predictor=self.predictor,
                                             updater=self.updater,
                                             clutter_spatial_density=0.45,
-                                            prob_detect=prob_detect)
+                                            prob_detect=0.9)
 
         # Detection Initiator
         self.initiator = MultiMeasurementInitiator(
@@ -91,8 +96,10 @@ class UKF_Tracker(Node):
             deleter=self.deleter,
             data_associator=GNNWith2DAssignment(init_hypothesiser),
             updater=self.updater,
-            min_points=5
+            min_points=20
         )
+
+        self.initiator = StatesLengthLimiter(self.initiator, 20)
 
         # Detections
         self.tracks, self.all_tracks = dict(), dict()
@@ -187,12 +194,11 @@ class UKF_Tracker(Node):
 
                         # Deletion and Initiation
                     self.tracks[name] -= self.deleter.delete_tracks(self.tracks[name])
-                    self.tracks[name] |= self.initiator.initiate(measurement_set,
+                    self.tracks[name] |= self.initiator.initiate(measurement_set - associated_measurements,
                                                                  timestamp)
 
-                    self.all_tracks[name] |= self.tracks[name]
+                    # self.all_tracks[name] |= self.tracks[name]
 
-                    self.get_logger().info("Processed in %.4f seconds" % (time.time() - start))
             self.get_logger().info("Processed in %.4f seconds" % (time.time() - start))
 
             # Plots
@@ -211,7 +217,7 @@ class UKF_Tracker(Node):
             plot_color = None
 
             for name in names:
-                for track in self.all_tracks[name]:
+                for track in self.tracks[name]:
                     coords = track.state_vector.flatten()
 
                     # Using back of Track id
@@ -259,7 +265,7 @@ class UKF_Tracker(Node):
                         color.r = 1.0
                         color.g = 1.0
                         color.b = 1.0
-                        plot_color = "white"
+                        plot_color = "gray"
                     color.a = 1.0
 
                     p = Point()
@@ -275,16 +281,16 @@ class UKF_Tracker(Node):
 
                     # TODO verify uncertainty marker
                     uncertainty_marker, text = self.get_uncertainty_marker(track, [0, 1, 2], color)
-#                    uncertainty_marker.id = id
-#                    uncertainty_marker.header.frame_id = "map_ned"
-#                    id += 1
+                    uncertainty_marker.id = id
+                    uncertainty_marker.header.frame_id = "map_ned"
+                    id += 1
                     text.header.frame_id = "map_ned"
                     text.id = id
                     id += 1
 
-                    markers.markers.append(marker)
-#                    markers.markers.append(uncertainty_marker)
-                    markers.markers.append(text)
+                    markers.markers.append(deepcopy(marker))
+#                    markers.markers.append(deepcopy(uncertainty_marker))
+                    markers.markers.append(deepcopy(text))
 #                    try:
 #                        tf2_pose = TF2PoseStamped()
 #                        tf2_pose.header = marker.header
@@ -312,14 +318,15 @@ class UKF_Tracker(Node):
 #                        self.get_logger().warn(
 #                            f"Failed to convert to base_link {e}")
 #
-#                    # Plot on 2d map
-#                    self.draw_uncertainty(track, [0, 1], self.ax, plot_color, plot_marker)
+                    # Plot on 2d map
+                    self.draw_uncertainty(track, [0, 1], self.ax, plot_color, plot_marker)
 
             # Prepare Plot Image
             self.fig.canvas.draw()
             graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
             img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
             self.publisher_plot.publish(img_msg)
+            self.ax.cla()
             # TODO: Add Plot - CV - ROS Pub
 
             self.publisher_.publish(markers)
@@ -357,7 +364,10 @@ class UKF_Tracker(Node):
         marker.pose.position = p
 
         text = Marker(text=track.id.split('-')[-1])
+        text.type = Marker.TEXT_VIEW_FACING
         text.pose.position = marker.pose.position
+        text.pose.position.z += 1.0
+        text.scale.z = 5.0
 
         return marker, text
 
