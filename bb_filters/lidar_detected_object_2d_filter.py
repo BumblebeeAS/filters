@@ -12,9 +12,10 @@ from bb_filters.sort_3d import SORT3D
 class LidarTrackerFilter(Node):
     def __init__(self):
         super().__init__('motracker_lidar_iou_tracker_node')
-        self.declare_parameter("fused_dets_pub_topic", "/wamv/vision/fused_detections")
+        self.declare_parameter("fused_dets_pub_topic", "/asv4/vision/fused_detections")
         self.declare_parameter("detections_2d_topic", "/asv4/vision/external/detected_stamped")
-        self.declare_parameter("detections_3d_topic", "/asv4/vision/lidar/detected_stamped")
+        # self.declare_parameter("detections_3d_topic", "/asv4/vision/lidar/detected_stamped")
+        self.declare_parameter("detections_3d_topic", "/asv4/vision/external/fused_detections")
         self.fused_dets_pub_topic = self.get_parameter("fused_dets_pub_topic")\
                                         .get_parameter_value().string_value
         self.detections_2d_topic = self.get_parameter("detections_2d_topic")\
@@ -33,13 +34,13 @@ class LidarTrackerFilter(Node):
             DetectedObjectsStamped, self.detections_2d_topic,
             self.object_list_callback, 1)
         self.tracker = SORT3D(
-            max_lost=4, # constant acc cannot model changing directions well
+            max_lost=5, # constant acc cannot model changing directions well
             # min_detection_confidence=0.2,
             # max_detection_confidence=1.0,
-            process_noise_scale=0.1,
-            measurement_noise_scale=0.05,
-            time_step=0.2,
-            dist_threshold=1.6)
+            process_noise_scale=0.05,
+            measurement_noise_scale=1.0,
+            time_step=0.05,
+            dist_threshold=3.0)
         self.latest_header = None
         self.min_age = 1
         self.track_counts = defaultdict(lambda: defaultdict(float))
@@ -85,7 +86,8 @@ class LidarTrackerFilter(Node):
                     continue
                 bboxes.append([det.world_coords[0],
                             det.world_coords[1],
-                            det.world_coords[2],
+                            # det.world_coords[2],
+                            0.0,
                             max(0.5, det.real_dims[0]*1.2),
                             max(0.5, det.real_dims[1]*1.2),
                             max(0.5, det.real_dims[2]*1.2),
@@ -98,7 +100,8 @@ class LidarTrackerFilter(Node):
                     bboxes.append([
                         det.world_coords[0],
                         det.world_coords[1],
-                        det.world_coords[2],
+                        # det.world_coords[2],
+                        0.0,
                         0.5,
                         0.5,
                         0.5,
@@ -157,7 +160,8 @@ class LidarTrackerFilter(Node):
             tracked_obj_msg = DetectedObject()
             tracked_obj_msg.name = self.id_to_name(max_id)
             tracked_obj_msg.world_coords = [last_point[0],
-                                            last_point[1],  last_point[2]]
+                                            last_point[1],  0.0]
+                                            # last_point[1],  last_point[2]]
             tracked_obj_msg.tracker_confidence = [int(conf * 100)]
             tracked_obj_msg.tracker_match_id = [int(track.id)]
             tracked_obj_msg.real_dims = [max(0.01, track.bbox[3]), max(0.01, track.bbox[4]), max(0.01, track.bbox[5])]

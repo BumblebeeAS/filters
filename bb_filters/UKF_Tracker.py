@@ -28,7 +28,7 @@ import rclpy
 from geometry_msgs.msg import Vector3, Quaternion, Point
 from rclpy.duration import Duration
 from rclpy.node import Node
-from bb_msgs.msg import DetectedObjectsStamped
+from bb_msgs.msg import DetectedObject, DetectedObjectsStamped
 from stonesoup.plotter import Plotter
 
 from std_msgs.msg import ColorRGBA
@@ -46,6 +46,7 @@ class UKF_Tracker(Node):
         # Object Movement Model
         super().__init__(node_name)
         self.get_logger().info("Starting: " + node_name)
+        self.declare_parameter("filtered_topic", "/asv4/vision/external/fused_detections")
 
         self.transition_model = CombinedLinearGaussianTransitionModel(
             [
@@ -125,8 +126,11 @@ class UKF_Tracker(Node):
 
         # Plot Pub
         self.publisher_plot = self.create_publisher(
-            CompressedImage, '/filter_visualisation', 10)
-
+            CompressedImage, '/filter_visualisation/image_raw/compressed', 10)
+        self.filtered_topic = self.get_parameter("filtered_topic")\
+                                  .get_parameter_value().string_value
+        self.tracked_objects_pub = self.create_publisher(
+            DetectedObjectsStamped, self.filtered_topic, 10)
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -203,18 +207,22 @@ class UKF_Tracker(Node):
 
             # Plots
             # Marker
-            id=0
+            # id=0
             markers = MarkerArray()
             marker = Marker()
             marker.header = obj.header
             marker.scale = Vector3(x=1.0, y=1.0, z=1.0)
             marker.pose.orientation = Quaternion(
-                w=0.707, x=0.707, y=0.0, z=0.0)
+                w=0.707, x=0.0, y=0.0, z=0.0)
             marker.action = Marker.DELETEALL
-            markers.markers.append(marker)
+            markers.markers.append(deepcopy(marker))
             marker.action = Marker.ADD
             plot_marker = None
             plot_color = None
+            id = 1
+
+            output = DetectedObjectsStamped()
+            output.header = detections.header
 
             for name in names:
                 for track in self.tracks[name]:
@@ -276,21 +284,37 @@ class UKF_Tracker(Node):
                     marker.color = color
                     marker.pose.position = p
                     marker.id = id
-                    marker.header.frame_id = "map_ned"
                     id += 1
+                    marker.header.frame_id = "map_ned"
+
+                    tracked_obj_msg = DetectedObject()
+                    tracked_obj_msg.name = obj.name
+                    tracked_obj_msg.world_coords = [
+                        coords[0],
+                        coords[1],
+                        0.0,
+                    ]
+                    tracked_obj_msg.real_dims = [0.5, 0.5, 0.5]
+                    tracked_obj_msg.move_coords = 2
+                    tracked_obj_msg.tracker_confidence = [1]
+                    # tracked_obj_msg.extra = [int(track.id.split('-')[-1])]
+                    output.detected.append(tracked_obj_msg)
+
+                    # id += 1
 
                     # TODO verify uncertainty marker
-                    uncertainty_marker, text = self.get_uncertainty_marker(track, [0, 1, 2], color)
-                    uncertainty_marker.id = id
-                    uncertainty_marker.header.frame_id = "map_ned"
-                    id += 1
-                    text.header.frame_id = "map_ned"
-                    text.id = id
-                    id += 1
+ #                   uncertainty_marker, text = self.get_uncertainty_marker(track, [0, 1, 2], color)
+ #                   uncertainty_marker.id = id
+ #                   uncertainty_marker.header.frame_id = "map_ned"
+ #                   id += 1
+ #                   text.header.frame_id = "map_ned"
+ #                   text.id = id
+ #                   text.pose.position = marker.pose.position
+ #                   id += 1
 
                     markers.markers.append(deepcopy(marker))
 #                    markers.markers.append(deepcopy(uncertainty_marker))
-                    markers.markers.append(deepcopy(text))
+#                    markers.markers.append(deepcopy(text))
 #                    try:
 #                        tf2_pose = TF2PoseStamped()
 #                        tf2_pose.header = marker.header
@@ -320,6 +344,8 @@ class UKF_Tracker(Node):
 #
                     # Plot on 2d map
                     self.draw_uncertainty(track, [0, 1], self.ax, plot_color, plot_marker)
+
+            self.tracked_objects_pub.publish(output)
 
             # Prepare Plot Image
             self.fig.canvas.draw()

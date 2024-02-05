@@ -10,7 +10,8 @@ from motrackers import IOUTracker, SORT
 class TrackerFilter(Node):
     def __init__(self):
         super().__init__('motracker_iou_tracker_node')
-        self.declare_parameter("raw_topic", "/asv4/vision/lidar/detected_stamped")
+        # self.declare_parameter("raw_topic", "/asv4/vision/lidar/detected_stamped")
+        self.declare_parameter("raw_topic", "/asv4/vision/external/detected_stamped")
         self.declare_parameter("filtered_topic", "/asv4/vision/external/fused_detections")
         self.raw_topic = self.get_parameter("raw_topic")\
                                         .get_parameter_value().string_value
@@ -28,7 +29,7 @@ class TrackerFilter(Node):
             iou_threshold=0.001,
             tracker_output_format="visdrone_challenge")
         self.latest_header = None
-        self.min_age = 1
+        self.min_age = 3
         self.track_counts = defaultdict(lambda: np.zeros(6))
 
     @property
@@ -60,8 +61,8 @@ class TrackerFilter(Node):
                 [
                     det.world_coords[0] - 0.2,
                     det.world_coords[1] - 0.2,
-                    det.world_coords[0] + 0.2,
-                    det.world_coords[1] + 0.2,
+                    0.4,
+                    0.4,
                 ]
             )
             confidences.append(det.extra[0] if len(det.extra) > 0 else 0.6)
@@ -94,6 +95,12 @@ class TrackerFilter(Node):
                 bb_left + bb_width / 2,
                 bb_top + bb_height / 2,
                 0.0,
+            ]
+            tracked_obj_msg.move_coords = 2
+            tracked_obj_msg.real_dims = [
+                bb_width,
+                bb_height,
+                0.5
             ]
             tracked_obj_msg.tracker_confidence = [int(confidence)]
             tracked_obj_msg.extra = [int(frame)]

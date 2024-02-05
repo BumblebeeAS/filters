@@ -24,7 +24,7 @@ setup(
             "detected_object_3d_filter = bb_filters.detected_object_3d_filter:main",
             "lidar_backproject = bb_filters.lidar_backproject:main",
             "lidar_backproject_ml = bb_filters.lidar_backproject_ml:main",
-            "ukf_filter = bb_filters.UKT_Tracker:main",
+            "ukf_filter = bb_filters.UKF_Tracker:main",
         ],
     },
 )
