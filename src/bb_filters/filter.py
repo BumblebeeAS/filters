@@ -27,7 +27,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[frame_id].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.01),
+            timeout=rospy.Duration(0.03),
         )
         cam_mat = quat2mat(attrgetter("w", "x", "y", "z")(tf.transform.rotation))
         if (
@@ -44,13 +44,22 @@ class CameraInfos:
             return yaw
         else:
             return None
+        
+    def get_camera_z(self, frame_id, stamp: rospy.Time):
+        tf = self.buffer.lookup_transform(
+            self.map_frame,
+            self.infos[frame_id].header.frame_id,
+            stamp,
+            timeout=rospy.Duration(0.02),
+        )
+        return tf.transform.translation.z
 
     def compute_3d_coords_from_distance(self, obj: DetectedObject, distance: float):
         cam_tf = self.buffer.lookup_transform(
             self.map_frame,
             self.infos[obj.source].header.frame_id,
             obj.header.stamp,
-            timeout=rospy.Duration(0.05),
+            timeout=rospy.Duration(0.02),
         )
         camera_info = self.get_info(obj.source)
         obj_cam = np.array(
@@ -98,7 +107,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[source].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.01),
+            timeout=rospy.Duration(0.02),
         )
         camera_info = self.get_info(source)
         obj_cam = np.array(
@@ -126,7 +135,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[obj.source].header.frame_id,
             obj.header.stamp,
-            timeout=rospy.Duration(0.01),
+            timeout=rospy.Duration(0.02),
         )
         camera_info = self.get_info(obj.source)
         obj_cam = np.array(
@@ -229,8 +238,8 @@ def draw_detected_object(out_img, info, cnt, shape="circle"):
 
 def get_centroid(cnt):
     mom = cv2.moments(cnt)
-    centroid_x = int((mom["m10"] + 0.0001) / (mom["m00"] + 0.0001))
-    centroid_y = int((mom["m01"] + 0.0001) / (mom["m00"] + 0.0001))
+    centroid_x = int((mom["m10"] + 0.0003) / (mom["m00"] + 0.0003))
+    centroid_y = int((mom["m03"] + 0.0003) / (mom["m00"] + 0.0003))
     return (centroid_x, centroid_y)
 
 
@@ -311,11 +320,11 @@ def get_circle_area(cnt):
 
 
 def get_rectangularity(cnt):
-    return cv2.contourArea(cnt) / (get_rect_area(cnt) + 0.001)
+    return cv2.contourArea(cnt) / (get_rect_area(cnt) + 0.003)
 
 
 def get_circularity(cnt):
-    return cv2.contourArea(cnt) / (get_circle_area(cnt) + 0.001)
+    return cv2.contourArea(cnt) / (get_circle_area(cnt) + 0.003)
 
 
 def get_pixel_area(cnt, mask):
