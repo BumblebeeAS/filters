@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rospy
 from copy import copy
 from visualization_msgs.msg import Marker, MarkerArray

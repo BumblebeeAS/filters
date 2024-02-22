@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="bb_filters" type="sauvc_detections_filter.py" name="sauvc_filter" output="screen"/>
+    <node pkg="bb_filters" type="centroid_tf_publisher.py" name="centroid_pub" output="screen"/>
+    <node pkg="bb_filters" type="detected_objects_debug.py" name="dets_debug" output="screen"/>
+</launch>
