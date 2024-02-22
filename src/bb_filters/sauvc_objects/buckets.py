@@ -3,7 +3,7 @@ from bb_filters import filter
 import numpy as np
 import rospy
 from circle_fit import taubinSVD
-
+from sklearn.cluster import KMeans
 
 class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
@@ -13,6 +13,8 @@ class Filter(filter.Filter):
         self.bucket_depth = 2.0
         self.bucket_height = 0.3
         self.bucket_diameter = 0.6
+        self.kmeans = KMeans(n_clusters=4, random_state=0, n_init="auto")
+        self.points = []
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -34,29 +36,46 @@ class Filter(filter.Filter):
                 bucket = self.camera_infos.compute_3d_coords_from_depth(
                     det, self.bucket_depth - self.bucket_height / 2
                 )
-                det.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
+                bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                 bucket.world_coords[2] = self.bucket_depth
                 bucket.name = "bucket"
                 detections.detected.append(bucket)
 
-        if len(bot_buckets) == 0:
-            return detections
-        camera_depth = self.camera_infos.get_camera_z(289, bot_buckets[0].header.stamp)
-        est_circle_radius = np.abs(
-            (self.bucket_diameter / 2)
-            / (camera_depth - (self.bucket_depth - self.bucket_height))
-            * self.camera_infos.get_info(289).P[0]
-        )
-        for det in bot_buckets:
-            xc, yc, r, sigma = taubinSVD(np.array(det.contour).reshape(-1, 2))
-            if np.abs(r - est_circle_radius) < 50:
-                det.centre_x, det.centre_y = max(0, int(xc)), max(0, int(yc))
+        if len(bot_buckets) > 0:
+            camera_depth = self.camera_infos.get_camera_z(289, bot_buckets[0].header.stamp)
+            est_circle_radius = np.abs(
+                (self.bucket_diameter / 2)
+                / (camera_depth - (self.bucket_depth - self.bucket_height))
+                * self.camera_infos.get_info(289).P[0]
+            )
+            for det in bot_buckets:
+                try:
+                    xc, yc, r, sigma = taubinSVD(np.array(det.contour).reshape(-1, 2))
+                except:
+                    continue
+                if np.abs(r - est_circle_radius) < 50:
+                    det.centre_x, det.centre_y = max(0, int(xc)), max(0, int(yc))
 
-                det = self.camera_infos.compute_3d_coords_from_depth(det, self.bucket_depth - self.bucket_height)
-                det.world_coords[2] += self.bucket_height
-                det.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
-                det.name = "bucket"
-                detections.detected.append(det)
-            else:
-                rospy.loginfo(f"Bucket not round enough: {xc}, {yc}, {r}, {sigma}")
+                    det = self.camera_infos.compute_3d_coords_from_depth(det, self.bucket_depth - self.bucket_height)
+                    det.world_coords[2] += self.bucket_height
+                    det.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
+                    det.name = "bucket"
+                    detections.detected.append(det)
+                else:
+                    rospy.loginfo(f"Bucket not round enough: {xc}, {yc}, {r}, {sigma}")
+
+        new_points = []
+        for det in detections.detected:
+            new_points.append([det.world_coords[0], det.world_coords[1]])
+
+        if len(new_points) == 0:
+            return detections
+        if len(self.points) > 10:
+            self.kmeans.fit(self.points)
+            id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][1])]
+            ids = {v: k for k, v in enumerate(id_centers)}
+
+            for i, id in enumerate([ids[i] for i in self.kmeans.predict(np.array(new_points).reshape(-1, 2))]):
+                detections.detected[i].name += f"_{id}"
+        self.points.extend(new_points)
         return detections

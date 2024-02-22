@@ -12,6 +12,19 @@ rgb_colors = [
     matplotlib.colors.to_rgb(hex) for hex in matplotlib.colors.cnames.values()
 ]
 
+custom_colors = {
+    "bucket_0": matplotlib.colors.to_rgb(matplotlib.colors.cnames["red"]),
+    "bucket_1": matplotlib.colors.to_rgb(matplotlib.colors.cnames["orange"]),
+    "bucket_2": matplotlib.colors.to_rgb(matplotlib.colors.cnames["yellow"]),
+    "bucket_3": matplotlib.colors.to_rgb(matplotlib.colors.cnames["green"]),
+    "red_flare": matplotlib.colors.to_rgb(matplotlib.colors.cnames["red"]),
+    "orange_flare": matplotlib.colors.to_rgb(matplotlib.colors.cnames["orange"]),
+    "blue_flare": matplotlib.colors.to_rgb(matplotlib.colors.cnames["blue"]),
+    "yellow_flare": matplotlib.colors.to_rgb(matplotlib.colors.cnames["yellow"]),
+    "qualification_gate": matplotlib.colors.to_rgb(matplotlib.colors.cnames["white"]),
+    "gate": matplotlib.colors.to_rgb(matplotlib.colors.cnames["black"])
+}
+
 def callback(msg):
     global object_markers, marker_pub
 
@@ -28,7 +41,10 @@ def callback(msg):
     # Create markers for each detected object
     idx = 0
     for obj in msg.detected:
-        color = rgb_colors[idx % len(rgb_colors)]
+        if obj.name in custom_colors:
+            color = custom_colors[obj.name]
+        else:
+            color = rgb_colors[idx % len(rgb_colors)]
         # Set pose based on move_coords
         if obj.move_coords == 2:
             # Use world_coords for position and yaw angle
