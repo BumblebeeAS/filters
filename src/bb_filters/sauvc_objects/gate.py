@@ -14,17 +14,24 @@ class Filter(filter.Filter):
         self.gate_side_width = 0.04
         self.gate_height = 1.5
         self.gate_depth = 1.25
-        self.R = np.array(
+        self.R = self.yaw_to_rot(self.gate_orientation)
+
+    def yaw_to_rot(self, yaw):
+        return np.array(
             [
-                [np.cos(-self.gate_orientation), -np.sin(-self.gate_orientation)],
-                [np.sin(-self.gate_orientation), np.cos(-self.gate_orientation)],
+                [np.cos(yaw), -np.sin(yaw)],
+                [np.sin(yaw), np.cos(yaw)],
             ]
         )
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
-        gate_left = [x for x in bboxes.detected if x.name == "gate_left"]
-        gate_right = [x for x in bboxes.detected if x.name == "gate_right"]
+        gate_left = [
+            x for x in bboxes.detected if x.name == "gate_left" and x.source == 288
+        ]
+        gate_right = [
+            x for x in bboxes.detected if x.name == "gate_right" and x.source == 288
+        ]
         gate_sides = []
         if len(gate_left) == 0:
             gate_left = None
@@ -42,29 +49,27 @@ class Filter(filter.Filter):
 
         img_height = self.camera_infos.get_info(gate_sides[0].source).height
         if len(gate_sides) == 1:
-            print("1side")
             gate_side = gate_sides[0]
             # amount to transform from point of consideration
             if gate_side.name == "gate_left":
                 dx, dy = self.gate_width / 2 * cos(
-                    self.gate_orientation + np.pi/2
-                ), self.gate_width / 2 * sin(self.gate_orientation + np.pi/2)
+                    self.gate_orientation + np.pi / 2
+                ), self.gate_width / 2 * sin(self.gate_orientation + np.pi / 2)
             else:
-                dx, dy =  self.gate_width / 2 * cos(
-                    self.gate_orientation + 3*np.pi/2
-                ), self.gate_width / 2 * sin(self.gate_orientation + 3*np.pi/2)
+                dx, dy = self.gate_width / 2 * cos(
+                    self.gate_orientation + 3 * np.pi / 2
+                ), self.gate_width / 2 * sin(self.gate_orientation + 3 * np.pi / 2)
             is_top_visible = gate_side.centre_y - gate_side.bbox_height / 2 > 30
             is_bottom_visible = (
                 gate_side.centre_y + gate_side.bbox_height / 2 < img_height - 30
             )
-            det = None
             if is_top_visible and is_bottom_visible:
                 distance = (
                     self.gate_height
                     * self.camera_infos.get_info(gate_side.source).P[5]
                     / (gate_side.bbox_height)
                 )
-                det = self.camera_infos.compute_3d_coords_from_distance(
+                gate_side = self.camera_infos.compute_3d_coords_from_distance(
                     gate_side, distance
                 )
             elif not is_bottom_visible and not is_top_visible:
@@ -73,30 +78,30 @@ class Filter(filter.Filter):
                     * self.camera_infos.get_info(gate_side.source).P[0]
                     / (gate_side.bbox_width)
                 )
-                det = self.camera_infos.compute_3d_coords_from_distance(
+                gate_side = self.camera_infos.compute_3d_coords_from_distance(
                     gate_side, distance
                 )
             elif is_bottom_visible:
                 gate_side.centre_y += int(gate_side.bbox_height / 2)
-                det = self.camera_infos.compute_3d_coords_from_depth(
+                gate_side = self.camera_infos.compute_3d_coords_from_depth(
                     gate_side, self.gate_depth + self.gate_height / 2
                 )
-                det.centre_y -= int(gate_side.bbox_height / 2)
-                det.world_coords[2] -= self.gate_height / 2
+                gate_side.centre_y -= int(gate_side.bbox_height / 2)
+                gate_side.world_coords[2] -= self.gate_height / 2
             else:
                 gate_side.centre_y -= int(gate_side.bbox_height / 2)
-                det = self.camera_infos.compute_3d_coords_from_depth(
+                gate_side = self.camera_infos.compute_3d_coords_from_depth(
                     gate_side, self.gate_depth - self.gate_height / 2
                 )
-                det.centre_y += int(gate_side.bbox_height / 2)
-                det.world_coords[2] += self.gate_height / 2
+                gate_side.centre_y += int(gate_side.bbox_height / 2)
+                gate_side.world_coords[2] += self.gate_height / 2
             print(dx, dy, gate_side.name)
-            det.world_coords[0] += dx
-            det.world_coords[1] += dy
-            det.real_dims = [0.2, 1.5, 1.5]
-            det.world_yaw = self.gate_orientation * 180 / np.pi
-            det.name = "gate"
-            detections.detected.append(det)
+            gate_side.world_coords[0] += dx
+            gate_side.world_coords[1] += dy
+            gate_side.real_dims = [0.2, 1.5, 1.5]
+            gate_side.world_yaw = self.gate_orientation * 180 / np.pi
+            gate_side.name = "gate"
+            detections.detected.append(gate_side)
             return detections
 
         # gate = [x for x in bboxes.detected if x.name == "gate"]
@@ -120,12 +125,17 @@ class Filter(filter.Filter):
             det.source, det.header.stamp, gate_right.centre_x, gate_right.centre_y
         )
         centre_ray = self.camera_infos.compute_object_ray_from_camera_coord(
-            det.source, det.header.stamp, (gate_left.centre_x + gate_right.centre_x) / 2, gate_right.centre_y
+            det.source,
+            det.header.stamp,
+            (gate_left.centre_x + gate_right.centre_x) / 2,
+            gate_right.centre_y,
         )
         cam_pos = left_ray[3:5]
-        r1, r2 = np.linalg.inv(self.R)@left_ray[:2], np.linalg.inv(self.R)@right_ray[:2]
-        l = self.gate_width / np.abs(r1[1]/r1[0]-r2[1]/r2[0])
-        centroid = cam_pos + self.R @ np.array([l, r1[1] / r1[0] + self.gate_width / 2])
+        gate_vec = self.R @ np.array([0, 1]) * self.gate_width
+        rays = np.stack([left_ray[:2], right_ray[:2]]).T
+        solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        cam_pos = left_ray[3:5]
+        centroid = cam_pos + rays @ solution / 2
 
         gate_detection = det
         gate_detection.centre_x = int((gate_left.centre_x + gate_right.centre_x) / 2)

@@ -7,41 +7,60 @@ import rospy
 class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
-        self.__name__ = "quallification_gate_filter"
-        self.gate_orientation = np.pi / 2
+        self.__name__ = "qualification_gate_filter"
+        self.gate_orientation = np.pi / 3
         self.gate_width = 1.5
         self.gate_height = 1.0
         self.gate_depth = 0.6
-        self.R = np.array(
+        self.R = self.yaw_to_rot(self.gate_orientation)
+
+    def yaw_to_rot(self, yaw):
+        return np.array(
             [
-                [np.cos(-self.gate_orientation), -np.sin(-self.gate_orientation)],
-                [np.sin(-self.gate_orientation), np.cos(-self.gate_orientation)],
+                [np.cos(yaw), -np.sin(yaw)],
+                [np.sin(yaw), np.cos(yaw)],
             ]
         )
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
-        gate_sides = [x for x in bboxes.detected if x.name == "qualification_gate_side"]
-        gate = [x for x in bboxes.detected if x.name == "qualification_gate"]
-        if len(gate_sides) < 2 and len(gate) != 1:
+        gate_sides = [
+            x
+            for x in bboxes.detected
+            if x.name == "qualification_gate_side" and x.source == 288
+        ]
+        gate = [
+            x
+            for x in bboxes.detected
+            if x.name == "qualification_gate" and x.source == 288
+        ]
+        if len(gate_sides) < 2 and len(gate) == 0:
             return detections
+
+        if len(gate) > 0:
+            img_width = self.camera_infos.get_info(gate[0].source).width
+            gate = min(gate, key=lambda x: abs(x.centre_x - img_width))
+        else:
+            img_width = self.camera_infos.get_info(gate_sides[0].source).width
+            gate = None
+
         gate_sides = sorted(gate_sides, key=lambda x: x.centre_x)
         if len(gate_sides) > 2:
             gate_sides = gate_sides[0], gate_sides[-1]
-        det = gate_sides[0] if len(gate_sides) > 0 else gate[0]
+        det = gate_sides[0] if len(gate_sides) > 0 else gate
 
         camera_yaw = self.camera_infos.get_camera_yaw(det.source, det.header.stamp)
         if camera_yaw is None:
             rospy.logerr("get_camera_yaw failed, possibly due to vehicle tilt")
             return detections
-        if len(gate_sides) != 2:
+        if len(gate_sides) != 2:  # gate non null
             x1, x2 = (
-                gate[0].centre_x - gate[0].bbox_width / 2,
-                gate[0].centre_x + gate[0].bbox_width / 2,
+                gate.centre_x - gate.bbox_width / 2,
+                gate.centre_x + gate.bbox_width / 2,
             )
             y1, y2 = (
-                gate[0].centre_y - gate[0].bbox_height / 2,
-                gate[0].centre_y + gate[0].bbox_height / 2,
+                gate.centre_y - gate.bbox_height / 2,
+                gate.centre_y + gate.bbox_height / 2,
             )
         else:
             x1, x2 = gate_sides[0].centre_x, gate_sides[1].centre_x
@@ -53,8 +72,6 @@ class Filter(filter.Filter):
                 gate_sides[0].centre_y + gate_sides[0].bbox_height / 2,
                 gate_sides[1].centre_y + gate_sides[1].bbox_height / 2,
             )
-
-
 
         # # approach 1: distance based on width / height
         # dist_approaches = 0
@@ -90,8 +107,6 @@ class Filter(filter.Filter):
         # gate_detection.world_yaw = self.gate_orientation * 180 / np.pi
         # detections.detected.append(gate_detection)
 
-
-
         ## approach 2 using geometry
 
         left_ray = self.camera_infos.compute_object_ray_from_camera_coord(
@@ -103,10 +118,12 @@ class Filter(filter.Filter):
         centre_ray = self.camera_infos.compute_object_ray_from_camera_coord(
             det.source, det.header.stamp, (x1 + x2) / 2, (y1 + y2) / 2
         )
+        gate_vec = self.R @ np.array([0, 1]) * self.gate_width
+        rays = np.stack([left_ray[:2], right_ray[:2]]).T
+        solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
         cam_pos = left_ray[3:5]
-        r1, r2 = np.linalg.inv(self.R)@left_ray[:2], np.linalg.inv(self.R)@right_ray[:2]
-        l = self.gate_width / np.abs(r1[1]/r1[0]-r2[1]/r2[0])
-        centroid = cam_pos + self.R @ np.array([l, r1[1] / r1[0] + self.gate_width / 2])
+        centroid = cam_pos + rays @ solution / 2
+
         gate_detection = det
         gate_detection.centre_x = int((x1 + x2) / 2)
         gate_detection.centre_y = int((y1 + y2) / 2)

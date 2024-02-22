@@ -1,5 +1,6 @@
 import rospy
-from geometry_msgs.msg import Vector3Stamped
+import traceback
+import sys
 
 from bb_msgs.msg import DetectedObjects
 from sensor_msgs.msg import CameraInfo
@@ -35,7 +36,8 @@ class SauvcDetectionsFilter:
         self.raw_detections_sub = rospy.Subscriber(
             "/auv4/vision/external/detected",
             DetectedObjects,
-            self.process
+            self.process,
+            queue_size=10
         )
     
     def process(self, detected: DetectedObjects):
@@ -45,6 +47,7 @@ class SauvcDetectionsFilter:
                 result = filter.process(detected).detected
                 output.detected.extend(result)
             except Exception as e:
+                traceback.print_exc(file=sys.stdout)
                 rospy.logerr(f"Error processing {filter.__name__}: {e}")
         output.node_name = self.NODE_NAME
         self.processed_detections_pub.publish(output)

@@ -11,7 +11,7 @@ class Filter(filter.Filter):
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
-        orange_flares = [x for x in bboxes.detected if x.name=="orange_flare"]
+        orange_flares = [x for x in bboxes.detected if x.name=="orange_flare" and x.source == 288]
         if len(orange_flares) == 0:
             return detections
 
