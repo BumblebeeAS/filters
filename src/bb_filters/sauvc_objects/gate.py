@@ -14,6 +14,7 @@ class Filter(filter.Filter):
         self.gate_side_width = 0.04
         self.gate_height = 1.5
         self.gate_depth = 1.25
+        self.known_depth = True
         self.R = self.yaw_to_rot(self.gate_orientation)
 
     def yaw_to_rot(self, yaw):
@@ -81,21 +82,29 @@ class Filter(filter.Filter):
                 gate_side = self.camera_infos.compute_3d_coords_from_distance(
                     gate_side, distance
                 )
-            elif is_bottom_visible:
+            elif is_bottom_visible and self.known_depth:
                 gate_side.centre_y += int(gate_side.bbox_height / 2)
-                gate_side = self.camera_infos.compute_3d_coords_from_depth(
+                det = self.camera_infos.compute_3d_coords_from_depth(
                     gate_side, self.gate_depth + self.gate_height / 2
                 )
+                if det is None:
+                    continue
+                gate_side = det 
                 gate_side.centre_y -= int(gate_side.bbox_height / 2)
                 gate_side.world_coords[2] -= self.gate_height / 2
-            else:
+            elif is_top_visible and self.known_depth:
                 gate_side.centre_y -= int(gate_side.bbox_height / 2)
-                gate_side = self.camera_infos.compute_3d_coords_from_depth(
+                det = self.camera_infos.compute_3d_coords_from_depth(
                     gate_side, self.gate_depth - self.gate_height / 2
                 )
+                if det is None:
+                    continue
+                gate_side = det
                 gate_side.centre_y += int(gate_side.bbox_height / 2)
                 gate_side.world_coords[2] += self.gate_height / 2
-            print(dx, dy, gate_side.name)
+            else:
+                rospy.logerr("unable to estimate position with only part of one side of gate visible.")
+                return detections # unable to estimate position with only part of one side of gate visible.
             gate_side.world_coords[0] += dx
             gate_side.world_coords[1] += dy
             gate_side.real_dims = [0.2, 1.5, 1.5]

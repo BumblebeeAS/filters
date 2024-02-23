@@ -36,6 +36,8 @@ class Filter(filter.Filter):
                 bucket = self.camera_infos.compute_3d_coords_from_depth(
                     det, self.bucket_depth - self.bucket_height / 2
                 )
+                if bucket is None:
+                    continue
                 bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                 bucket.world_coords[2] = self.bucket_depth
                 bucket.name = "bucket"
@@ -56,7 +58,9 @@ class Filter(filter.Filter):
                 if np.abs(r - est_circle_radius) < 50:
                     det.centre_x, det.centre_y = max(0, int(xc)), max(0, int(yc))
 
-                    det = self.camera_infos.compute_3d_coords_from_depth(det, self.bucket_depth - self.bucket_height)
+                    bucket = self.camera_infos.compute_3d_coords_from_depth(det, self.bucket_depth - self.bucket_height)
+                    if bucket is None:
+                        continue
                     det.world_coords[2] += self.bucket_height
                     det.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                     det.name = "bucket"

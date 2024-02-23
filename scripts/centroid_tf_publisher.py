@@ -2,11 +2,13 @@
 import rospy
 import numpy as np
 from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped
+from sensor_msgs.msg import Image
 import tf2_ros
 from bb_msgs.msg import DetectedObjects
 from transforms3d.euler import euler2quat
 from collections import defaultdict
-
+from bb_msgs.srv import EstimatorToggle, EstimatorToggleRequest, EstimatorToggleResponse
+from sklearn import svm
 
 class CentroidTFPublisher:
     def __init__(self):
@@ -16,13 +18,24 @@ class CentroidTFPublisher:
         self.object_pose_topic = (
             "/auv4/vision/external/detected_filtered"  # Replace with actual topic name
         )
+        self.centroid_output_topic = (
+            "/auv4/vision/detected_centroid"
+        )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
-        self.accumulation_window = 30
+        self.accumulation_window = 150
         self.positions = defaultdict(list)
         self.object_yaws = defaultdict(float)
         self.br = tf2_ros.TransformBroadcaster()
+        self.disabled = set()
+        self.debug_publishers = {}
+        self.detections = {}
+        self.centroid_det_pub = rospy.Publisher(
+            self.centroid_output_topic, DetectedObjects)
+        self.latest = {}
 
         rospy.init_node(self.node_name)
+
+        self.toggle_srv = rospy.Service("toggle_centroid_filter", EstimatorToggle, self.toggle_cb)
 
         self.dets_sub = rospy.Subscriber(
             self.object_pose_topic,
@@ -40,25 +53,51 @@ class CentroidTFPublisher:
 
         self.spin()
 
+    def toggle_cb(self, srv: EstimatorToggleRequest):
+        rospy.logwarn(f"Toggling object {srv.object_name}")
+        if srv.object_name in self.disabled and srv.enabled:
+            self.disabled.remove(srv.object_name)
+        if not srv.object_name in self.disabled and not srv.enabled:
+            self.disabled.add(srv.object_name)
+        
+        if srv.reset:
+            self.positions[srv.object_name] = []
+
+        num_estimates = 0
+        stddev = 10000
+        if srv.object_name in self.latest:
+            _, stddev, num_estimates = self.latest[srv.object_name]
+
+        return EstimatorToggleResponse(
+            srv.enabled,
+            num_estimates,
+            stddev,
+            ""
+        )
+
     def dets_callback(self, dets):
         for det in dets.detected:
+            if det.name in self.disabled:
+                continue
             self.positions[det.name].append(det.world_coords)
             self.object_yaws[det.name] = det.world_yaw
             if len(self.positions[det.name]) > self.accumulation_window:
                 self.positions[det.name].pop(0)  # Maintain a fixed-size window
+            self.detections[det.name] = det
         self.publish_centroid_tf()
 
-    def publish_centroid_tf(self):
-        for name, positions in self.positions.items():
-            total_x, total_y, total_z = 0.0, 0.0, 0.0
-            for pose in positions:
-                total_x += pose[0]
-                total_y += pose[1]
-                total_z += pose[2]
+    @staticmethod
+    def centroidnp(arr):
+        length, dim = arr.shape
+        return np.array([np.sum(arr[:, i])/length for i in range(dim)])
 
-            centroid_x = total_x / len(positions)
-            centroid_y = total_y / len(positions)
-            centroid_z = total_z / len(positions)
+    def publish_centroid_tf(self):
+        output = DetectedObjects()
+        for name, positions in self.positions.items():
+            p = np.array(positions)
+            centroid = CentroidTFPublisher.centroidnp(p)
+            stddev = np.linalg.norm(p.std(axis=0))
+            self.latest[name] = (centroid, stddev, len(positions))
 
             # Create TransformStamped message
             tf_msg = TransformStamped()
@@ -67,16 +106,19 @@ class CentroidTFPublisher:
             tf_msg.child_frame_id = (
                 f"{name}/centroid_ned"  # Replace with desired TF frame ID
             )
-            tf_msg.transform.translation.x = centroid_x
-            tf_msg.transform.translation.y = centroid_y
-            tf_msg.transform.translation.z = centroid_z
+            tf_msg.transform.translation.x = centroid[0]
+            tf_msg.transform.translation.y = centroid[1]
+            tf_msg.transform.translation.z = centroid[2]
 
             w, x, y, z = euler2quat(0, 0, np.deg2rad(self.object_yaws[name]))
             tf_msg.transform.rotation = Quaternion(x, y, z, w)
 
             self.tf_pub.publish(tf_msg)
             self.br.sendTransform(tf_msg)
-
+            det = self.detections[name]
+            det.world_coords = [*centroid]
+            output.detected.append(det)
+        self.centroid_det_pub.publish(output)
     def spin(self):
         rospy.spin()
 
