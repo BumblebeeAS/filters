@@ -88,8 +88,8 @@ class Filter(filter.Filter):
                     gate_side, self.gate_depth + self.gate_height / 2
                 )
                 if det is None:
-                    continue
-                gate_side = det 
+                    return detections
+                gate_side = det
                 gate_side.centre_y -= int(gate_side.bbox_height / 2)
                 gate_side.world_coords[2] -= self.gate_height / 2
             elif is_top_visible and self.known_depth:
@@ -98,7 +98,7 @@ class Filter(filter.Filter):
                     gate_side, self.gate_depth - self.gate_height / 2
                 )
                 if det is None:
-                    continue
+                    return detections
                 gate_side = det
                 gate_side.centre_y += int(gate_side.bbox_height / 2)
                 gate_side.world_coords[2] += self.gate_height / 2
