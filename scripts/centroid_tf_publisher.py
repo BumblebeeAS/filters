@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 import rospy
 import numpy as np
-from geometry_msgs.msg import PoseStamped, Quaternion, TransformStamped
-from sensor_msgs.msg import Image
+from geometry_msgs.msg import Quaternion, TransformStamped
 import tf2_ros
 from bb_msgs.msg import DetectedObjects
 from transforms3d.euler import euler2quat
 from collections import defaultdict
 from bb_msgs.srv import EstimatorToggle, EstimatorToggleRequest, EstimatorToggleResponse
-from sklearn import svm
 
 class CentroidTFPublisher:
     def __init__(self):
@@ -16,10 +14,10 @@ class CentroidTFPublisher:
         self.rate = 10.0  # Hz
         self.queue_size = 10
         self.object_pose_topic = (
-            "/auv4/vision/external/detected_filtered"  # Replace with actual topic name
+            "vision/external/detected_filtered"  # Replace with actual topic name
         )
         self.centroid_output_topic = (
-            "/auv4/vision/detected_centroid"
+            "vision/detected_centroid"
         )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
         self.accumulation_window = 150

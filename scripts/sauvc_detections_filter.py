@@ -16,7 +16,7 @@ class SauvcDetectionsFilter:
         rospy.init_node(self.NODE_NAME)
         self.filters: List[Filter]
         self.processed_detections_pub = rospy.Publisher(
-            "/auv4/vision/external/detected_filtered",
+            "vision/external/detected_filtered",
             DetectedObjects
         )
         self.buffer = Buffer(rospy.Duration(10))
@@ -24,8 +24,8 @@ class SauvcDetectionsFilter:
         self.camera_info = CameraInfos(self.buffer, "map_ned")
         
         self.camera_info_topics = {
-            288: "/auv4/front_cam/camera_info",
-            289: "/auv4/bot_cam/camera_info",
+            288: "front_cam/camera_info",
+            289: "bot_cam/camera_info",
         }
         for id, topic in self.camera_info_topics.items():
             msg = rospy.wait_for_message(topic, CameraInfo)
@@ -35,7 +35,7 @@ class SauvcDetectionsFilter:
 
         self.init_filters()
         self.raw_detections_sub = rospy.Subscriber(
-            "/auv4/vision/external/detected",
+            "vision/external/detected",
             DetectedObjects,
             self.process,
             queue_size=10

@@ -2,7 +2,7 @@
 import rospy
 from copy import copy
 from visualization_msgs.msg import Marker, MarkerArray
-from bb_msgs.msg import DetectedObject, DetectedObjects
+from bb_msgs.msg import DetectedObjects
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 import tf2_ros
 from math import pi
@@ -23,8 +23,18 @@ custom_colors = {
     "blue_flare": matplotlib.colors.to_rgb(matplotlib.colors.cnames["blue"]),
     "yellow_flare": matplotlib.colors.to_rgb(matplotlib.colors.cnames["yellow"]),
     "qualification_gate": matplotlib.colors.to_rgb(matplotlib.colors.cnames["white"]),
-    "gate": matplotlib.colors.to_rgb(matplotlib.colors.cnames["black"])
+    "gate": matplotlib.colors.to_rgb(matplotlib.colors.cnames["black"]),
 }
+
+# Buffer for storing object markers
+object_markers = {}
+
+# ROS node initialization
+rospy.init_node("detected_object_visualizer")
+
+# Publisher for MarkerArray
+marker_pub = rospy.Publisher("visualization_marker_array", MarkerArray, queue_size=10)
+
 
 def callback(msg):
     global object_markers, marker_pub
@@ -59,9 +69,7 @@ def callback(msg):
                     trans = tf_buffer.transform(
                         PoseStamped(
                             header=msg.header,
-                            pose=Pose(
-                                position=position, orientation=Quaternion()
-                            ),
+                            pose=Pose(position=position, orientation=Quaternion()),
                         ),
                         msg.header.frame_id,
                         fixed_frame,
@@ -129,17 +137,10 @@ def callback(msg):
     marker_pub.publish(marker_msg)
 
 
-# ROS node initialization
-rospy.init_node("detected_object_visualizer")
-
-# Publisher for MarkerArray
-marker_pub = rospy.Publisher("/visualization_marker_array", MarkerArray, queue_size=10)
-
 # Subscriber for DetectedObjectsStamped
-detected_objects_sub = rospy.Subscriber("/auv4/vision/external/detected_filtered", DetectedObjects, callback)
-
-# Buffer for storing object markers
-object_markers = {}
+detected_objects_sub = rospy.Subscriber(
+    "vision/external/detected_filtered", DetectedObjects, callback
+)
 
 # TF buffer and listener
 tf_buffer = tf2_ros.Buffer()
