@@ -86,36 +86,41 @@ class CentroidTFPublisher:
 
     @staticmethod
     def centroidnp(arr):
-        length, dim = arr.shape
+        length, dim = arr.shape[:2]
         return np.array([np.sum(arr[:, i])/length for i in range(dim)])
 
     def publish_centroid_tf(self):
         output = DetectedObjects()
         for name, positions in self.positions.items():
-            p = np.array(positions)
-            centroid = CentroidTFPublisher.centroidnp(p)
-            stddev = np.linalg.norm(p.std(axis=0))
-            self.latest[name] = (centroid, stddev, len(positions))
+            if len(positions) == 0:
+                continue
+            try:
+                p = np.array(positions)
+                centroid = CentroidTFPublisher.centroidnp(p)
+                stddev = np.linalg.norm(p.std(axis=0))
+                self.latest[name] = (centroid, stddev, len(positions))
 
-            # Create TransformStamped message
-            tf_msg = TransformStamped()
-            tf_msg.header.stamp = rospy.Time.now()
-            tf_msg.header.frame_id = "map_ned"  # Assuming the map frame as reference
-            tf_msg.child_frame_id = (
-                f"{name}/centroid_ned"  # Replace with desired TF frame ID
-            )
-            tf_msg.transform.translation.x = centroid[0]
-            tf_msg.transform.translation.y = centroid[1]
-            tf_msg.transform.translation.z = centroid[2]
+                # Create TransformStamped message
+                tf_msg = TransformStamped()
+                tf_msg.header.stamp = rospy.Time.now()
+                tf_msg.header.frame_id = "map_ned"  # Assuming the map frame as reference
+                tf_msg.child_frame_id = (
+                    f"{name}/centroid_ned"  # Replace with desired TF frame ID
+                )
+                tf_msg.transform.translation.x = centroid[0]
+                tf_msg.transform.translation.y = centroid[1]
+                tf_msg.transform.translation.z = centroid[2]
 
-            w, x, y, z = euler2quat(0, 0, np.deg2rad(self.object_yaws[name]))
-            tf_msg.transform.rotation = Quaternion(x, y, z, w)
+                w, x, y, z = euler2quat(0, 0, np.deg2rad(self.object_yaws[name]))
+                tf_msg.transform.rotation = Quaternion(x, y, z, w)
 
-            self.tf_pub.publish(tf_msg)
-            self.br.sendTransform(tf_msg)
-            det = self.detections[name]
-            det.world_coords = [*centroid]
-            output.detected.append(det)
+                self.tf_pub.publish(tf_msg)
+                self.br.sendTransform(tf_msg)
+                det = self.detections[name]
+                det.world_coords = [*centroid]
+                output.detected.append(det)
+            except Exception as e:
+                rospy.logerr(f"error: {e}")
         self.centroid_det_pub.publish(output)
     def spin(self):
         rospy.spin()
