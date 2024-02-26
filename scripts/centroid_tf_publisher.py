@@ -44,6 +44,7 @@ class CentroidTFPublisher:
         self.tf_pub = rospy.Publisher(
             self.tf_topic, TransformStamped, queue_size=self.queue_size
         )
+        self.timer = rospy.Timer(rospy.Duration.from_sec(1/self.rate), self.publish_centroid_tf)
 
         rospy.loginfo(
             f"Node '{self.node_name}' started. Subscribing to '{self.object_pose_topic}' and publishing TF on '{self.tf_topic}'."
@@ -82,14 +83,13 @@ class CentroidTFPublisher:
             if len(self.positions[det.name]) > self.accumulation_window:
                 self.positions[det.name].pop(0)  # Maintain a fixed-size window
             self.detections[det.name] = det
-        self.publish_centroid_tf()
 
     @staticmethod
     def centroidnp(arr):
         length, dim = arr.shape[:2]
         return np.array([np.sum(arr[:, i])/length for i in range(dim)])
 
-    def publish_centroid_tf(self):
+    def publish_centroid_tf(self, event):
         output = DetectedObjects()
         for name, positions in self.positions.items():
             if len(positions) == 0:
