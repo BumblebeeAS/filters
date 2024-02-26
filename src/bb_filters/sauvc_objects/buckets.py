@@ -13,7 +13,8 @@ class Filter(filter.Filter):
         self.bucket_depth = 2.0
         self.bucket_height = 0.3
         self.bucket_diameter = 0.6
-        self.kmeans = KMeans(n_clusters=4, random_state=0, n_init="auto")
+        # self.kmeans = KMeans(n_clusters=4, random_state=0, n_init="auto")
+        self.kmeans = KMeans(n_clusters=2, random_state=0, n_init="auto")
         self.points = []
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:

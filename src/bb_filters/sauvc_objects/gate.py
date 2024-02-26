@@ -9,7 +9,8 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "gate_filter"
-        self.gate_orientation = 0.0
+        # self.gate_orientation = 0.0
+        self.gate_orientation = np.pi/2
         self.gate_width = 1.5
         self.gate_side_width = 0.04
         self.gate_height = 1.5
