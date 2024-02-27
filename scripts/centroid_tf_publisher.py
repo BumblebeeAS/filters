@@ -118,6 +118,8 @@ class CentroidTFPublisher:
             self.br.sendTransform(tf_msg)
             det = self.detections[name]
             det.world_coords = [*centroid]
+            if self.window_size[name] > len(positions):
+                continue
             output.detected.append(det)
         self.centroid_det_pub.publish(output)
     def spin(self):

@@ -191,6 +191,8 @@ class Filter(object):
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         pass
 
+def get_aspect_ratio(det: DetectedObject):
+    return det.bbox_width / (det.bbox_height + 0.003)
 
 def draw_detected_object(out_img, info, cnt, shape="circle"):
 
@@ -320,6 +322,9 @@ def get_circle_area(cnt):
 
 
 def get_rectangularity(cnt):
+    if isinstance(cnt, DetectedObject):
+        cnt = np.array(cnt.contour).reshape(-1, 2).astype(np.float32)
+        # print(cnt)
     return cv2.contourArea(cnt) / (get_rect_area(cnt) + 0.003)
 
 
