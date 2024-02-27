@@ -21,6 +21,7 @@ class CentroidTFPublisher:
         )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
         self.accumulation_window = 150
+        self.window_size = defaultdict(lambda: 150)
         self.positions = defaultdict(list)
         self.object_yaws = defaultdict(float)
         self.br = tf2_ros.TransformBroadcaster()
@@ -60,6 +61,8 @@ class CentroidTFPublisher:
         
         if srv.reset:
             self.positions[srv.object_name] = []
+        if srv.window_size > 0:
+            self.window_size[srv.object_name] = srv.window_size
 
         num_estimates = 0
         stddev = 10000
@@ -79,7 +82,7 @@ class CentroidTFPublisher:
                 continue
             self.positions[det.name].append(det.world_coords)
             self.object_yaws[det.name] = det.world_yaw
-            if len(self.positions[det.name]) > self.accumulation_window:
+            if len(self.positions[det.name]) > self.window_size[det.name]:
                 self.positions[det.name].pop(0)  # Maintain a fixed-size window
             self.detections[det.name] = det
         self.publish_centroid_tf()
