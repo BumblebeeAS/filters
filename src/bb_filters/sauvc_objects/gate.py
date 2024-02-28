@@ -10,7 +10,10 @@ class Filter(filter.Filter):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "gate_filter"
         # self.gate_orientation = 0.0 # ned
-        self.gate_orientation = -np.pi/2
+        self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("gate/estimate_base_link")
+        # self.gate_orientation = -np.pi/2
+        print(self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw)
+        self.gate_orientation = self.estimate_yaw
         self.gate_width = 1.5
         self.gate_side_width = 0.04
         self.gate_height = 1.5

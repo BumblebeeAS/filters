@@ -8,8 +8,11 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "blue_flare_filter"
+        self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("blue_flare/estimate_base_link")
+
         self.flare_height = 0.8
         self.flare_width = 0.02
+        self.flare_yaw = self.estimate_yaw
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -44,6 +47,7 @@ class Filter(filter.Filter):
             )
             det = self.camera_infos.compute_3d_coords_from_distance(det, distance)
         det.real_dims = [self.flare_width, self.flare_width, self.flare_height]
+        det.world_yaw = self.flare_yaw * 180 / np.pi
         det.name = "blue_flare"
         detections.detected.append(det)
         return detections

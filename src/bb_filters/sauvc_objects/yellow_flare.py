@@ -8,8 +8,11 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "yellow_flare_filter"
+        self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("yellow_flare/estimate_base_link")
         self.flare_height = 0.8
         self.flare_width = 0.02
+        self.flare_yaw = self.estimate_yaw
+
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()

@@ -46,6 +46,10 @@ class CentroidTFPublisher:
             self.tf_topic, TransformStamped, queue_size=self.queue_size
         )
 
+        self.fallback_tfs = {
+            ""
+        }
+
         rospy.loginfo(
             f"Node '{self.node_name}' started. Subscribing to '{self.object_pose_topic}' and publishing TF on '{self.tf_topic}'."
         )
@@ -89,6 +93,8 @@ class CentroidTFPublisher:
 
     @staticmethod
     def centroidnp(arr):
+        if len(arr) == 0:
+            return None
         length, dim = arr.shape
         return np.array([np.sum(arr[:, i])/length for i in range(dim)])
 
@@ -97,6 +103,8 @@ class CentroidTFPublisher:
         for name, positions in self.positions.items():
             p = np.array(positions)
             centroid = CentroidTFPublisher.centroidnp(p)
+            if centroid is None:
+                continue
             stddev = np.linalg.norm(p.std(axis=0))
             self.latest[name] = (centroid, stddev, len(positions))
 
@@ -118,8 +126,6 @@ class CentroidTFPublisher:
             self.br.sendTransform(tf_msg)
             det = self.detections[name]
             det.world_coords = [*centroid]
-            if self.window_size[name] > len(positions):
-                continue
             output.detected.append(det)
         self.centroid_det_pub.publish(output)
     def spin(self):

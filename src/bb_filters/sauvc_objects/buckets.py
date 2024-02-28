@@ -13,9 +13,11 @@ class Filter(filter.Filter):
         self.bucket_depth = 2.0
         self.bucket_height = 0.3
         self.bucket_diameter = 0.6
+        self.min_dist_between_buckets = 0.5
         # self.kmeans = KMeans(n_clusters=4, random_state=0, n_init="auto")
         self.kmeans = KMeans(n_clusters=2, random_state=0, n_init="auto")
         self.points = []
+        self.sort_by_x = True # if buckets have similar y-coords
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -77,10 +79,15 @@ class Filter(filter.Filter):
             return detections
         if len(self.points) > 10:
             self.kmeans.fit(self.points)
-            id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][1])]
+            if self.sort_by_x:
+                id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][0])]
+            else:
+                id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][1])]
             ids = {v: k for k, v in enumerate(id_centers)}
 
             for i, id in enumerate([ids[i] for i in self.kmeans.predict(np.array(new_points).reshape(-1, 2))]):
-                detections.detected[i].name += f"_{id}"
+                new_det = detections.detected[i]
+                new_det.name += f"_{id}"
+                detections.detected.append(new_det)
         self.points.extend(new_points)
         return detections
