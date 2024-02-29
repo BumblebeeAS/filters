@@ -24,29 +24,34 @@ from stonesoup.types.detection import Detection
 from stonesoup.types.state import GaussianState
 from stonesoup.types.update import GaussianStateUpdate
 from stonesoup.updater.kalman import UnscentedKalmanUpdater
-import rclpy
+import rospy
+# import rclpy
 from geometry_msgs.msg import Vector3, Quaternion, Point
-from rclpy.duration import Duration
-from rclpy.node import Node
-from bb_msgs.msg import DetectedObject, DetectedObjectsStamped
+# from rclpy.duration import Duration
+# from rclpy.node import Node
+from bb_msgs.msg import DetectedObject, DetectedObjects
 from stonesoup.plotter import Plotter
 
 from std_msgs.msg import ColorRGBA
-from tf2_ros import Buffer, TransformListener
+# from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
-from tf2_geometry_msgs import PoseStamped as TF2PoseStamped
+# from tf2_geometry_msgs import PoseStamped as TF2PoseStamped
 
 from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge, CvBridgeError
 
 
-class UKF_Tracker(Node):
+class UKF_Tracker():
 
     def __init__(self, node_name: str) -> None:
         # Object Movement Model
-        super().__init__(node_name)
-        self.get_logger().info("Starting: " + node_name)
-        self.declare_parameter("filtered_topic", "/asv4/vision/external/fused_detections")
+        # super().__init__(node_name)
+        rospy.init_node(node_name)
+
+        # self.get_logger().info("Starting: " + node_name)
+        # self.declare_parameter("filtered_topic", "/asv4/vision/external/fused_detections")
+        rospy.loginfo("Starting: " + node_name)
+        rospy.set_param("filtered_topic", "/auv4/vision/external/fused_detections")
 
         self.transition_model = CombinedLinearGaussianTransitionModel(
             [
@@ -60,7 +65,7 @@ class UKF_Tracker(Node):
         self.measurement_model = LinearGaussian(
             ndim_state=3,
             mapping=[0, 1, 2],
-            noise_covar=np.diag([0.975, 0.975, 0.1])
+            noise_covar=np.diag([0.8, 0.8, 0.1])
         )
 
         # UKF Predictor
@@ -71,7 +76,7 @@ class UKF_Tracker(Node):
 
         # Track Deleter
         covar_deleter = CovarianceBasedDeleter(covar_trace_thresh=1.5)  # Higher Value Longer Persistence
-        time_deleter = UpdateTimeDeleter(timedelta(seconds=5)) # Time Since Last Update
+        time_deleter = UpdateTimeDeleter(timedelta(seconds=30)) # Time Since Last Update
         self.deleter = CompositeDeleter([covar_deleter, time_deleter], intersect=False) # Any fail will cause deletion
 
         # Hypothesiser
@@ -97,7 +102,7 @@ class UKF_Tracker(Node):
             deleter=self.deleter,
             data_associator=GNNWith2DAssignment(init_hypothesiser),
             updater=self.updater,
-            min_points=20
+            min_points=5
         )
 
         self.initiator = StatesLengthLimiter(self.initiator, 20)
@@ -106,12 +111,13 @@ class UKF_Tracker(Node):
         self.tracks, self.all_tracks = dict(), dict()
 
         # Detected Object Sub
-        self.detection_sub = self.create_subscription(
-            DetectedObjectsStamped,
-            '/asv4/vision/lidar/detected_stamped',
-            self.detection_callback,
-            10
-        )
+        self.detection_sub = rospy.Subscriber("/auv4/vision/external/detected_filtered", DetectedObjects, self.detection_callback)
+        #self.detection_sub = self.create_subscription(
+        #    DetectedObjectsStamped,
+        #    '/asv4/vision/lidar/detected_stamped',
+        #    self.detection_callback,
+        #    10
+        #)
 
         plt.ioff()
         self.fig = plt.figure()
@@ -121,22 +127,23 @@ class UKF_Tracker(Node):
         self.plotCount = 0
 
         # Marker Pub
-        self.publisher_ = self.create_publisher(
-            MarkerArray, '/stereo_visualization', 1)
+        #self.publisher_ = self.create_publisher(
+        #    MarkerArray, '/stereo_visualization', 1)
 
         # Plot Pub
-        self.publisher_plot = self.create_publisher(
-            CompressedImage, '/filter_visualisation/image_raw/compressed', 10)
-        self.filtered_topic = self.get_parameter("filtered_topic")\
-                                  .get_parameter_value().string_value
-        self.tracked_objects_pub = self.create_publisher(
-            DetectedObjectsStamped, self.filtered_topic, 10)
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self.publisher_plot = rospy.Publisher("/filter_visualisation/iamge_raw/compressed", CompressedImage)
+        #self.publisher_plot = self.create_publisher(
+        #    CompressedImage, '/filter_visualisation/image_raw/compressed', 10)
+        #self.filtered_topic = self.get_parameter("filtered_topic")\
+        #                          .get_parameter_value().string_value
+        #self.tracked_objects_pub = self.create_publisher(
+        #    DetectedObjectsStamped, self.filtered_topic, 10)
+        #self._tf_buffer = Buffer()
+        #self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self.bridge = CvBridge()
 
-    def detection_callback(self, detections: DetectedObjectsStamped):
+    def detection_callback(self, detections: DetectedObjects):
         #self.get_logger().info("Det")
         start = time.time()
         if len(detections.detected) > 0:
@@ -144,7 +151,7 @@ class UKF_Tracker(Node):
             names = set([obj.name for obj in detections.detected])
             for name in names:
                 if self.tracks.get(name) is None:
-                    self.get_logger().info("Creating new Track for {} objects".format(name))
+                    rospy.loginfo("Creating new Track for {} objects".format(name))
                     self.tracks[name] = set()
                     self.all_tracks[name] = set()
 
@@ -156,7 +163,7 @@ class UKF_Tracker(Node):
                 for obj in objects:
                     coords = np.array(obj.world_coords)
                     if len(coords) != 0:
-                        timestamp = datetime.fromtimestamp(obj.header.stamp.sec)
+                        timestamp = datetime.fromtimestamp(obj.header.stamp.to_sec())
                         measurement_set.add(Detection(
                             state_vector=StateVector(coords),
                             timestamp=timestamp,
@@ -203,102 +210,102 @@ class UKF_Tracker(Node):
 
                     # self.all_tracks[name] |= self.tracks[name]
 
-            self.get_logger().info("Processed in %.4f seconds" % (time.time() - start))
+            rospy.loginfo("Processed in %.4f seconds" % (time.time() - start))
 
             # Plots
             # Marker
             # id=0
-            markers = MarkerArray()
-            marker = Marker()
-            marker.header = obj.header
-            marker.scale = Vector3(x=1.0, y=1.0, z=1.0)
-            marker.pose.orientation = Quaternion(
-                w=0.707, x=0.0, y=0.0, z=0.0)
-            marker.action = Marker.DELETEALL
-            markers.markers.append(deepcopy(marker))
-            marker.action = Marker.ADD
+            #markers = MarkerArray()
+            #marker = Marker()
+            #marker.header = obj.header
+            #marker.scale = Vector3(x=1.0, y=1.0, z=1.0)
+            #marker.pose.orientation = Quaternion(
+            #    w=0.707, x=0.0, y=0.0, z=0.0)
+            #marker.action = Marker.DELETEALL
+            #markers.markers.append(deepcopy(marker))
+            #marker.action = Marker.ADD
             plot_marker = None
             plot_color = None
-            id = 1
+            #id = 1
 
-            output = DetectedObjectsStamped()
-            output.header = detections.header
+            #output = DetectedObjectsStamped()
+            #output.header = detections.header
 
             for name in names:
                 for track in self.tracks[name]:
                     coords = track.state_vector.flatten()
 
                     # Using back of Track id
-                    self.get_logger().info(f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
+                    rospy.loginfo(f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
 
-                    color = ColorRGBA()
+            #        color = ColorRGBA()
                     if "round" in name:
-                        marker.type = Marker.SPHERE
+            #            marker.type = Marker.SPHERE
                         plot_marker = "o"
                     else:
-                        marker.type = Marker.CYLINDER
+            #            marker.type = Marker.CYLINDER
                         plot_marker = "^"
 
                     if "green" in obj.name:
-                        color.r = 0.0
-                        color.g = 1.0
-                        color.b = 0.0
+            #            color.r = 0.0
+            #            color.g = 1.0
+            #            color.b = 0.0
                         plot_color = "green"
                     elif "red" in obj.name:
-                        color.r = 1.0
-                        color.g = 0.0
-                        color.b = 0.0
+            #            color.r = 1.0
+            #            color.g = 0.0
+            #            color.b = 0.0
                         plot_color = "red"
                     elif "black" in obj.name:
-                        color.r = 0.0
-                        color.g = 0.0
-                        color.b = 0.0
+            #            color.r = 0.0
+            #            color.g = 0.0
+            #            color.b = 0.0
                         plot_color = "black"
                     elif "orange" in obj.name:
-                        color.r = 1.0
-                        color.g = 0.64
-                        color.b = 0.0
+            #            color.r = 1.0
+            #            color.g = 0.64
+            #            color.b = 0.0
                         plot_color = "orange"
                     elif "white" in obj.name:
-                        color.r = 1.0
-                        color.g = 1.0
-                        color.b = 1.0
+            #            color.r = 1.0
+            #            color.g = 1.0
+            #            color.b = 1.0
                         plot_color = "white"
                     elif "rgb" in obj.name:
-                        color.r = 0.0
-                        color.g = 0.0
-                        color.b = 1.0
+            #            color.r = 0.0
+            #            color.g = 0.0
+            #            color.b = 1.0
                         plot_color = "blue"
                     else:
-                        color.r = 1.0
-                        color.g = 1.0
-                        color.b = 1.0
+            #            color.r = 1.0
+            #            color.g = 1.0
+            #            color.b = 1.0
                         plot_color = "gray"
-                    color.a = 1.0
+            #        color.a = 1.0
 
-                    p = Point()
-                    p.x = coords[0]
-                    p.y = coords[1]
-                    p.z = coords[2]
+            #        p = Point()
+            #        p.x = coords[0]
+            #        p.y = coords[1]
+            #        p.z = coords[2]
 
-                    marker.color = color
-                    marker.pose.position = p
-                    marker.id = id
-                    id += 1
-                    marker.header.frame_id = "map_ned"
+            #        marker.color = color
+            #        marker.pose.position = p
+            #        marker.id = id
+            #        id += 1
+            #        marker.header.frame_id = "map_ned"
 
-                    tracked_obj_msg = DetectedObject()
-                    tracked_obj_msg.name = obj.name
-                    tracked_obj_msg.world_coords = [
-                        coords[0],
-                        coords[1],
-                        0.0,
-                    ]
-                    tracked_obj_msg.real_dims = [0.5, 0.5, 0.5]
-                    tracked_obj_msg.move_coords = 2
-                    tracked_obj_msg.tracker_confidence = [1]
-                    # tracked_obj_msg.extra = [int(track.id.split('-')[-1])]
-                    output.detected.append(tracked_obj_msg)
+            #        tracked_obj_msg = DetectedObject()
+            #        tracked_obj_msg.name = obj.name
+            #        tracked_obj_msg.world_coords = [
+            #            coords[0],
+            #            coords[1],
+            #            0.0,
+            #        ]
+            #        tracked_obj_msg.real_dims = [0.5, 0.5, 0.5]
+            #        tracked_obj_msg.move_coords = 2
+            #        tracked_obj_msg.tracker_confidence = [1]
+            #        # tracked_obj_msg.extra = [int(track.id.split('-')[-1])]
+            #        output.detected.append(tracked_obj_msg)
 
                     # id += 1
 
@@ -312,7 +319,7 @@ class UKF_Tracker(Node):
  #                   text.pose.position = marker.pose.position
  #                   id += 1
 
-                    markers.markers.append(deepcopy(marker))
+#                    markers.markers.append(deepcopy(marker))
 #                    markers.markers.append(deepcopy(uncertainty_marker))
 #                    markers.markers.append(deepcopy(text))
 #                    try:
@@ -345,7 +352,7 @@ class UKF_Tracker(Node):
                     # Plot on 2d map
                     self.draw_uncertainty(track, [0, 1], self.ax, plot_color, plot_marker)
 
-            self.tracked_objects_pub.publish(output)
+#            self.tracked_objects_pub.publish(output)
 
             # Prepare Plot Image
             self.fig.canvas.draw()
@@ -355,7 +362,7 @@ class UKF_Tracker(Node):
             self.ax.cla()
             # TODO: Add Plot - CV - ROS Pub
 
-            self.publisher_.publish(markers)
+#            self.publisher_.publish(markers)
 
     def draw_uncertainty(self, track, mapping, ax, color, marker):
         state, data, min_ind, max_ind, orient, w, v = self.calculate_uncertainty(track, mapping)
@@ -417,12 +424,12 @@ class UKF_Tracker(Node):
         return state, data, min_ind, max_ind, orient, w, v
 
 def main(args=None):
-    rclpy.init(args=args)
+    #rclpy.init(args=args)
 
     ukf_tracker = UKF_Tracker(node_name="ukf_tracker")
-    rclpy.spin(ukf_tracker)
+    rospy.spin()
 
-    rclpy.shutdown()
+    #rclpy.shutdown()
 
 
 if __name__ == '__main__':

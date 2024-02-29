@@ -21,6 +21,7 @@ class CentroidTFPublisher:
         )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
         self.accumulation_window = 150
+        self.window_size = defaultdict(lambda: 150)
         self.positions = defaultdict(list)
         self.object_yaws = defaultdict(float)
         self.br = tf2_ros.TransformBroadcaster()
@@ -46,6 +47,10 @@ class CentroidTFPublisher:
         )
         self.timer = rospy.Timer(rospy.Duration.from_sec(1/self.rate), self.publish_centroid_tf)
 
+        self.fallback_tfs = {
+            ""
+        }
+
         rospy.loginfo(
             f"Node '{self.node_name}' started. Subscribing to '{self.object_pose_topic}' and publishing TF on '{self.tf_topic}'."
         )
@@ -61,6 +66,8 @@ class CentroidTFPublisher:
         
         if srv.reset:
             self.positions[srv.object_name] = []
+        if srv.window_size > 0:
+            self.window_size[srv.object_name] = srv.window_size
 
         num_estimates = 0
         stddev = 10000
@@ -80,13 +87,15 @@ class CentroidTFPublisher:
                 continue
             self.positions[det.name].append(det.world_coords)
             self.object_yaws[det.name] = det.world_yaw
-            if len(self.positions[det.name]) > self.accumulation_window:
+            if len(self.positions[det.name]) > self.window_size[det.name]:
                 self.positions[det.name].pop(0)  # Maintain a fixed-size window
             self.detections[det.name] = det
 
     @staticmethod
     def centroidnp(arr):
-        length, dim = arr.shape[:2]
+        if len(arr) == 0:
+            return None
+        length, dim = arr.shape
         return np.array([np.sum(arr[:, i])/length for i in range(dim)])
 
     def publish_centroid_tf(self, event):
@@ -97,6 +106,8 @@ class CentroidTFPublisher:
             try:
                 p = np.array(positions)
                 centroid = CentroidTFPublisher.centroidnp(p)
+                if centroid is None:
+                    continue
                 stddev = np.linalg.norm(p.std(axis=0))
                 self.latest[name] = (centroid, stddev, len(positions))
 
@@ -120,7 +131,7 @@ class CentroidTFPublisher:
                 det.world_coords = [*centroid]
                 output.detected.append(det)
             except Exception as e:
-                rospy.logerr(f"error: {e}")
+                rospy.logerr(f"Error publishing centroid for {name}: {e}")
         self.centroid_det_pub.publish(output)
     def spin(self):
         rospy.spin()

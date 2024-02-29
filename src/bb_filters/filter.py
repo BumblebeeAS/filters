@@ -22,12 +22,28 @@ class CameraInfos:
     def get_info(self, frame_id):
         return self.infos.get(frame_id, None)
 
+    def get_object_pos(self, object_frame: str):
+        tf = self.buffer.lookup_transform(
+            "map",
+            object_frame,
+            rospy.Time(0),
+            timeout=rospy.Duration(0.01),
+        )
+        yaw = np.pi/2 - quat2axangle(
+            attrgetter("w", "x", "y", "z")(tf.transform.rotation)
+        )[1]
+        z = -tf.transform.translation.z
+        x = tf.transform.translation.y
+        y = tf.transform.translation.x
+
+        return x, y, z, yaw
+
     def get_camera_yaw(self, frame_id, stamp: rospy.Time):
         tf = self.buffer.lookup_transform(
             self.map_frame,
             self.infos[frame_id].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.03),
+            timeout=rospy.Duration(0.01),
         )
         cam_mat = quat2mat(attrgetter("w", "x", "y", "z")(tf.transform.rotation))
         if (
@@ -50,7 +66,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[frame_id].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.02),
+            timeout=rospy.Duration(0.5),
         )
         return tf.transform.translation.z
 
@@ -59,7 +75,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[obj.source].header.frame_id,
             obj.header.stamp,
-            timeout=rospy.Duration(0.02),
+            timeout=rospy.Duration(0.5),
         )
         camera_info = self.get_info(obj.source)
         obj_cam = np.array(
@@ -107,7 +123,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[source].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.02),
+            timeout=rospy.Duration(0.5),
         )
         camera_info = self.get_info(source)
         obj_cam = np.array(
@@ -135,7 +151,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[obj.source].header.frame_id,
             obj.header.stamp,
-            timeout=rospy.Duration(0.02),
+            timeout=rospy.Duration(0.01),
         )
         camera_info = self.get_info(obj.source)
         obj_cam = np.array(
@@ -191,6 +207,8 @@ class Filter(object):
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         pass
 
+def get_aspect_ratio(det: DetectedObject):
+    return det.bbox_width / (det.bbox_height + 0.003)
 
 def draw_detected_object(out_img, info, cnt, shape="circle"):
 
@@ -320,6 +338,9 @@ def get_circle_area(cnt):
 
 
 def get_rectangularity(cnt):
+    if isinstance(cnt, DetectedObject):
+        cnt = np.array(cnt.contour).reshape(-1, 2).astype(np.float32)
+        # print(cnt)
     return cv2.contourArea(cnt) / (get_rect_area(cnt) + 0.003)
 
 

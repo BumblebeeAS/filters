@@ -1,6 +1,6 @@
 from bb_msgs.msg import DetectedObject, DetectedObjects
 from bb_filters import filter
-import numpy as np
+import numpy as npfilter
 import rospy
 class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
@@ -11,7 +11,10 @@ class Filter(filter.Filter):
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
-        orange_flares = [x for x in bboxes.detected if x.name=="orange_flare" and x.source == 288]
+        orange_flares = [x for x in bboxes.detected if (x.name=="orange_flare" or x.name=="qualification_gate_side") and x.source == 288 and\
+                        #  (filter.get_aspect_ratio(x) < 0.2) and\
+                        #  x.bbox_width < x.image_height * 0.3 and\
+                         x.color < 40]
         if len(orange_flares) == 0:
             return detections
 

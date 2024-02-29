@@ -8,10 +8,15 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "qualification_gate_filter"
-        self.gate_orientation = np.pi / 2
+        # self.gate_orientation = np.pi / 2
+        self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("qualification_gate/estimate_base_link")
+        print(self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw)
+        self.gate_orientation = self.estimate_yaw
         self.gate_width = 1.5
         self.gate_height = 1.0
-        self.gate_depth = 0.6
+        # self.gate_depth = 0.6
+        self.gate_depth = 0.75
+
         self.R = self.yaw_to_rot(self.gate_orientation)
 
     def yaw_to_rot(self, yaw):
@@ -109,6 +114,8 @@ class Filter(filter.Filter):
 
         ## approach 2 using geometry
 
+        # assumes approaching gate from front face
+
         left_ray = self.camera_infos.compute_object_ray_from_camera_coord(
             det.source, det.header.stamp, x1, y1
         )
@@ -120,7 +127,10 @@ class Filter(filter.Filter):
         )
         gate_vec = self.R @ np.array([0, 1]) * self.gate_width
         rays = np.stack([left_ray[:2], right_ray[:2]]).T
-        solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        try:
+            solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        except:
+            return detections
         cam_pos = left_ray[3:5]
         centroid = cam_pos + rays @ solution / 2
 

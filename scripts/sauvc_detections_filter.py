@@ -17,9 +17,10 @@ class SauvcDetectionsFilter:
         self.filters: List[Filter]
         self.processed_detections_pub = rospy.Publisher(
             "vision/external/detected_filtered",
-            DetectedObjects
+            DetectedObjects,
+            queue_size=1
         )
-        self.buffer = Buffer(rospy.Duration(10))
+        self.buffer = Buffer(rospy.Duration(20))
         self.listener = TransformListener(self.buffer, 10)
         self.camera_info = CameraInfos(self.buffer, "map_ned")
         
@@ -38,7 +39,7 @@ class SauvcDetectionsFilter:
             "vision/external/detected",
             DetectedObjects,
             self.process,
-            queue_size=10
+            queue_size=1
         )
     
     def process(self, detected: DetectedObjects):
