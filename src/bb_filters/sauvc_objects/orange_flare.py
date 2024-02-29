@@ -6,8 +6,11 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "orange_flare_filter"
+        self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("gate/estimate_base_link")
+
         self.flare_height = 1.45
         self.flare_width = 0.12
+        self.latest_pos = None
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -16,6 +19,12 @@ class Filter(filter.Filter):
                         #  x.bbox_width < x.image_height * 0.3 and\
                          x.color < 40]
         if len(orange_flares) == 0:
+            if self.latest_pos is None:
+                det = DetectedObject()
+                det.world_coords = [self.estimate_x, self.estimate_y, self.estimate_z]
+                det.real_dims = [0.5, 0.5, 1.45]
+                det.name = "orange_flare"
+                detections.detected.append(det)
             return detections
 
         # filter by rectangularity?
@@ -44,7 +53,8 @@ class Filter(filter.Filter):
             det = self.camera_infos.compute_3d_coords_from_distance(
                 det, distance
             )
-        det.real_dims = [0.3, 0.1, 1.45]
+        det.real_dims = [0.5, 0.5, 1.45]
         det.name = "orange_flare"
         detections.detected.append(det)
+        self.latest_pos = det.world_coords
         return detections
