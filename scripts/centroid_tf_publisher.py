@@ -20,8 +20,8 @@ class CentroidTFPublisher:
             "vision/detected_centroid"
         )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
-        self.accumulation_window = 150
-        self.window_size = defaultdict(lambda: 150)
+        self.accumulation_window = 50
+        self.window_size = defaultdict(lambda: 50)
         self.positions = defaultdict(list)
         self.object_yaws = defaultdict(float)
         self.br = tf2_ros.TransformBroadcaster()

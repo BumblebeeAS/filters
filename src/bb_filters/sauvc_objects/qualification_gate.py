@@ -15,7 +15,7 @@ class Filter(filter.Filter):
         self.gate_width = 1.5
         self.gate_height = 1.0
         # self.gate_depth = 0.6
-        self.gate_depth = 0.75
+        self.gate_depth = 1.5
 
         self.R = self.yaw_to_rot(self.gate_orientation)
 
@@ -32,7 +32,7 @@ class Filter(filter.Filter):
         gate_sides = [
             x
             for x in bboxes.detected
-            if x.name == "qualification_gate_side" and x.source == 288
+            if x.name in ["qualification_gate_side", "orange_flare"] and x.source == 288
         ]
         gate = [
             x

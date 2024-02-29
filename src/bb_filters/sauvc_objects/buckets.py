@@ -4,8 +4,9 @@ import numpy as np
 import rospy
 from circle_fit import taubinSVD
 from sklearn.cluster import KMeans, DBSCAN
+from sensor_msgs.msg import Image
 import matplotlib.pyplot as plt
-import PIL.Image as Image
+from PIL import Image as PILImage
 from cv_bridge import CvBridge
 def fig2img(fig):
     """Convert a Matplotlib figure to a PIL Image and return it"""
@@ -13,7 +14,7 @@ def fig2img(fig):
     buf = io.BytesIO()
     fig.savefig(buf)
     buf.seek(0)
-    img = Image.open(buf)
+    img = PILImage.open(buf)
     return img
 
 class Filter(filter.Filter):
@@ -32,7 +33,7 @@ class Filter(filter.Filter):
         self.kmeans = KMeans(n_clusters=2, random_state=0, n_init="auto")
         self.dbscan = DBSCAN(eps=0.5, min_samples = 5, metric='precomputed')
         self.points = []
-        self.sort_by_x = True # if buckets have similar y-coords
+        self.sort_by_x = False # if buckets have similar y-coords
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -93,22 +94,22 @@ class Filter(filter.Filter):
         if len(new_points) == 0:
             return detections
         if len(self.points) > 10:
-            # self.kmeans.fit(self.points)
-            # if self.sort_by_x:
-            #     id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][0])]
-            # else:
-            #     id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][1])]
-
-            self.dbscan.fit(self.points)
-            labels = self.dbscan.labels_
-            no_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            centroids = [
-                np.mean(np.array(new_points)[labels==i,:], axis=0) for i in range(no_clusters)
-            ]
+            self.kmeans.fit(self.points)
             if self.sort_by_x:
-                id_centers = [x[0] for x in sorted(enumerate(centroids), key=lambda x: x[1][0])]
+                id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][0])]
             else:
-                id_centers = [x[0] for x in sorted(enumerate(centroids), key=lambda x: x[1][1])]
+                id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][1])]
+
+            # self.dbscan.fit(self.points)
+            # labels = self.dbscan.labels_
+            # no_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+            # centroids = [
+            #     np.mean(np.array(new_points)[labels==i,:], axis=0) for i in range(no_clusters)
+            # ]
+            # if self.sort_by_x:
+            #     id_centers = [x[0] for x in sorted(enumerate(centroids), key=lambda x: x[1][0])]
+            # else:
+            #     id_centers = [x[0] for x in sorted(enumerate(centroids), key=lambda x: x[1][1])]
                 
             ids = {v: k for k, v in enumerate(id_centers)}
 
@@ -119,9 +120,11 @@ class Filter(filter.Filter):
         with open("buckets.txt", "w") as f:
             for det in detections.detected:
                 f.write(f"{det.name} {det.world_coords[0]} {det.world_coords[1]}\n")
-        plt.scatter(*np.array(self.points).T)
-        fig = plt.gcf()
-        img = fig2img(fig)
-        self.buckets_pub.publish(self.cv_bridge.cv2_to_imgmsg(np.array(img)))
+        if len(self.points) > 0:
+            points = np.array(self.points)
+            plt.scatter(points[:, 0], points[:, 1])
+            fig = plt.gcf()
+            img = fig2img(fig)
+            self.buckets_pub.publish(self.cv_bridge.cv2_to_imgmsg(np.array(img)))
         self.points.extend(new_points)
         return detections
