@@ -146,7 +146,10 @@ class Filter(filter.Filter):
         cam_pos = left_ray[3:5]
         gate_vec = self.R @ np.array([0, 1]) * self.gate_width
         rays = np.stack([left_ray[:2], right_ray[:2]]).T
-        solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        try:
+            solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        except:
+            return detctions
         cam_pos = left_ray[3:5]
         centroid = cam_pos + rays @ solution / 2
 

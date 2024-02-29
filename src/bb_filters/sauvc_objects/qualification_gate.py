@@ -114,6 +114,8 @@ class Filter(filter.Filter):
 
         ## approach 2 using geometry
 
+        # assumes approaching gate from front face
+
         left_ray = self.camera_infos.compute_object_ray_from_camera_coord(
             det.source, det.header.stamp, x1, y1
         )
@@ -125,7 +127,10 @@ class Filter(filter.Filter):
         )
         gate_vec = self.R @ np.array([0, 1]) * self.gate_width
         rays = np.stack([left_ray[:2], right_ray[:2]]).T
-        solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        try:
+            solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
+        except:
+            return detections
         cam_pos = left_ray[3:5]
         centroid = cam_pos + rays @ solution / 2
 

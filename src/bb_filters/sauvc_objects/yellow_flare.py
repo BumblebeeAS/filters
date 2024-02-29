@@ -12,7 +12,7 @@ class Filter(filter.Filter):
         self.flare_height = 0.8
         self.flare_width = 0.02
         self.flare_yaw = self.estimate_yaw
-
+        self.estimate_pos = self.estimate_x, self.estimate_y
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -47,6 +47,10 @@ class Filter(filter.Filter):
             )
             det = self.camera_infos.compute_3d_coords_from_distance(det, distance)
         det.real_dims = [self.flare_width, self.flare_width, self.flare_height]
+        det.world_yaw = self.flare_yaw * 180 / np.pi
         det.name = "yellow_flare"
+        # check if distance between det x coords and estimate x coords is less than 1.5m
+        if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
+            continue
         detections.detected.append(det)
         return detections
