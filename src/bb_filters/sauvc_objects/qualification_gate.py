@@ -9,7 +9,9 @@ class Filter(filter.Filter):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "qualification_gate_filter"
         # self.gate_orientation = np.pi / 2
-        self.gate_orientation = -np.pi / 2
+        self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("qualification_gate/estimate_base_link")
+        print(self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw)
+        self.gate_orientation = self.estimate_yaw
         self.gate_width = 1.5
         self.gate_height = 1.0
         # self.gate_depth = 0.6

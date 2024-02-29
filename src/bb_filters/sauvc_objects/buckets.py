@@ -89,5 +89,8 @@ class Filter(filter.Filter):
                 new_det = detections.detected[i]
                 new_det.name += f"_{id}"
                 detections.detected.append(new_det)
+        with open("buckets.txt", "w") as f:
+            for det in detections.detected:
+                f.write(f"{det.name} {det.world_coords[0]} {det.world_coords[1]}\n")
         self.points.extend(new_points)
         return detections
