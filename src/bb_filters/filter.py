@@ -27,7 +27,7 @@ class CameraInfos:
             "map",
             object_frame,
             rospy.Time(0),
-            timeout=rospy.Duration(0.01),
+            timeout=rospy.Duration(1.0),
         )
         yaw = np.pi/2 - quat2axangle(
             attrgetter("w", "x", "y", "z")(tf.transform.rotation)
@@ -43,7 +43,8 @@ class CameraInfos:
             self.map_frame,
             self.infos[frame_id].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.01),
+            # rospy.Time(0),
+            timeout=rospy.Duration(1.0),
         )
         cam_mat = quat2mat(attrgetter("w", "x", "y", "z")(tf.transform.rotation))
         if (
@@ -66,7 +67,8 @@ class CameraInfos:
             self.map_frame,
             self.infos[frame_id].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.5),
+            # rospy.Time(0),
+            timeout=rospy.Duration(1.0),
         )
         return tf.transform.translation.z
 
@@ -75,7 +77,8 @@ class CameraInfos:
             self.map_frame,
             self.infos[obj.source].header.frame_id,
             obj.header.stamp,
-            timeout=rospy.Duration(0.5),
+            # rospy.Time(0),
+            timeout=rospy.Duration(1.0),
         )
         camera_info = self.get_info(obj.source)
         obj_cam = np.array(
@@ -123,7 +126,7 @@ class CameraInfos:
             self.map_frame,
             self.infos[source].header.frame_id,
             stamp,
-            timeout=rospy.Duration(0.5),
+            timeout=rospy.Duration(1.0),
         )
         camera_info = self.get_info(source)
         obj_cam = np.array(
@@ -151,7 +154,8 @@ class CameraInfos:
             self.map_frame,
             self.infos[obj.source].header.frame_id,
             obj.header.stamp,
-            timeout=rospy.Duration(0.01),
+            # rospy.Time(0),
+            timeout=rospy.Duration(1.0),
         )
         camera_info = self.get_info(obj.source)
         obj_cam = np.array(
