@@ -7,6 +7,7 @@ from sklearn.cluster import KMeans, DBSCAN
 from sensor_msgs.msg import Image
 import matplotlib.pyplot as plt
 from PIL import Image as PILImage
+
 from cv_bridge import CvBridge
 def fig2img(fig):
     """Convert a Matplotlib figure to a PIL Image and return it"""
@@ -59,8 +60,9 @@ class Filter(filter.Filter):
                     continue
                 bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                 bucket.world_coords[2] = self.bucket_depth
+                detections.detected.append(bucket.copy())
                 bucket.name = "bucket"
-                detections.detected.append(bucket)
+                detections.detected.append(bucket.copy())
 
         if len(bot_buckets) > 0:
             camera_depth = self.camera_infos.get_camera_z(289, bot_buckets[0].header.stamp)
@@ -80,10 +82,11 @@ class Filter(filter.Filter):
                     bucket = self.camera_infos.compute_3d_coords_from_depth(det, self.bucket_depth - self.bucket_height)
                     if bucket is None:
                         continue
-                    det.world_coords[2] += self.bucket_height
-                    det.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
-                    det.name = "bucket"
-                    detections.detected.append(det)
+                    bucket.world_coords[2] += self.bucket_height
+                    bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
+                    detections.detected.append(bucket.copy())
+                    bucket.name = "bucket"
+                    detections.detected.append(bucket.copy())
                 else:
                     rospy.loginfo(f"Bucket not round enough: {xc}, {yc}, {r}, {sigma}")
 
@@ -94,37 +97,41 @@ class Filter(filter.Filter):
         if len(new_points) == 0:
             return detections
         if len(self.points) > 10:
-            self.kmeans.fit(self.points)
+            self.points.extend(new_points)
+            labels=self.dbscan.fit_predict(self.points)
+            cluster_centers = []
+            for label in np.unique(self.dbscan.labels_):
+                if label == -1:
+                    continue
+                cluster_points = points[self.dbscan.labels_ == label]
+                cluster_center = cluster_points.mean(axis=0)
+                cluster_centers.append((cluster_center, len(cluster_points), np.mean(np.var(cluster_points, axis=0))))
             if self.sort_by_x:
-                id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][0])]
+                id_centers = [x[0] for x in sorted(
+                    enumerate(cluster_centers), key=lambda x: x[1][0][0])]
             else:
-                id_centers = [x[0] for x in sorted(enumerate(self.kmeans.cluster_centers_), key=lambda x: x[1][1])]
+                id_centers = [x[0] for x in sorted(
+                    enumerate(cluster_centers), key=lambda x: x[1][0][1])]
 
-            # self.dbscan.fit(self.points)
-            # labels = self.dbscan.labels_
-            # no_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            # centroids = [
-            #     np.mean(np.array(new_points)[labels==i,:], axis=0) for i in range(no_clusters)
-            # ]
-            # if self.sort_by_x:
-            #     id_centers = [x[0] for x in sorted(enumerate(centroids), key=lambda x: x[1][0])]
-            # else:
-            #     id_centers = [x[0] for x in sorted(enumerate(centroids), key=lambda x: x[1][1])]
-                
-            ids = {v: k for k, v in enumerate(id_centers)}
+            ids = {label: k for k, label in enumerate(id_centers)}
 
-            for i, idx in enumerate([ids[i] for i in self.kmeans.predict(np.array(new_points).reshape(-1, 2))]):
+            for i, idx in enumerate([ids[label] for label in labels[-len(new_points):]]):
                 new_det = detections.detected[i]
                 new_det.name += f"_{idx}"
                 detections.detected.append(new_det)
-        with open("buckets.txt", "w") as f:
-            for det in detections.detected:
-                f.write(f"{det.name} {det.world_coords[0]} {det.world_coords[1]}\n")
+        # with open("buckets.txt", "w") as f:
+        #     for det in detections.detected:
+        #         f.write(f"{det.name} {det.world_coords[0]} {det.world_coords[1]}\n")
         if len(self.points) > 0:
             points = np.array(self.points)
             plt.scatter(points[:, 0], points[:, 1])
-            fig = plt.gcf()
+
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            for label in np.unique(self.dbscan.labels_):
+                cluster_points = points[self.dbscan.labels_ == label]
+                ax.scatter(cluster_points[:, 0], cluster_points[:, 1])
+
             img = fig2img(fig)
             self.buckets_pub.publish(self.cv_bridge.cv2_to_imgmsg(np.array(img)))
-        self.points.extend(new_points)
         return detections

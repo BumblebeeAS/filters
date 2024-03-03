@@ -96,7 +96,26 @@ class CentroidTFPublisher:
         if len(arr) == 0:
             return None
         length, dim = arr.shape
-        return np.array([np.sum(arr[:, i])/length for i in range(dim)])
+        return (np.array([np.sum(arr[:, i])/length for i in range(dim)]),
+                np.linalg.norm(p.std(axis=0)),
+                len(arr))
+    
+    @staticmethod
+    def dbscan_cluster(arr, eps=0.2, min_samples=5):
+        from sklearn.cluster import DBSCAN
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+        labels = dbscan.fit_predict(arr)
+        #  return max cluster center
+        cluster_centers = []
+        for label in np.unique(labels):
+            if label == -1:
+                continue
+            cluster_points = arr[labels == label]
+            cluster_center = cluster_points.mean(axis=0)
+            cluster_centers.append((cluster_center, np.mean(np.var(cluster_points, axis=0))), len(cluster_points))
+        if len(cluster_centers) == 0:
+            return None
+        return max(cluster_centers, key=lambda x: x[1])
 
     def publish_centroid_tf(self, event):
         output = DetectedObjects()
@@ -105,11 +124,10 @@ class CentroidTFPublisher:
                 continue
             try:
                 p = np.array(positions)
-                centroid = CentroidTFPublisher.centroidnp(p)
+                centroid = CentroidTFPublisher.dbscan_cluster(p)
                 if centroid is None:
                     continue
-                stddev = np.linalg.norm(p.std(axis=0))
-                self.latest[name] = (centroid, stddev, len(positions))
+                self.latest[name] = centroid
 
                 # Create TransformStamped message
                 tf_msg = TransformStamped()
