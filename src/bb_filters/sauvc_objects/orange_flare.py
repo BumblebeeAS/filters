@@ -22,7 +22,7 @@ class Filter(filter.Filter):
             if self.latest_pos is None:
                 det = DetectedObject()
                 det.world_coords = [self.estimate_x, self.estimate_y, self.estimate_z]
-                det.real_dims = [0.5, 0.5, 1.45]
+                det.real_dims = [0.2, 0.2, 1.45]
                 det.name = "orange_flare"
                 detections.detected.append(det)
             return detections
@@ -53,7 +53,7 @@ class Filter(filter.Filter):
             det = self.camera_infos.compute_3d_coords_from_distance(
                 det, distance
             )
-        det.real_dims = [0.5, 0.5, 1.45]
+        det.real_dims = [0.2, 0.2, 1.45]
         det.name = "orange_flare"
         detections.detected.append(det)
         self.latest_pos = det.world_coords

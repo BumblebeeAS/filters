@@ -24,8 +24,10 @@ class Filter(filter.Filter):
         self.__name__ = "buckets_filter"
         self.blue_bucket_idx = 1  # 0 for left most, 3 for right most
         self.bucket_depth = 2.0
-        self.bucket_height = 0.3
-        self.bucket_diameter = 0.6
+        # self.bucket_height = 0.3
+        # self.bucket_diameter = 0.6
+        self.bucket_height = 0.25
+        self.bucket_diameter = 0.4
         self.min_dist_between_buckets = 0.5
 
         self.cv_bridge = CvBridge()

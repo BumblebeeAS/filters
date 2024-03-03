@@ -20,8 +20,7 @@ class CentroidTFPublisher:
             "vision/detected_centroid"
         )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
-        self.accumulation_window = 50
-        self.window_size = defaultdict(lambda: 50)
+        self.window_size = defaultdict(lambda: 30)
         self.positions = defaultdict(list)
         self.object_yaws = defaultdict(float)
         self.br = tf2_ros.TransformBroadcaster()
@@ -58,7 +57,7 @@ class CentroidTFPublisher:
         self.spin()
 
     def toggle_cb(self, srv: EstimatorToggleRequest):
-        rospy.logwarn(f"Toggling object {srv.object_name}")
+        rospy.logwarn(f"Toggling object {srv.object_name} {srv.enabled} {srv.reset}")
         if srv.object_name in self.disabled and srv.enabled:
             self.disabled.remove(srv.object_name)
         if not srv.object_name in self.disabled and not srv.enabled:
@@ -69,10 +68,11 @@ class CentroidTFPublisher:
         if srv.window_size > 0:
             self.window_size[srv.object_name] = srv.window_size
 
-        num_estimates = 0
-        stddev = 10000
         if srv.object_name in self.latest:
             _, stddev, num_estimates = self.latest[srv.object_name]
+        else:
+            num_estimates = 0
+            stddev = 10000
 
         return EstimatorToggleResponse(
             srv.enabled,
@@ -96,12 +96,14 @@ class CentroidTFPublisher:
         if len(arr) == 0:
             return None
         length, dim = arr.shape
-        return (np.array([np.sum(arr[:, i])/length for i in range(dim)]),
-                np.linalg.norm(p.std(axis=0)),
+        norm = length * (length + 1)/ 2
+        return (np.array([np.average(arr[:, i], weights = [j/norm for j in range(1, length + 1)]) for i in range(dim)]),
+                np.linalg.norm(arr.std(axis=0)),
                 len(arr))
     
     @staticmethod
-    def dbscan_cluster(arr, eps=0.2, min_samples=5):
+    def dbscan_cluster(arr, eps=0.25, min_samples=5):
+        """Returns largest cluster"""
         from sklearn.cluster import DBSCAN
         dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
         labels = dbscan.fit_predict(arr)
