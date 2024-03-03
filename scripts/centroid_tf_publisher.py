@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import sys, traceback
 import rospy
 import numpy as np
 from geometry_msgs.msg import Quaternion, TransformStamped
@@ -114,7 +115,7 @@ class CentroidTFPublisher:
                 continue
             cluster_points = arr[labels == label]
             cluster_center = cluster_points.mean(axis=0)
-            cluster_centers.append((cluster_center, np.mean(np.var(cluster_points, axis=0))), len(cluster_points))
+            cluster_centers.append((cluster_center, np.mean(np.var(cluster_points, axis=0)), len(cluster_points)))
         if len(cluster_centers) == 0:
             return None
         return max(cluster_centers, key=lambda x: x[1])
@@ -138,9 +139,9 @@ class CentroidTFPublisher:
                 tf_msg.child_frame_id = (
                     f"{name}/centroid_ned"  # Replace with desired TF frame ID
                 )
-                tf_msg.transform.translation.x = centroid[0]
-                tf_msg.transform.translation.y = centroid[1]
-                tf_msg.transform.translation.z = centroid[2]
+                tf_msg.transform.translation.x = centroid[0][0]
+                tf_msg.transform.translation.y = centroid[0][1]
+                tf_msg.transform.translation.z = centroid[0][2]
 
                 w, x, y, z = euler2quat(0, 0, np.deg2rad(self.object_yaws[name]))
                 tf_msg.transform.rotation = Quaternion(x, y, z, w)
@@ -148,10 +149,12 @@ class CentroidTFPublisher:
                 self.tf_pub.publish(tf_msg)
                 self.br.sendTransform(tf_msg)
                 det = self.detections[name]
-                det.world_coords = [*centroid]
+                det.world_coords = [*centroid[0]]
+                det.extra = (*det.extra, centroid[1], centroid[2]) #err, cluster size
                 output.detected.append(det)
             except Exception as e:
                 rospy.logerr(f"Error publishing centroid for {name}: {e}")
+                traceback.print_exc(file=sys.stdout)
         self.centroid_det_pub.publish(output)
     def spin(self):
         rospy.spin()
