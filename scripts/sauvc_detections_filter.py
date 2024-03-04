@@ -2,7 +2,7 @@
 import rospy
 import traceback
 import sys
-
+from copy import deepcopy
 from bb_msgs.msg import DetectedObjects
 from sensor_msgs.msg import CameraInfo
 from importlib import import_module
@@ -44,9 +44,10 @@ class SauvcDetectionsFilter:
     
     def process(self, detected: DetectedObjects):
         output = DetectedObjects()
+        dets = deepcopy(detected)
         for filter in self.filters:
             try:
-                result = filter.process(detected).detected
+                result = filter.process(dets).detected
                 output.detected.extend(result)
             except Exception as e:
                 traceback.print_exc(file=sys.stdout)

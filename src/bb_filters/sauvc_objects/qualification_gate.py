@@ -32,7 +32,7 @@ class Filter(filter.Filter):
         gate_sides = [
             x
             for x in bboxes.detected
-            if x.name in ["qualification_gate_side", "orange_flare"] and x.source == 288
+            if x.name in ["qualification_gate_side"] and x.source == 288
         ]
         gate = [
             x

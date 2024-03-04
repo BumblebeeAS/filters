@@ -1,3 +1,4 @@
+from copy import deepcopy
 from bb_msgs.msg import DetectedObject, DetectedObjects
 from bb_filters import filter
 import numpy as npfilter
@@ -14,21 +15,21 @@ class Filter(filter.Filter):
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
-        orange_flares = [x for x in bboxes.detected if (x.name=="orange_flare" or x.name=="qualification_gate_side") and x.source == 288 and\
+        orange_flares = [x for x in bboxes.detected if x.name=="orange_flare" and x.source == 288 and\
                         #  (filter.get_aspect_ratio(x) < 0.2) and\
                         #  x.bbox_width < x.image_height * 0.3 and\
                          x.color < 40]
         if len(orange_flares) == 0:
-            if self.latest_pos is None:
-                det = DetectedObject()
-                det.world_coords = [self.estimate_x, self.estimate_y, self.estimate_z]
-                det.real_dims = [0.2, 0.2, 1.45]
-                det.name = "orange_flare"
-                detections.detected.append(det)
+            # if self.latest_pos is None:
+            #     det = DetectedObject()
+            #     det.world_coords = [self.estimate_x, self.estimate_y, self.estimate_z]
+            #     det.real_dims = [0.2, 0.2, 1.45]
+            #     det.name = "orange_flare"
+            #     detections.detected.append(det)
             return detections
 
         # filter by rectangularity?
-        det = max(orange_flares, key=lambda x: x.extra[0]) # get flare with highest confidence or height?
+        det = deepcopy(max(orange_flares, key=lambda x: x.extra[0])) # get flare with highest confidence or height?
         img_height = self.camera_infos.get_info(det.source).height
 
         is_top_visible = det.centre_y - det.bbox_height / 2 > 30

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from threading import Lock
 import sys, traceback
 import rospy
 import numpy as np
@@ -12,6 +13,7 @@ from bb_msgs.srv import EstimatorToggle, EstimatorToggleRequest, EstimatorToggle
 class CentroidTFPublisher:
     def __init__(self):
         self.node_name = "centroid_tf_publisher"
+        rospy.init_node(self.node_name)
         self.rate = 10.0  # Hz
         self.queue_size = 10
         self.object_pose_topic = (
@@ -21,7 +23,8 @@ class CentroidTFPublisher:
             "vision/detected_centroid"
         )
         self.tf_topic = "/centroid_tf"  # Replace with desired TF topic
-        self.window_size = defaultdict(lambda: 30)
+        self.window_size = defaultdict(lambda: 50)
+        self.positions_lock=Lock()
         self.positions = defaultdict(list)
         self.object_yaws = defaultdict(float)
         self.br = tf2_ros.TransformBroadcaster()
@@ -63,11 +66,17 @@ class CentroidTFPublisher:
             self.disabled.remove(srv.object_name)
         if not srv.object_name in self.disabled and not srv.enabled:
             self.disabled.add(srv.object_name)
-        
         if srv.reset:
-            self.positions[srv.object_name] = []
+            if self.positions_lock.acquire(blocking=True, timeout=0.1):
+                self.positions[srv.object_name] = []
+                self.positions_lock.release()
         if srv.window_size > 0:
             self.window_size[srv.object_name] = srv.window_size
+        else:
+            self.window_size[srv.object_name] = 50
+        
+        self.positions[srv.object_name] = self.positions[srv.object_name][
+            :min(len(self.positions[srv.object_name]), self.window_size[srv.object_name])]
 
         if srv.object_name in self.latest:
             _, stddev, num_estimates = self.latest[srv.object_name]
@@ -85,11 +94,15 @@ class CentroidTFPublisher:
     def dets_callback(self, dets):
         for det in dets.detected:
             if det.name in self.disabled:
+                rospy.logwarn_throttle_identical(5, f"Object {det.name} is disabled")
                 continue
+
+            self.positions_lock.acquire(blocking=True)
             self.positions[det.name].append(det.world_coords)
             self.object_yaws[det.name] = det.world_yaw
             if len(self.positions[det.name]) > self.window_size[det.name]:
                 self.positions[det.name].pop(0)  # Maintain a fixed-size window
+            self.positions_lock.release()
             self.detections[det.name] = det
 
     @staticmethod
@@ -103,7 +116,7 @@ class CentroidTFPublisher:
                 len(arr))
     
     @staticmethod
-    def dbscan_cluster(arr, eps=0.25, min_samples=5):
+    def dbscan_cluster(arr, eps=0.35, min_samples=5):
         """Returns largest cluster"""
         from sklearn.cluster import DBSCAN
         dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
@@ -122,11 +135,15 @@ class CentroidTFPublisher:
 
     def publish_centroid_tf(self, event):
         output = DetectedObjects()
-        for name, positions in self.positions.items():
-            if len(positions) == 0:
+        if not self.positions_lock.acquire(blocking=False):
+            return
+        rospy.loginfo(f"{self.positions.keys()}")
+        positions = self.positions.items()
+        for name, position in positions:
+            if len(position) == 0:
                 continue
             try:
-                p = np.array(positions)
+                p = np.array(position)
                 centroid = CentroidTFPublisher.dbscan_cluster(p)
                 if centroid is None:
                     continue
@@ -150,11 +167,12 @@ class CentroidTFPublisher:
                 self.br.sendTransform(tf_msg)
                 det = self.detections[name]
                 det.world_coords = [*centroid[0]]
-                det.extra = (*det.extra, centroid[1], centroid[2]) #err, cluster size
+                det.extra = (*det.extra, int(centroid[1]), int(centroid[2] * 10)) #err, cluster size
                 output.detected.append(det)
             except Exception as e:
                 rospy.logerr(f"Error publishing centroid for {name}: {e}")
                 traceback.print_exc(file=sys.stdout)
+        self.positions_lock.release()
         self.centroid_det_pub.publish(output)
     def spin(self):
         rospy.spin()

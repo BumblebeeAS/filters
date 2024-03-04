@@ -32,6 +32,7 @@ class Filter(filter.Filter):
         self.bucket_height = 0.25
         self.bucket_diameter = 0.4
         self.min_dist_between_buckets = 0.5
+        self.num_buckets = 2
 
         self.cv_bridge = CvBridge()
         self.buckets_pub = rospy.Publisher("/buckets_scatter", Image, queue_size=1)
@@ -139,7 +140,6 @@ class Filter(filter.Filter):
                 blue_bucket_points = np.array(self.blue_bucket_points)
                 blue_bucket_labels = self.dbscan.fit_predict(blue_bucket_points)
                 blue_bucket_cluster_centers = []
-                rospy.loginfo(f"Blue bucket labels: {np.unique(blue_bucket_labels)}")
                 for label in np.unique(blue_bucket_labels):
                     if label == -1:
                         continue
@@ -154,16 +154,17 @@ class Filter(filter.Filter):
                     dists = [
                         np.linalg.norm(
                             np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) - blue_bucket_centroid
-                        ) for idx in ids.values()]
-                    # rospy.loginfo(f"Dists: {dists}, blue centroid: {blue_bucket_centroid}, cluster_centers: {                        [np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
-                    offset = np.argmin(dists) - self.blue_bucket_idx
+                        ) for idx in ids.keys()]
+                    rospy.loginfo(f"Dists: {dists}, blue centroid: {blue_bucket_centroid}, cluster_centers: {                        [np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
+                    offset = self.blue_bucket_idx - np.argmin(dists)
         
-            if offset!=0:
-                rospy.loginfo_throttle(1, f"Offset from blue bucket: {offset}")
+                    rospy.loginfo_throttle(1, f"Offset from blue bucket: {offset}, {np.argmin(dists)}")
             
-            for i, idx in enumerate([ids[label] for label in labels[-len(new_points):]]):
-                new_det = detections.detected[i]
-                new_det.name += f"_{idx + offset}"
+            for i, idx in enumerate([ids[label] for label in labels[-len(new_points):] if label>=0]):
+                if idx+offset > self.num_buckets - 1 or idx + offset < 0:
+                    continue
+                new_det = copy.deepcopy(detections.detected[i])
+                new_det.name = f"bucket_{idx + offset}"
                 detections.detected.append(new_det)
         # with open("buckets.txt", "w") as f:
         #     for det in detections.detected:
