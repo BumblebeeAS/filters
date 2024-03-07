@@ -18,7 +18,7 @@ class SauvcDetectionsFilter:
         self.processed_detections_pub = rospy.Publisher(
             "vision/external/detected_filtered",
             DetectedObjects,
-            queue_size=1
+            queue_size=10
         )
         self.buffer = Buffer(rospy.Duration(20))
         self.listener = TransformListener(self.buffer, 10)

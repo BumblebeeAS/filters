@@ -46,7 +46,8 @@ class Filter(filter.Filter):
                 ball.real_dims = self.ball_diameter, self.ball_diameter, self.ball_diameter
                 ball.name = "ball"
             else:
-                rospy.loginfo_throttle(1.0, f"Bucket radius rejected: ({xc}, {yc}), {r} expect {est_circle_radius}")
+                rospy.loginfo_throttle(1.0, f"Ball radius rejected: ({xc}, {yc}), {r} expect {est_circle_radius}")
+                return detections
 
         detections.detected.append(ball)
         return detections

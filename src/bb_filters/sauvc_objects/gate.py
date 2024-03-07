@@ -149,7 +149,7 @@ class Filter(filter.Filter):
         try:
             solution = np.array([[-1, 0], [0, 1]]) @ np.linalg.inv(rays) @ gate_vec
         except:
-            return detctions
+            return detections
         cam_pos = left_ray[3:5]
         centroid = cam_pos + rays @ solution / 2
 

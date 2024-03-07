@@ -46,14 +46,15 @@ class Filter(filter.Filter):
                 det, distance
             )
         else:
-            distance = (
-                self.flare_width
-                * self.camera_infos.get_info(det.source).P[0]
-                / (det.bbox_width)
-            )
-            det = self.camera_infos.compute_3d_coords_from_distance(
-                det, distance
-            )
+            # distance = (
+            #     self.flare_width
+            #     * self.camera_infos.get_info(det.source).P[0]
+            #     / (det.bbox_width)
+            # )
+            # det = self.camera_infos.compute_3d_coords_from_distance(
+            #     det, distance
+            # )
+            return detections
         det.real_dims = [0.2, 0.2, 1.45]
         det.name = "orange_flare"
         detections.detected.append(det)

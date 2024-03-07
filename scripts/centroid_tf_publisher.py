@@ -75,7 +75,7 @@ class CentroidTFPublisher:
         else:
             self.window_size[srv.object_name] = 50
         
-        self.positions[srv.object_name] = self.positions[srv.object_name][
+        self.positions[srv.object_name] = self.positions[srv.object_name][0
             :min(len(self.positions[srv.object_name]), self.window_size[srv.object_name])]
 
         if srv.object_name in self.latest:
@@ -92,6 +92,7 @@ class CentroidTFPublisher:
         )
 
     def dets_callback(self, dets):
+        rospy.loginfo(f"dets callback: {[det.name for det in dets.detected]}")
         for det in dets.detected:
             if det.name in self.disabled:
                 rospy.logwarn_throttle_identical(5, f"Object {det.name} is disabled")

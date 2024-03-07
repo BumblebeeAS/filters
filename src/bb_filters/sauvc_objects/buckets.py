@@ -32,7 +32,7 @@ class Filter(filter.Filter):
         self.bucket_height = 0.25
         self.bucket_diameter = 0.4
         self.min_dist_between_buckets = 1.0
-        self.num_buckets = 2
+        self.num_buckets = config["num_buckets"]
 
         self.cv_bridge = CvBridge()
         self.buckets_pub = rospy.Publisher("/buckets_scatter", Image, queue_size=1)
