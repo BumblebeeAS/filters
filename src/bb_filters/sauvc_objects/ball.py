@@ -42,7 +42,7 @@ class Filter(filter.Filter):
                 if ball is None:
                     rospy.logwarn("Failed to compute ball coord")
                     return detections
-                ball.world_coords[2] += self.ball_diameter / 2
+                ball.world_coords[2] -= self.ball_diameter / 2
                 ball.real_dims = self.ball_diameter, self.ball_diameter, self.ball_diameter
                 ball.name = "ball"
             else:

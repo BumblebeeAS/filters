@@ -31,8 +31,8 @@ class Filter(filter.Filter):
         # self.bucket_diameter = 0.6
         self.bucket_height = 0.25
         self.bucket_diameter = 0.4
-        self.min_dist_between_buckets = 0.5
-        self.num_buckets = 3
+        self.min_dist_between_buckets = 1.0
+        self.num_buckets = 2
 
         self.cv_bridge = CvBridge()
         self.buckets_pub = rospy.Publisher("/buckets_scatter", Image, queue_size=1)
@@ -102,7 +102,7 @@ class Filter(filter.Filter):
         new_points = []
         for det in detections.detected:
             new_points.append((det.world_coords[0], det.world_coords[1]))
-            if det.name == "red_bucket":
+            if det.name == "blue_bucket":
                 self.blue_bucket_points.append((det.world_coords[0], det.world_coords[1]))
 
         if len(new_points) == 0:
@@ -136,7 +136,7 @@ class Filter(filter.Filter):
 
 
             offset = 0
-            if self.determine_cluster_by_blue_bucket:
+            if self.determine_cluster_by_blue_bucket and len(self.blue_bucket_points) > 10:
                 blue_bucket_points = np.array(self.blue_bucket_points)
                 blue_bucket_labels = self.dbscan.fit_predict(blue_bucket_points)
                 blue_bucket_cluster_centers = []
