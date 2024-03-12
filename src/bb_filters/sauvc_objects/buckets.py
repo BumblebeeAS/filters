@@ -26,6 +26,8 @@ class Filter(filter.Filter):
         self.__name__ = "buckets_filter"
         self.blue_bucket_idx = config["blue_bucket_idx"]  # 0 for left most, 3 for right most
         print("blue_bucket: ", self.blue_bucket_idx)
+
+        self.flip_colours = True
         self.bucket_depth = 2.0
         # self.bucket_height = 0.3
         # self.bucket_diameter = 0.6
@@ -69,6 +71,9 @@ class Filter(filter.Filter):
                 bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                 bucket.world_coords[2] = self.bucket_depth
                 detections.detected.append(copy.deepcopy(bucket))
+                if self.flip_colours:
+                    detections.detected[-1].name = detections.detected[-1].name.replace("red","green").replace("blue", "red").replace("green","blue")
+                    rospy.loginfo(detections.detected[-1].name)
                 bucket.name = "bucket"
                 detections.detected.append(copy.deepcopy(bucket))
 
@@ -94,6 +99,9 @@ class Filter(filter.Filter):
                     bucket.world_coords[2] += self.bucket_height
                     bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                     detections.detected.append(copy.deepcopy(bucket))
+                    if self.flip_colours:
+                        detections.detected[-1].name = detections.detected[-1].name.replace("red","green").replace("blue", "red").replace("green","blue")
+                        rospy.loginfo(detections.detected[-1].name)
                     bucket.name = "bucket"
                     detections.detected.append(copy.deepcopy(bucket))
                 else:
@@ -102,7 +110,8 @@ class Filter(filter.Filter):
         new_points = []
         for det in detections.detected:
             new_points.append((det.world_coords[0], det.world_coords[1]))
-            if det.name == "blue_bucket":
+            n = "red_bucket" if self.flip_colours else "blue_bucket"
+            if det.name == n:
                 self.blue_bucket_points.append((det.world_coords[0], det.world_coords[1]))
 
         if len(new_points) == 0:
