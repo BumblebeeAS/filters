@@ -9,8 +9,12 @@ from sensor_msgs.msg import Image
 import matplotlib.pyplot as plt
 from PIL import Image as PILImage
 from collections import deque
+from bb_msgs.msg import Ping
+from std_msgs.msg import Int16
 
 from cv_bridge import CvBridge
+import matplotlib as mpl
+mpl.use('Agg')
 def fig2img(fig):
     """Convert a Matplotlib figure to a PIL Image and return it"""
     import io
@@ -26,6 +30,8 @@ class Filter(filter.Filter):
         self.__name__ = "buckets_filter"
         self.blue_bucket_idx = config["blue_bucket_idx"]  # 0 for left most, 3 for right most
         print("blue_bucket: ", self.blue_bucket_idx)
+
+        self.flip_colours = False
         self.bucket_depth = 2.0
         self.bucket_height = 0.3
         self.bucket_diameter = 0.6
@@ -34,15 +40,22 @@ class Filter(filter.Filter):
         self.min_dist_between_buckets = 1.0
         self.num_buckets = config["num_buckets"]
 
+        self.acoustics_vecs = []
+
         self.cv_bridge = CvBridge()
         self.buckets_pub = rospy.Publisher("/buckets_scatter", Image, queue_size=1)
         # self.kmeans = KMeans(n_clusters=4, random_state=0, n_init="auto")
-        self.kmeans = KMeans(n_clusters=2, random_state=0, n_init="auto")
         self.dbscan = DBSCAN(eps=0.5, min_samples = 5, metric='euclidean')
         self.points = deque(maxlen=100)
         self.blue_bucket_points = deque(maxlen=100)
         self.sort_by_x = False # true if buckets have similar y-coords when testing
         self.determine_cluster_by_blue_bucket = True
+        self.pinger_idx_pub = rospy.Publisher('/pinger_bucket_idx', Int16, queue_size=1)
+
+        self.ping_sub = rospy.Subscriber("/auv4/acoustics/ping", Ping, self.process_ping)
+
+    def process_ping(self, msg):
+        self.acoustics_vecs.append(self.camera_infos.compute_object_ray_from_bearing(rospy.Time.now(), msg.doa))
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -69,6 +82,9 @@ class Filter(filter.Filter):
                 bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                 bucket.world_coords[2] = self.bucket_depth
                 detections.detected.append(copy.deepcopy(bucket))
+                if self.flip_colours:
+                    detections.detected[-1].name = detections.detected[-1].name.replace("red","green").replace("blue", "red").replace("green","blue")
+                    rospy.loginfo(detections.detected[-1].name)
                 bucket.name = "bucket"
                 detections.detected.append(copy.deepcopy(bucket))
 
@@ -94,6 +110,9 @@ class Filter(filter.Filter):
                     bucket.world_coords[2] += self.bucket_height
                     bucket.real_dims = self.bucket_diameter, self.bucket_diameter, self.bucket_height
                     detections.detected.append(copy.deepcopy(bucket))
+                    if self.flip_colours:
+                        detections.detected[-1].name = detections.detected[-1].name.replace("red","green").replace("blue", "red").replace("green","blue")
+                        rospy.loginfo(detections.detected[-1].name)
                     bucket.name = "bucket"
                     detections.detected.append(copy.deepcopy(bucket))
                 else:
@@ -102,7 +121,8 @@ class Filter(filter.Filter):
         new_points = []
         for det in detections.detected:
             new_points.append((det.world_coords[0], det.world_coords[1]))
-            if det.name == "blue_bucket":
+            n = "red_bucket" if self.flip_colours else "blue_bucket"
+            if det.name == n:
                 self.blue_bucket_points.append((det.world_coords[0], det.world_coords[1]))
 
         if len(new_points) == 0:
@@ -134,7 +154,6 @@ class Filter(filter.Filter):
 
             ids = {label: k for k, label in enumerate(id_centers)}
 
-
             offset = 0
             if self.determine_cluster_by_blue_bucket and len(self.blue_bucket_points) > 10:
                 blue_bucket_points = np.array(self.blue_bucket_points)
@@ -155,11 +174,39 @@ class Filter(filter.Filter):
                         np.linalg.norm(
                             np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) - blue_bucket_centroid
                         ) for idx in ids.keys()]
-                    rospy.loginfo(f"Dists: {dists}, blue centroid: {blue_bucket_centroid}, cluster_centers: {                        [np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
+                    # rospy.loginfo(f"Dists: {dists}, blue centroid: {blue_bucket_centroid}, cluster_centers: {[np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
                     offset = self.blue_bucket_idx - np.argmin(dists)
         
                     rospy.loginfo_throttle(1, f"Offset from blue bucket: {offset}, {np.argmin(dists)}")
-            
+
+
+            if len(id_centers) - offset >= self.num_buckets:
+                best_cluster, best_distance = None, 10000
+                if len(self.acoustics_vecs) > 1:
+                    A = np.stack(self.acoustics_vecs)
+                    v = A[:,:2]
+                    x = A[:,3:5]
+                    for i, center in enumerate(cluster_centers):
+                        v1 = x - np.array(center[0])[:2]
+
+                        dist = np.mean(np.linalg.norm(v1 - np.diag(v1@v.T).reshape(-1, 1) * v, axis=1))
+                        if dist < best_distance:
+                            best_cluster = center[0]
+                            best_distance = dist
+                if best_cluster is not None:
+                    dists = [
+                        np.linalg.norm(
+                            np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) - best_cluster[:2]
+                        ) for idx in ids.keys()]
+                    # rospy.loginfo(f"Dists: {dists}, blue centroid: {blue_bucket_centroid}, cluster_centers: {[np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
+
+                    best_idx = np.argmin(dists) + offset
+                    if best_idx <= 3 and best_idx >= 0:    
+                        rospy.loginfo_throttle(1, f"pinger est: {best_idx}, dists: {dists}")
+                        pinger_idx_message = Int16(best_idx)
+                        self.pinger_idx_pub.publish(pinger_idx_message)
+
+
             for i, idx in enumerate([ids[label] for label in labels[-len(new_points):] if label>=0]):
                 if idx+offset > self.num_buckets - 1 or idx + offset < 0:
                     continue

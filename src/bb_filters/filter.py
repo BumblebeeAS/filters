@@ -149,6 +149,31 @@ class CameraInfos:
         q = q / np.linalg.norm(q)
         return np.array([*q, *cam_world[:, 3]]).astype(np.float32)
 
+    def compute_object_ray_from_bearing(
+            self, stamp: rospy.Time, bearing: float,
+            vehicle_frame: str = "auv4/base_link_ned"
+    ):
+        vehicle_tf = self.buffer.lookup_transform(
+            self.map_frame,
+            vehicle_frame,
+            stamp,
+            timeout=rospy.Duration(1.0),
+        )
+        mat = np.linalg.inv(quat2mat(attrgetter("w", "x", "y", "z")(vehicle_tf.transform.rotation)))
+
+        # bearing = mat @ np.array([1.0, 0.0, 0.0])
+
+        vec = np.array([
+            np.cos(np.deg2rad(bearing)),
+            np.sin(np.deg2rad(bearing)),
+            0])
+        
+        q = mat @ vec
+        return np.array([*q, *attrgetter("x", "y", "z")(vehicle_tf.transform.translation)]).astype(np.float32)
+
+
+        
+
     def compute_3d_coords_from_depth(self, obj: DetectedObject, depth: float):
         cam_tf = self.buffer.lookup_transform(
             self.map_frame,

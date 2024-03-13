@@ -92,7 +92,7 @@ class CentroidTFPublisher:
         )
 
     def dets_callback(self, dets):
-        rospy.loginfo(f"dets callback: {[det.name for det in dets.detected]}")
+        rospy.loginfo_throttle(1, f"dets callback: {[det.name for det in dets.detected]}")
         for det in dets.detected:
             if det.name in self.disabled:
                 rospy.logwarn_throttle_identical(5, f"Object {det.name} is disabled")
@@ -138,7 +138,7 @@ class CentroidTFPublisher:
         output = DetectedObjects()
         if not self.positions_lock.acquire(blocking=False):
             return
-        rospy.loginfo(f"{self.positions.keys()}")
+        rospy.loginfo_throttle(5, f"{self.positions.keys()}")
         positions = self.positions.items()
         for name, position in positions:
             if len(position) == 0:
