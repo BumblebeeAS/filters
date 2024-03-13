@@ -28,6 +28,7 @@ class Filter(filter.Filter):
             red_flares, key=lambda x: x.extra[0]
         )  # get flare with highest confidence or height?
         if det.bbox_width > det.bbox_height:  # filter case where flare toppled
+            rospy.logwarn_throttle(1, "red flare not upright")
             return detections
         img_height = self.camera_infos.get_info(det.source).height
 
@@ -51,6 +52,7 @@ class Filter(filter.Filter):
         det.world_yaw = self.flare_yaw * 180 / np.pi
         det.name = "red_flare"
         if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
+            rospy.logwarn_throttle(1, "red flare det far from estimate")
             return detections
         detections.detected.append(det)
         return detections

@@ -20,6 +20,7 @@ class Filter(filter.Filter):
             x for x in bboxes.detected if x.name == "yellow_flare" and x.source == 288
         ]
         if len(yellow_flares) == 0:
+            rospy.logwarn_throttle(1, "no yellow flare")
             return detections
 
         # filter by rectangularity?
@@ -27,6 +28,7 @@ class Filter(filter.Filter):
             yellow_flares, key=lambda x: x.extra[0]
         )  # get flare with highest confidence or height?
         if det.bbox_width > det.bbox_height:  # filter case where flare toppled
+            rospy.logwarn_throttle(1, "yellow flare not upright")
             return detections
         img_height = self.camera_infos.get_info(det.source).height
 
@@ -51,6 +53,7 @@ class Filter(filter.Filter):
         det.name = "yellow_flare"
         # check if distance between det x coords and estimate x coords is less than 1.5m
         if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
+            rospy.logwarn_throttle(1, "yellow flare far from estimate")
             return detections
         detections.detected.append(det)
         return detections

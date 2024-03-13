@@ -61,7 +61,7 @@ class CentroidTFPublisher:
         self.spin()
 
     def toggle_cb(self, srv: EstimatorToggleRequest):
-        rospy.logwarn(f"Toggling object {srv.object_name} {srv.enabled} {srv.reset}")
+        # rospy.logwarn(f"Toggling object {srv.object_name} {srv.enabled} {srv.reset}")
         if srv.object_name in self.disabled and srv.enabled:
             self.disabled.remove(srv.object_name)
         if not srv.object_name in self.disabled and not srv.enabled:
