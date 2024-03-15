@@ -70,7 +70,7 @@ class CameraInfos:
             # rospy.Time(0),
             timeout=rospy.Duration(1.0),
         )
-        return tf.transform.translation.z
+        return tf.transform.translation.z - 0.1 # hardcoded value for offset from altimeter to cam
 
     def compute_3d_coords_from_distance(self, obj: DetectedObject, distance: float):
         cam_tf = self.buffer.lookup_transform(
@@ -156,6 +156,8 @@ class CameraInfos:
         vehicle_tf = self.buffer.lookup_transform(
             self.map_frame,
             vehicle_frame,
+            # vehicle_frame,
+            # self.map_frame,
             stamp,
             timeout=rospy.Duration(1.0),
         )
@@ -183,6 +185,7 @@ class CameraInfos:
             timeout=rospy.Duration(1.0),
         )
         camera_info = self.get_info(obj.source)
+        print(obj.centre_x, camera_info.P[2], camera_info.P[0])
         obj_cam = np.array(
             [
                 (obj.centre_x - camera_info.P[2]) / camera_info.P[0],
@@ -237,7 +240,7 @@ class Filter(object):
         pass
 
 def get_aspect_ratio(det: DetectedObject):
-    return det.bbox_width / (det.bbox_height + 0.003)
+    return (det.bbox_width) / (det.bbox_height + 0.003)
 
 def draw_detected_object(out_img, info, cnt, shape="circle"):
 

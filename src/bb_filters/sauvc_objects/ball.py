@@ -8,7 +8,7 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "ball_filter"
-        self.ball_diameter = 0.36
+        self.ball_diameter = 0.036
         self.ball_depth = 1.96
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
@@ -35,7 +35,7 @@ class Filter(filter.Filter):
                 xc, yc, r, sigma = taubinSVD(np.array(ball.contour).reshape(-1, 2))
             except:
                 return detections
-            if np.abs(r - est_circle_radius) < 100:
+            if np.abs(r - est_circle_radius) < 200:
                 ball.centre_x, ball.centre_y = max(0, int(xc)), max(0, int(yc))
 
                 ball = self.camera_infos.compute_3d_coords_from_depth(ball, self.ball_depth - self.ball_diameter / 2)
