@@ -151,26 +151,26 @@ class CameraInfos:
 
     def compute_object_ray_from_bearing(
             self, stamp: rospy.Time, bearing: float,
+            elevation: float = 0,
             vehicle_frame: str = "auv4/base_link_ned"
     ):
         vehicle_tf = self.buffer.lookup_transform(
             self.map_frame,
             vehicle_frame,
-            # vehicle_frame,
-            # self.map_frame,
             stamp,
             timeout=rospy.Duration(1.0),
         )
-        mat = np.linalg.inv(quat2mat(attrgetter("w", "x", "y", "z")(vehicle_tf.transform.rotation)))
+        mat = quat2mat(attrgetter("w", "x", "y", "z")(vehicle_tf.transform.rotation))
 
         # bearing = mat @ np.array([1.0, 0.0, 0.0])
 
         vec = np.array([
             np.cos(np.deg2rad(bearing)),
             np.sin(np.deg2rad(bearing)),
-            0])
+            np.tan(np.deg2rad(elevation))])
         
         q = mat @ vec
+        print(bearing, vec, q, vehicle_tf.transform.translation)
         return np.array([*q, *attrgetter("x", "y", "z")(vehicle_tf.transform.translation)]).astype(np.float32)
 
 

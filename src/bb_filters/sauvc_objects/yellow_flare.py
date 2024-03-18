@@ -52,8 +52,8 @@ class Filter(filter.Filter):
         det.world_yaw = self.flare_yaw * 180 / np.pi
         det.name = "yellow_flare"
         # check if distance between det x coords and estimate x coords is less than 1.5m
-        if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
-            rospy.logwarn_throttle(1, "yellow flare far from estimate")
-            return detections
+        # if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
+        #     rospy.logwarn_throttle(1, "yellow flare far from estimate")
+        #     return detections
         detections.detected.append(det)
         return detections

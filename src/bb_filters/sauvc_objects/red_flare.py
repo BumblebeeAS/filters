@@ -51,8 +51,8 @@ class Filter(filter.Filter):
         det.real_dims = [self.flare_width, self.flare_width, self.flare_height]
         det.world_yaw = self.flare_yaw * 180 / np.pi
         det.name = "red_flare"
-        if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
-            rospy.logwarn_throttle(1, "red flare det far from estimate")
-            return detections
+        # if np.abs(det.world_coords[0] - self.estimate_pos[0]) > 1.5:
+        #     rospy.logwarn_throttle(1, "red flare det far from estimate")
+        #     return detections
         detections.detected.append(det)
         return detections

@@ -10,11 +10,14 @@ from tf2_ros import Buffer, TransformListener
 from bb_filters.utils import *
 from bb_filters.filter import Filter, CameraInfos
 from typing import List
+from sensor_msgs.msg import CompressedImage
+from cv_bridge import CvBridge
 class SauvcDetectionsFilter:
     def __init__(self):
         self.NODE_NAME = "sauvc_detections_filter"
         rospy.init_node(self.NODE_NAME)
         self.filters: List[Filter]
+        self.bridge = CvBridge()
         self.processed_detections_pub = rospy.Publisher(
             "vision/external/detected_filtered",
             DetectedObjects,
@@ -32,6 +35,11 @@ class SauvcDetectionsFilter:
             msg = rospy.wait_for_message(topic, CameraInfo)
             self.camera_info.set_info(id, msg)
             print(id, msg)
+        
+        self.camera_topics = {
+            288: "front_cam/image_rect_color/compressed",
+            289: "bot_cam/image_rect_color/compressed",
+        }
         self.import_modules()
 
         self.init_filters()
@@ -39,6 +47,20 @@ class SauvcDetectionsFilter:
             "vision/external/detected",
             DetectedObjects,
             self.process,
+            queue_size=1
+        )
+
+        self.front_cam_sub = rospy.Subscriber(
+            self.camera_topics[288],
+            CompressedImage,
+            self.process_front_cam,
+            queue_size=1
+        )
+
+        self.bot_cam_sub = rospy.Subscriber(
+            self.camera_topics[289],
+            CompressedImage,
+            self.process_bot_cam,
             queue_size=1
         )
     
@@ -54,6 +76,33 @@ class SauvcDetectionsFilter:
                 rospy.logerr(f"Error processing {filter.__name__}: {e}")
         output.node_name = self.NODE_NAME
         self.processed_detections_pub.publish(output)
+
+    def process_bot_cam(self, img: CompressedImage):
+        output = DetectedObjects()
+        img = self.bridge.compressed_imgmsg_to_cv2(img)
+
+        for filter in self.filters:
+            try:
+                if hasattr(filter, "process_bot_cam"):
+                    result = filter.process_bot_cam(img)
+                    output.detected.extend(result.detected)
+            except Exception as e:
+                traceback.print_exc(file=sys.stdout)
+                rospy.logerr(f"Error processing {filter.__name__}: {e}")
+        self.process(output)
+    
+    def process_front_cam(self, img: CompressedImage):
+        output = DetectedObjects()
+        img = self.bridge.compressed_imgmsg_to_cv2(img)
+        for filter in self.filters:
+            try:
+                if hasattr(filter, "process_front_cam"):
+                    result = filter.process_front_cam(img)
+                    output.detected.extend(result.detected)
+            except Exception as e:
+                traceback.print_exc(file=sys.stdout)
+                rospy.logerr(f"Error processing {filter.__name__}: {e}")
+        self.process(output)
 
     #--------------------#
     #    Init Helpers    #

@@ -21,7 +21,7 @@ import matplotlib as mpl
 
 mpl.use("Agg")
 
-
+np.set_printoptions(suppress=True)
 def fig2img(fig):
     """Convert a Matplotlib figure to a PIL Image and return it"""
     import io
@@ -51,7 +51,7 @@ class Filter(filter.Filter):
         self.min_dist_between_buckets = 1.0
         self.num_buckets = config["num_buckets"]
         self.vehicle_depth = 0
-        self.acoustics_vecs = []
+        self.acoustics_vecs = deque(maxlen=5)
 
         self.cv_bridge = CvBridge()
         self.buckets_pub = rospy.Publisher("/buckets_scatter", Image, queue_size=1)
@@ -68,10 +68,11 @@ class Filter(filter.Filter):
         self.ping_sub = rospy.Subscriber(
             "/auv4/acoustics/ping", Ping, self.process_ping
         )
-        self.acoustics_vecs
         self.br = tf2_ros.TransformBroadcaster()
         self.tf_topic = "baselink_to_pinger_tf"
         self.tf_pub = rospy.Publisher(self.tf_topic, TransformStamped, queue_size=1)
+        self.average_pinger_pos = None
+        self.best_idx = -1
 
     def update_depth(self, msg):
         self.vehicle_depth = msg.pose.pose.position.z
@@ -80,23 +81,28 @@ class Filter(filter.Filter):
         doa = msg.doa
         elevation = msg.elevation
         depth_from_pinger = self.bucket_depth - self.vehicle_depth
-        magnitude = min(depth_from_pinger / (math.tan(np.deg2rad(elevation)) + 0.1), 10)
-        vec = self.camera_infos.compute_object_ray_from_bearing(rospy.Time.now(), doa)
+        rospy.loginfo(f"ping mag: {depth_from_pinger / (math.tan(np.deg2rad(elevation)) + 0.1)}")
+        magnitude = min(np.abs(depth_from_pinger / (math.tan(np.deg2rad(elevation)) + 0.1)), 5)
+
+        vec = self.camera_infos.compute_object_ray_from_bearing(rospy.Time.now(), doa, elevation)
+
         vec[3:] += magnitude * vec[:3]
+        rospy.loginfo(f"Acoustics vec: {vec}, magnitude: {magnitude}, doa: {doa}")
         self.acoustics_vecs.append(vec)
         A = np.stack(self.acoustics_vecs)
         estimate_pinger_pos = A[:, 3:5]
-        average_pinger_pos = np.mean(estimate_pinger_pos, axis=0)
-        tf_msg = TransformStamped()
-        tf_msg.header.stamp = rospy.Time.now()
-        tf_msg.header.frame_id = "map_ned"
-        tf_msg.child_frame_id = "pinger_elevation_estimate_ned"
-        tf_msg.transform.translation.x = average_pinger_pos[0]
-        tf_msg.transform.translation.y = average_pinger_pos[1]
-        tf_msg.transform.translation.z = self.bucket_depth
-        tf_msg.transform.rotation = Quaternion(0, 0, 0, 1)
-        self.tf_pub.publish(tf_msg)
-        self.br.sendTransform(tf_msg)
+        if len(estimate_pinger_pos) > 3:
+            self.average_pinger_pos = np.mean(estimate_pinger_pos, axis=0)
+            tf_msg = TransformStamped()
+            tf_msg.header.stamp = rospy.Time.now()
+            tf_msg.header.frame_id = "map_ned"
+            tf_msg.child_frame_id = "pinger_elevation_estimate_ned"
+            tf_msg.transform.translation.x = self.average_pinger_pos[0]
+            tf_msg.transform.translation.y = self.average_pinger_pos[1]
+            tf_msg.transform.translation.z = self.bucket_depth
+            tf_msg.transform.rotation = Quaternion(0, 0, 0, 1)
+            self.tf_pub.publish(tf_msg)
+            self.br.sendTransform(tf_msg)
 
     def process(self, bboxes: DetectedObjects) -> DetectedObjects:
         detections = DetectedObjects()
@@ -276,44 +282,48 @@ class Filter(filter.Filter):
                     rospy.loginfo_throttle(
                         1, f"Offset from blue bucket: {offset}, {np.argmin(dists)}"
                     )
+            # rospy.loginfo(f"num valid clusters: {len(id_centers) - offset}, vecs: {self.acoustics_vecs}")
+            # if len(id_centers) - offset >= self.num_buckets:
+            best_cluster, best_distance = None, 10000
+            if len(self.acoustics_vecs) > 1:
+                A = np.stack(self.acoustics_vecs)
+                v = A[:, :2]
+                x = A[:, 3:5]
+                for i, center in enumerate(cluster_centers):
+                    v1 = x - np.array(center[0])[:2]
 
-            if len(id_centers) - offset >= self.num_buckets:
-                best_cluster, best_distance = None, 10000
-                if len(self.acoustics_vecs) > 1:
-                    A = np.stack(self.acoustics_vecs)
-                    v = A[:, :2]
-                    x = A[:, 3:5]
-                    for i, center in enumerate(cluster_centers):
-                        v1 = x - np.array(center[0])[:2]
-
-                        dist = np.mean(
-                            np.linalg.norm(
-                                v1 - np.diag(v1 @ v.T).reshape(-1, 1) * v, axis=1
-                            )
-                        )
-                        if dist < best_distance:
-                            best_cluster = center[0]
-                            best_distance = dist
-                if best_cluster is not None:
-                    dists = [
+                    dist = np.mean(
                         np.linalg.norm(
-                            np.array(
-                                [cluster_centers[idx][0][0], cluster_centers[idx][0][1]]
-                            )
-                            - best_cluster[:2]
+                            v1 - np.diag(v1 @ v.T).reshape(-1, 1) * v, axis=1
                         )
-                        for idx in ids.keys()
-                    ]
-                    # rospy.loginfo(f"Dists: {dists}, blue centroid: {blue_bucket_centroid}, cluster_centers: {[np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
-
-                    best_idx = np.argmin(dists) + offset
-                    if best_idx <= 3 and best_idx >= 0:
-                        rospy.loginfo_throttle(
-                            1, f"pinger est: {best_idx}, dists: {dists}"
+                    )
+                    if dist < best_distance:
+                        best_cluster = center[0]
+                        best_distance = dist
+            if best_cluster is not None:
+                dists = [
+                    np.linalg.norm(
+                        np.array(
+                            [cluster_centers[idx][0][0], cluster_centers[idx][0][1]]
                         )
-                        pinger_idx_message = Int16(best_idx)
-                        self.pinger_idx_pub.publish(pinger_idx_message)
+                        - best_cluster[:2]
+                    )
+                    for idx in ids.keys()
+                ]
+                rospy.loginfo(f"Dists: {dists}, cluster_centers: {[np.array([cluster_centers[idx][0][0], cluster_centers[idx][0][1]]) for idx in ids.values()]}")
 
+                self.best_idx = np.argmin(dists) + offset
+                if self.best_idx <= 3 and self.best_idx >= 0:
+                    rospy.loginfo_throttle(
+                        1, f"pinger est: {self.best_idx}, dists: {dists}"
+                    )
+                    pinger_idx_message = Int16(self.best_idx)
+                    self.pinger_idx_pub.publish(pinger_idx_message)
+
+                else:
+                    rospy.logwarn(f"pinger best_idx invalid: {self.best_idx}")
+            # else:
+            #     rospy.loginfo("insufficient buckets")
             for i, idx in enumerate(
                 [ids[label] for label in labels[-len(new_points) :] if label >= 0]
             ):
@@ -322,6 +332,11 @@ class Filter(filter.Filter):
                 new_det = copy.deepcopy(detections.detected[i])
                 new_det.name = f"bucket_{idx + offset}"
                 detections.detected.append(new_det)
+
+                if self.best_idx != -1 and idx + offset == self.best_idx:
+                    new_det = copy.deepcopy(new_det)
+                    new_det.name = f"bucket_pinger"
+                    detections.detected.append(new_det)
         # with open("buckets.txt", "w") as f:
         #     for det in detections.detected:
         #         f.write(f"{det.name} {det.world_coords[0]} {det.world_coords[1]}\n")
