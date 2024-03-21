@@ -18,7 +18,7 @@ class Filter(filter.Filter):
         self.gate_side_width = 0.04
         self.gate_height = 1.5
         self.gate_depth = 1.25
-        self.known_depth = True
+        self.known_depth = False
         self.R = self.yaw_to_rot(self.gate_orientation)
 
     def yaw_to_rot(self, yaw):

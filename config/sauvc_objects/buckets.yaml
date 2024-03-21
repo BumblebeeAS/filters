@@ -1,2 +1,2 @@
-blue_bucket_idx: 1 # 0 indexed
-num_buckets: 4
+blue_bucket_idx: 0 # 0 indexed
+num_buckets: 3
