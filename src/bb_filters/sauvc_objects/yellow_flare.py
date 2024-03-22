@@ -9,8 +9,8 @@ class Filter(filter.Filter):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "yellow_flare_filter"
         self.estimate_x, self.estimate_y, self.estimate_z, self.estimate_yaw = self.camera_infos.get_object_pos("yellow_flare/estimate_base_link")
-        self.flare_height = 0.8
-        self.flare_width = 0.02
+        self.flare_height = config["flare_height"]
+        self.flare_width = config["flare_width"]
         self.flare_yaw = self.estimate_yaw
         self.estimate_pos = self.estimate_x, self.estimate_y
 
@@ -20,7 +20,7 @@ class Filter(filter.Filter):
             x for x in bboxes.detected if x.name == "yellow_flare" and x.source == 288
         ]
         if len(yellow_flares) == 0:
-            rospy.logwarn_throttle(1, "no yellow flare")
+            # rospy.logwarn_throttle(1, "no yellow flare")
             return detections
 
         # filter by rectangularity?

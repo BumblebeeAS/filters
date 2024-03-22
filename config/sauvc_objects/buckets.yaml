@@ -1,2 +1,6 @@
-blue_bucket_idx: 0 # 0 indexed
+blue_bucket_idx: 2 # 0 indexed increasing y coordinates
 num_buckets: 3
+bucket_depth: 2.0 # from surface
+bucket_height: 0.3 # m
+bucket_diameter: 0.6 #m
+sort_by_x: false

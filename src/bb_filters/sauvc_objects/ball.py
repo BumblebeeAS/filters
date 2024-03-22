@@ -11,8 +11,8 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "ball_filter"
-        self.ball_diameter = 0.036
-        self.ball_depth = 1.96
+        self.ball_diameter = config["ball_diameter"]
+        self.ball_depth = config["ball_depth"]
         self.bridge = CvBridge()
 
         self.ball_mask_plt_pub = rospy.Publisher(

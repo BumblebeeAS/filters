@@ -37,15 +37,16 @@ class Filter(filter.Filter):
     def __init__(self, config, camera_infos: filter.CameraInfos):
         super(Filter, self).__init__(config, camera_infos)
         self.__name__ = "buckets_filter"
+        print(f"bucket_configs: {config}")
         self.blue_bucket_idx = config[
             "blue_bucket_idx"
         ]  # 0 for left most, 3 for right most
         print("blue_bucket: ", self.blue_bucket_idx)
 
         self.flip_colours = False
-        self.bucket_depth = 2.0
-        self.bucket_height = 0.3
-        self.bucket_diameter = 0.6
+        self.bucket_depth = config["bucket_depth"]
+        self.bucket_height = config["bucket_height"]
+        self.bucket_diameter = config["bucket_diameter"]
         # self.bucket_height = 0.25
         # self.bucket_diameter = 0.4
         self.min_dist_between_buckets = 1.0
@@ -59,7 +60,7 @@ class Filter(filter.Filter):
         self.dbscan = DBSCAN(eps=0.5, min_samples=5, metric="euclidean")
         self.points = deque(maxlen=100)
         self.blue_bucket_points = deque(maxlen=100)
-        self.sort_by_x = False  # true if buckets have similar y-coords when testing
+        self.sort_by_x = config["sort_by_x"]  # true if buckets have similar y-coords when testing
         self.determine_cluster_by_blue_bucket = True
         self.pinger_idx_pub = rospy.Publisher("/pinger_bucket_idx", Int16, queue_size=1)
         self.depth_sub = rospy.Subscriber(

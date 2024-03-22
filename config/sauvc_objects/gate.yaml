@@ -1,0 +1,5 @@
+gate_width: 1.5
+gate_side_width: 0.04
+gate_height: 1.5
+gate_depth: 1.25 # unused if known depth false
+known_depth: False
