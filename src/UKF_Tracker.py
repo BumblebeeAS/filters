@@ -32,7 +32,9 @@ from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge, CvBridgeError
-
+from geometry_msgs.msg import Quaternion, TransformStamped
+import tf2_ros
+from transforms3d.euler import euler2quat
 
 class UKF_Tracker():
 
@@ -56,7 +58,7 @@ class UKF_Tracker():
         self.measurement_model = LinearGaussian(
             ndim_state=3,
             mapping=[0, 1, 2],
-            noise_covar=np.diag([0.8, 0.8, 0.1])
+            noise_covar=np.diag([0.5, 0.5, 0.1])
         )
 
         # UKF Predictor
@@ -103,7 +105,7 @@ class UKF_Tracker():
         self.initiator = StatesLengthLimiter(self.initiator, 20)
 
         # Detections
-        self.tracks, self.all_tracks = dict(), dict()
+        self.tracks, self.all_tracks, self.obj_meta = dict(), dict(), dict()
 
         # Detected Object Sub
         self.detection_sub = rospy.Subscriber(
@@ -113,7 +115,7 @@ class UKF_Tracker():
         self.detection_pub = rospy.Publisher(
             "/auv4/vision/UKF/detected", 
             DetectedObjects,
-            10
+            queue_size=10
         )
 
         # Pub Timer
@@ -136,6 +138,8 @@ class UKF_Tracker():
             CompressedImage)
 
         self.bridge = CvBridge()
+
+        self.br = tf2_ros.TransformBroadcaster()
 
     def detection_callback(self, detections: DetectedObjects):
         # self.get_logger().info("Det")
@@ -166,8 +170,10 @@ class UKF_Tracker():
                             timestamp=timestamp,
                             measurement_model=self.measurement_model,
                             metadata={
-                                "frame":obj.header.frame_id
+                                "frame":obj.header.frame_id,
+                                "world_yaw":obj.world_yaw
                             }))
+                        self.obj_meta[obj.name] = {"frame":obj.header.frame_id, "world_yaw":obj.world_yaw}
 
                 # Process Detections with JPDA UKF
                 if len(measurement_set) > 0:
@@ -227,8 +233,8 @@ class UKF_Tracker():
                     coords = track.state_vector.flatten()
 
                     # Using back of Track id
-                    rospy.loginfo(
-                        f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
+                    #rospy.loginfo(
+                    #    f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
                     
                     plot_marker = "^"
 
@@ -246,10 +252,9 @@ class UKF_Tracker():
                         plot_color = "blue"
                     else:
                         plot_color = "gray"
-
                     # Plot on 2d map
                     self.draw_uncertainty(
-                        track, [0, 1], self.ax, plot_color, plot_marker)
+                        track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
 
             # Prepare Plot Image
             self.fig.canvas.draw()
@@ -258,25 +263,54 @@ class UKF_Tracker():
             self.publisher_plot.publish(img_msg)
             self.ax.cla()
 
-    def pub_detections(self):
+    def pub_detections(self, timer):
         pub_objects = DetectedObjects()
+        objs = []
 
         for name, tracks_by_class in self.tracks.items():
+            # Clear Old
+            self.tracks[name] -= self.deleter.delete_tracks(
+                self.tracks[name])
             for track in tracks_by_class:
-                obj = DetectedObject()
-                obj.header.frame_id = track[0].measurement.metadata["frame"]
-                obj.header.stamp.from_sec(track.timestamp.timestamp())
-                obj.world_coords = track.state_vector.flatten()
-                obj.name = name
+                try:
+                    tf_msg = TransformStamped()
+                    tf_msg.header.stamp = rospy.Time.now()
+                    tf_msg.header.frame_id = "map_ned"  # Assuming the map frame as reference
+                    tf_msg.child_frame_id = (
+                        f"{name}/ukf_tracker"  # Replace with desired TF frame ID
+                    )
+                    coords = track.state_vector.flatten()
+                    tf_msg.transform.translation.x = coords[0]
+                    tf_msg.transform.translation.y = coords[1]
+                    tf_msg.transform.translation.z = coords[2]
+                    w, x, y, z = euler2quat(0, 0, np.deg2rad(self.obj_meta[name]["world_yaw"]))
+                    tf_msg.transform.rotation = Quaternion(x, y, z, w)
+                    self.br.sendTransform(tf_msg)
 
+                    obj = DetectedObject()
+                    obj.header.frame_id = self.obj_meta[name]["frame"]
+                    obj.header.stamp.from_sec(track.timestamp.timestamp())
+                    obj.world_coords = track.state_vector.flatten()
+                    obj.name = name
+                    objs.append(obj)
+
+                    # Using back of Track id
+                    rospy.loginfo(
+                        f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
+                except:
+                    print(track)
+                    continue
+                break
+        rospy.loginfo(f"Publishing {len(objs)} Objects")
+        pub_objects.detected = objs
         self.detection_pub.publish(pub_objects)
                 
 
-    def draw_uncertainty(self, track, mapping, ax, color, marker):
+    def draw_uncertainty(self, track, mapping, ax, color, marker, name):
         state, data, min_ind, max_ind, orient, w, v = self.calculate_uncertainty(
             track, mapping)
         ax.scatter(data[0], data[1], color=color, marker=marker)
-        ax.text(data[0], data[1], track.id.split('-')[-1], fontsize="x-small")
+        ax.text(data[0], data[1], name + "@" + track.id.split('-')[-1], fontsize="x-small")
         ellipse = Ellipse(xy=state.mean[mapping[:2], 0],
                           width=2 * np.sqrt(w[max_ind]),
                           height=2 * np.sqrt(w[min_ind]),
