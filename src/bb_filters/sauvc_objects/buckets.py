@@ -60,7 +60,7 @@ class Filter(filter.Filter):
         self.dbscan = DBSCAN(eps=0.5, min_samples=5, metric="euclidean")
         self.points = deque(maxlen=100)
         self.blue_bucket_points = deque(maxlen=100)
-        self.sort_by_x = config["sort_by_x"]  # true if buckets have similar y-coords when testing
+        self.sort_by_x = config["sort_by_x"]  # true if buckets have similar y-coords when testing (ned)
         self.determine_cluster_by_blue_bucket = True
         self.pinger_idx_pub = rospy.Publisher("/pinger_bucket_idx", Int16, queue_size=1)
         self.depth_sub = rospy.Subscriber(

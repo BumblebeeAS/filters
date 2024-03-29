@@ -1,6 +1,6 @@
 # blue_bucket_idx: 2 # 0 indexed increasing x coordinates
 # num_buckets: 3
-blue_bucket_idx: 2 # 0 indexed increasing x coordinates
+blue_bucket_idx: 1 # 0 indexed increasing x coordinates
 num_buckets: 4
 bucket_depth: 2.0 # from surface
 bucket_height: 0.3 # m
