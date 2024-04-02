@@ -71,7 +71,7 @@ class UKF_Tracker():
         covar_deleter = CovarianceBasedDeleter(
             covar_trace_thresh=1.5)  # Higher Value Longer Persistence
         time_deleter = UpdateTimeDeleter(
-            timedelta(seconds=30))  # Time Since Last Update
+            timedelta(seconds=10))  # Time Since Last Update
         # Any fail will cause deletion
         self.deleter = CompositeDeleter(
             [covar_deleter, time_deleter], intersect=False)
@@ -128,6 +128,10 @@ class UKF_Tracker():
         plt.ioff()
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot()
+        self.ax.set_xlim([-30,30])
+        self.ax.set_ylim([-30,30])
+        plt.xlim([-30,30])
+        plt.ylim([-30,30])
 
         self.plotter = Plotter()
         self.plotCount = 0
@@ -177,10 +181,13 @@ class UKF_Tracker():
 
                 # Process Detections with JPDA UKF
                 if len(measurement_set) > 0:
-                    hypotheses = self.data_associator.associate(self.tracks[name],
-                                                                measurement_set,
-                                                                timestamp)
-
+                    try:
+                        hypotheses = self.data_associator.associate(self.tracks[name],
+                                                                    measurement_set,
+                                                                    timestamp)
+                    except np.linalg.LinAlgError:
+                        rospy.loginfo(f"Dropping measuremnt for {name}")
+                        continue
                     associated_measurements = set()
                     for track in self.tracks[name]:
                         track_hypotheses = hypotheses[track]
@@ -218,9 +225,12 @@ class UKF_Tracker():
                         # Deletion and Initiation
                     self.tracks[name] -= self.deleter.delete_tracks(
                         self.tracks[name])
-                    self.tracks[name] |= self.initiator.initiate(measurement_set - associated_measurements,
-                                                                 timestamp)
-
+                    try:
+                        self.tracks[name] |= self.initiator.initiate(measurement_set - associated_measurements,
+                                                                     timestamp)
+                    except np.linalg.LinAlgError:
+                        rospy.loginfo(f"Dropping measuremnt for {name}")
+                        continue
                     # self.all_tracks[name] |= self.tracks[name]
 
             rospy.loginfo("Processed in %.4f seconds" % (time.time() - start))
@@ -228,40 +238,40 @@ class UKF_Tracker():
             plot_marker = None
             plot_color = None
 
-            for name in names:
-                for track in self.tracks[name]:
-                    coords = track.state_vector.flatten()
-
-                    # Using back of Track id
-                    #rospy.loginfo(
-                    #    f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
-                    
-                    plot_marker = "^"
-
-                    if "green" in obj.name:
-                        plot_color = "green"
-                    elif "red" in obj.name:
-                        plot_color = "red"
-                    elif "black" in obj.name:
-                        plot_color = "black"
-                    elif "orange" in obj.name:
-                        plot_color = "orange"
-                    elif "white" in obj.name:
-                        plot_color = "white"
-                    elif "rgb" in obj.name:
-                        plot_color = "blue"
-                    else:
-                        plot_color = "gray"
-                    # Plot on 2d map
-                    self.draw_uncertainty(
-                        track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
-
-            # Prepare Plot Image
-            self.fig.canvas.draw()
-            graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
-            img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
-            self.publisher_plot.publish(img_msg)
-            self.ax.cla()
+#            for name in names:
+#                for track in self.tracks[name]:
+#                    coords = track.state_vector.flatten()
+#
+#                    # Using back of Track id
+#                    #rospy.loginfo(
+#                    #    f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
+#                    
+#                    plot_marker = "^"
+#
+#                    if "green" in obj.name:
+#                        plot_color = "green"
+#                    elif "red" in obj.name:
+#                        plot_color = "red"
+#                    elif "black" in obj.name:
+#                        plot_color = "black"
+#                    elif "orange" in obj.name:
+#                        plot_color = "orange"
+#                    elif "white" in obj.name:
+#                        plot_color = "white"
+#                    elif "rgb" in obj.name:
+#                        plot_color = "blue"
+#                    else:
+#                        plot_color = "gray"
+#                    # Plot on 2d map
+#                    self.draw_uncertainty(
+#                        track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
+#
+#            # Prepare Plot Image
+#            self.fig.canvas.draw()
+#            graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
+#            img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
+#            self.publisher_plot.publish(img_msg)
+#            self.ax.cla()
 
     def pub_detections(self, timer):
         pub_objects = DetectedObjects()
@@ -277,7 +287,7 @@ class UKF_Tracker():
                     tf_msg.header.stamp = rospy.Time.now()
                     tf_msg.header.frame_id = "map_ned"  # Assuming the map frame as reference
                     tf_msg.child_frame_id = (
-                        f"{name}/ukf_tracker"  # Replace with desired TF frame ID
+                        f"{name}/ukf_tracker_ned"  # Replace with desired TF frame ID
                     )
                     coords = track.state_vector.flatten()
                     tf_msg.transform.translation.x = coords[0]
@@ -297,6 +307,30 @@ class UKF_Tracker():
                     # Using back of Track id
                     rospy.loginfo(
                         f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
+
+                    # Create Plot
+
+                    plot_marker = "^"
+
+                    if "green" in obj.name:
+                        plot_color = "green"
+                    elif "red" in obj.name:
+                        plot_color = "red"
+                    elif "black" in obj.name:
+                        plot_color = "black"
+                    elif "orange" in obj.name:
+                        plot_color = "orange"
+                    elif "white" in obj.name:
+                        plot_color = "white"
+                    elif "rgb" in obj.name:
+                        plot_color = "blue"
+                    elif "yellow" in obj.name:
+                        plot_color = "yellow"
+                    else:
+                        plot_color = "gray"
+                    # Plot on 2d map
+                    self.draw_uncertainty(
+                        track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
                 except:
                     print(track)
                     continue
@@ -304,7 +338,14 @@ class UKF_Tracker():
         rospy.loginfo(f"Publishing {len(objs)} Objects")
         pub_objects.detected = objs
         self.detection_pub.publish(pub_objects)
-                
+                   
+        self.fig.canvas.draw()
+        graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
+        img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
+        self.publisher_plot.publish(img_msg)
+        self.ax.cla()
+        self.ax.set_xlim([-30,30])
+        self.ax.set_ylim([-15,15])        
 
     def draw_uncertainty(self, track, mapping, ax, color, marker, name):
         state, data, min_ind, max_ind, orient, w, v = self.calculate_uncertainty(
