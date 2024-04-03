@@ -1,13 +1,10 @@
-from copy import deepcopy
 from datetime import datetime, timedelta
 import time
-from operator import attrgetter
 
-import matplotlib.markers
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-from stonesoup.dataassociator.neighbour import NearestNeighbour, GlobalNearestNeighbour, GNNWith2DAssignment
-from stonesoup.dataassociator.probability import PDA, JPDA
+from stonesoup.dataassociator.neighbour import GNNWith2DAssignment
+from stonesoup.dataassociator.probability import JPDA
 from stonesoup.deleter.time import UpdateTimeDeleter
 from stonesoup.deleter.error import CovarianceBasedDeleter
 from stonesoup.deleter.multi import CompositeDeleter
@@ -25,16 +22,16 @@ from stonesoup.types.state import GaussianState
 from stonesoup.types.update import GaussianStateUpdate
 from stonesoup.updater.kalman import UnscentedKalmanUpdater
 import rospy
-from geometry_msgs.msg import Vector3, Quaternion, Point
+from geometry_msgs.msg import Quaternion
 from bb_msgs.msg import DetectedObject, DetectedObjects
 from stonesoup.plotter import Plotter
-from std_msgs.msg import ColorRGBA
-from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import CompressedImage
-from cv_bridge import CvBridge, CvBridgeError
+from cv_bridge import CvBridge
+import cv2
 from geometry_msgs.msg import Quaternion, TransformStamped
 import tf2_ros
 from transforms3d.euler import euler2quat
+
 
 class UKF_Tracker():
 
@@ -48,9 +45,9 @@ class UKF_Tracker():
         # Object Movement Model
         self.transition_model = CombinedLinearGaussianTransitionModel(
             [
-                RandomWalk(0.1),  # x
-                RandomWalk(0.1),  # y
-                RandomWalk(0.1)  # z
+                RandomWalk(0.05),  # x
+                RandomWalk(0.05),  # y
+                RandomWalk(0.05)  # z
             ]
         )
 
@@ -71,7 +68,7 @@ class UKF_Tracker():
         covar_deleter = CovarianceBasedDeleter(
             covar_trace_thresh=1.5)  # Higher Value Longer Persistence
         time_deleter = UpdateTimeDeleter(
-            timedelta(seconds=10))  # Time Since Last Update
+            timedelta(seconds=30))  # Time Since Last Update
         # Any fail will cause deletion
         self.deleter = CompositeDeleter(
             [covar_deleter, time_deleter], intersect=False)
@@ -102,18 +99,19 @@ class UKF_Tracker():
             min_points=5
         )
 
+        # Number of previous samples to consider
         self.initiator = StatesLengthLimiter(self.initiator, 20)
 
         # Detections
-        self.tracks, self.all_tracks, self.obj_meta = dict(), dict(), dict()
+        self.tracks, self.obj_meta = dict(), dict()
 
         # Detected Object Sub
         self.detection_sub = rospy.Subscriber(
             "/auv4/vision/external/detected_filtered", DetectedObjects, self.detection_callback)
-        
+
         # Detected Object Pub
         self.detection_pub = rospy.Publisher(
-            "/auv4/vision/UKF/detected", 
+            "/auv4/vision/UKF/detected",
             DetectedObjects,
             queue_size=10
         )
@@ -128,17 +126,11 @@ class UKF_Tracker():
         plt.ioff()
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot()
-        self.ax.set_xlim([-30,30])
-        self.ax.set_ylim([-30,30])
-        plt.xlim([-30,30])
-        plt.ylim([-30,30])
-
         self.plotter = Plotter()
-        self.plotCount = 0
 
         # Plot Pub
         self.publisher_plot = rospy.Publisher(
-            "/filter_visualisation/image_raw/compressed", 
+            "/filter_visualisation/image_raw/compressed",
             CompressedImage)
 
         self.bridge = CvBridge()
@@ -146,17 +138,14 @@ class UKF_Tracker():
         self.br = tf2_ros.TransformBroadcaster()
 
     def detection_callback(self, detections: DetectedObjects):
-        # self.get_logger().info("Det")
         start = time.time()
         if len(detections.detected) > 0:
             # Process Detections
             names = set([obj.name for obj in detections.detected])
             for name in names:
                 if self.tracks.get(name) is None:
-                    rospy.loginfo(
-                        "Creating new Track for {} objects".format(name))
+                    rospy.loginfo(f"Creating new Track for {name} objects")
                     self.tracks[name] = set()
-                    self.all_tracks[name] = set()
 
             grouped = {x: [y for y in detections.detected if y.name == x]
                        for x in names}
@@ -174,10 +163,11 @@ class UKF_Tracker():
                             timestamp=timestamp,
                             measurement_model=self.measurement_model,
                             metadata={
-                                "frame":obj.header.frame_id,
-                                "world_yaw":obj.world_yaw
+                                "frame": obj.header.frame_id,
+                                "world_yaw": obj.world_yaw
                             }))
-                        self.obj_meta[obj.name] = {"frame":obj.header.frame_id, "world_yaw":obj.world_yaw}
+                        self.obj_meta[obj.name] = {
+                            "frame": obj.header.frame_id, "world_yaw": obj.world_yaw}
 
                 # Process Detections with JPDA UKF
                 if len(measurement_set) > 0:
@@ -186,7 +176,7 @@ class UKF_Tracker():
                                                                     measurement_set,
                                                                     timestamp)
                     except np.linalg.LinAlgError:
-                        rospy.loginfo(f"Dropping measuremnt for {name}")
+                        rospy.loginfo(f"Dropping Measurement for {name} - LinAlgError")
                         continue
                     associated_measurements = set()
                     for track in self.tracks[name]:
@@ -229,88 +219,71 @@ class UKF_Tracker():
                         self.tracks[name] |= self.initiator.initiate(measurement_set - associated_measurements,
                                                                      timestamp)
                     except np.linalg.LinAlgError:
-                        rospy.loginfo(f"Dropping measuremnt for {name}")
+                        rospy.loginfo(f"Dropping Measurement for {name} - LinAlgError")
                         continue
-                    # self.all_tracks[name] |= self.tracks[name]
 
             rospy.loginfo("Processed in %.4f seconds" % (time.time() - start))
-
-            plot_marker = None
-            plot_color = None
-
-#            for name in names:
-#                for track in self.tracks[name]:
-#                    coords = track.state_vector.flatten()
-#
-#                    # Using back of Track id
-#                    #rospy.loginfo(
-#                    #    f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
-#                    
-#                    plot_marker = "^"
-#
-#                    if "green" in obj.name:
-#                        plot_color = "green"
-#                    elif "red" in obj.name:
-#                        plot_color = "red"
-#                    elif "black" in obj.name:
-#                        plot_color = "black"
-#                    elif "orange" in obj.name:
-#                        plot_color = "orange"
-#                    elif "white" in obj.name:
-#                        plot_color = "white"
-#                    elif "rgb" in obj.name:
-#                        plot_color = "blue"
-#                    else:
-#                        plot_color = "gray"
-#                    # Plot on 2d map
-#                    self.draw_uncertainty(
-#                        track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
-#
-#            # Prepare Plot Image
-#            self.fig.canvas.draw()
-#            graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
-#            img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
-#            self.publisher_plot.publish(img_msg)
-#            self.ax.cla()
 
     def pub_detections(self, timer):
         pub_objects = DetectedObjects()
         objs = []
 
-        for name, tracks_by_class in self.tracks.items():
+        for name in self.tracks.keys():
             # Clear Old
             self.tracks[name] -= self.deleter.delete_tracks(
-                self.tracks[name])
+                self.tracks[name], timestamp=datetime.fromtimestamp(rospy.Time.now()))
+
+        for name, tracks_by_class in self.tracks.items():
+
+            # Select most confident track
+            min_track = None
+            min_W = 1e6
             for track in tracks_by_class:
+                HH = np.eye(track.ndim)[[0,1], :]
+                state = track[-1]
+                w, _ = (HH @ state.covar @ HH.T)
+                w = np.real_if_close(w, tol=1)
+                if np.sum(w) < min_W:
+                    min_track = track
+
+            if min_track:
                 try:
                     tf_msg = TransformStamped()
                     tf_msg.header.stamp = rospy.Time.now()
                     tf_msg.header.frame_id = "map_ned"  # Assuming the map frame as reference
                     tf_msg.child_frame_id = (
-                        f"{name}/ukf_tracker_ned"  # Replace with desired TF frame ID
+                        # Replace with desired TF frame ID
+                        f"{name}/ukf_tracker_ned"
                     )
-                    coords = track.state_vector.flatten()
+                    coords = min_track.state_vector.flatten()
                     tf_msg.transform.translation.x = coords[0]
                     tf_msg.transform.translation.y = coords[1]
                     tf_msg.transform.translation.z = coords[2]
-                    w, x, y, z = euler2quat(0, 0, np.deg2rad(self.obj_meta[name]["world_yaw"]))
+                    w, x, y, z = euler2quat(0, 0, np.deg2rad(
+                        self.obj_meta[name]["world_yaw"]))
                     tf_msg.transform.rotation = Quaternion(x, y, z, w)
                     self.br.sendTransform(tf_msg)
 
                     obj = DetectedObject()
                     obj.header.frame_id = self.obj_meta[name]["frame"]
-                    obj.header.stamp.from_sec(track.timestamp.timestamp())
-                    obj.world_coords = track.state_vector.flatten()
+                    obj.header.stamp.from_sec(min_track.timestamp.timestamp())
+                    obj.world_coords = min_track.state_vector.flatten()
                     obj.name = name
                     objs.append(obj)
 
                     # Using back of Track id
                     rospy.loginfo(
-                        f"Tracking {coords} {name}@{track.id.split('-')[-1]}")
+                        f"Tracking {coords} {name}@{min_track.id.split('-')[-1]}")
 
-                    # Create Plot
-
-                    plot_marker = "^"
+                    # Create Plotx
+                    if "bucket" in obj.name:
+                        plot_marker = "O"
+                    elif "gate" in obj.name:
+                        plot_marker = "s"
+                    elif "flare" in obj.name:
+                        plot_marker = "^"
+                    else:
+                        plot_marker = "D"
 
                     if "green" in obj.name:
                         plot_color = "green"
@@ -322,36 +295,38 @@ class UKF_Tracker():
                         plot_color = "orange"
                     elif "white" in obj.name:
                         plot_color = "white"
-                    elif "rgb" in obj.name:
-                        plot_color = "blue"
                     elif "yellow" in obj.name:
                         plot_color = "yellow"
+                    elif "blue" in obj.name:
+                        plot_color = "blue"
                     else:
                         plot_color = "gray"
                     # Plot on 2d map
                     self.draw_uncertainty(
-                        track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
+                        min_track, [0, 1], self.ax, plot_color, plot_marker, obj.name)
                 except:
-                    print(track)
+                    print(min_track)
                     continue
-                break
         rospy.loginfo(f"Publishing {len(objs)} Objects")
         pub_objects.detected = objs
         self.detection_pub.publish(pub_objects)
-                   
+
         self.fig.canvas.draw()
         graph_image = np.array(self.fig.canvas.get_renderer()._renderer)
+        graph_image = cv2.cvtColor(graph_image, cv2.COLOR_RGB2BGR)
         img_msg = self.bridge.cv2_to_compressed_imgmsg(graph_image)
         self.publisher_plot.publish(img_msg)
         self.ax.cla()
-        self.ax.set_xlim([-30,30])
-        self.ax.set_ylim([-15,15])        
+        self.ax.set_xlim([-30, 30])
+        self.ax.set_ylim([-15, 15])
+        self.ax.grid()
 
     def draw_uncertainty(self, track, mapping, ax, color, marker, name):
         state, data, min_ind, max_ind, orient, w, v = self.calculate_uncertainty(
             track, mapping)
         ax.scatter(data[0], data[1], color=color, marker=marker)
-        ax.text(data[0], data[1], name + "@" + track.id.split('-')[-1], fontsize="x-small")
+        ax.text(data[0], data[1], name + "@" +
+                track.id.split('-')[-1], fontsize="x-small")
         ellipse = Ellipse(xy=state.mean[mapping[:2], 0],
                           width=2 * np.sqrt(w[max_ind]),
                           height=2 * np.sqrt(w[min_ind]),
