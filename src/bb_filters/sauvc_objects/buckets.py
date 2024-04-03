@@ -344,5 +344,14 @@ class Filter(filter.Filter):
 
         img = fig2img(fig)
         self.buckets_pub.publish(self.cv_bridge.cv2_to_imgmsg(np.array(img)))
+
+        if self.average_pinger_pos is not None:
+            pinger_det = DetectedObject()
+            pinger_det.name = "pinger_mean"
+            pinger_det.world_coords = [self.average_pinger_pos[0],
+                                       self.average_pinger_pos[1],
+                                       self.bucket_depth]
+            pinger_det.move_coords = 2
+            detections.detected.append(pinger_det)
         return detections
 

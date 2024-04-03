@@ -34,6 +34,9 @@ class CentroidTFPublisher:
         self.centroid_det_pub = rospy.Publisher(
             self.centroid_output_topic, DetectedObjects)
         self.latest = {}
+        self.bucket_centroids = {}
+        self.latest_pinger_pos = None
+        self.max_bucket = -1
 
         rospy.init_node(self.node_name)
 
@@ -98,6 +101,11 @@ class CentroidTFPublisher:
                 rospy.logwarn_throttle_identical(5, f"Object {det.name} is disabled")
                 continue
 
+            if det.name == "pinger_mean":
+                self.latest_pinger_pos = det.world_coords
+            if det.name.startswith("bucket_") and det.name[7:].isdecimal():
+                self.max_bucket = max(self.max_bucket, int(det.name[7:]))
+
             self.positions_lock.acquire(blocking=True)
             self.positions[det.name].append(det.world_coords)
             self.object_yaws[det.name] = det.world_yaw
@@ -140,6 +148,7 @@ class CentroidTFPublisher:
             return
         rospy.loginfo_throttle(5, f"{self.positions.keys()}")
         positions = self.positions.items()
+        bucket_name_distance_tfs = []
         for name, position in positions:
             if len(position) == 0:
                 continue
@@ -149,6 +158,8 @@ class CentroidTFPublisher:
                 if centroid is None:
                     continue
                 self.latest[name] = centroid
+
+                is_bucket = name.startswith("bucket_") and name[7:].isdecimal()
 
                 # Create TransformStamped message
                 tf_msg = TransformStamped()
@@ -164,15 +175,30 @@ class CentroidTFPublisher:
                 w, x, y, z = euler2quat(0, 0, np.deg2rad(self.object_yaws[name]))
                 tf_msg.transform.rotation = Quaternion(x, y, z, w)
 
+                if self.latest_pinger_pos is not None and is_bucket:
+                    distance = np.linalg.norm(
+                        np.array(self.latest_pinger_pos) -
+                        np.array(centroid[0]))
+                    bucket_name_distance_tfs.append((name, distance, tf_msg))
+
                 self.tf_pub.publish(tf_msg)
                 self.br.sendTransform(tf_msg)
                 det = self.detections[name]
                 det.world_coords = [*centroid[0]]
-                det.extra = (*det.extra, int(centroid[1]), int(centroid[2] * 10)) #err, cluster size
+                det.extra = (*det.extra, int(centroid[1]), int(centroid[2] * 10)) # err, cluster size
                 output.detected.append(det)
             except Exception as e:
                 rospy.logerr(f"Error publishing centroid for {name}: {e}")
                 traceback.print_exc(file=sys.stdout)
+        if self.latest_pinger_pos is not None and len(bucket_name_distance_tfs) > 0:
+            closest_bucket_tf = min(bucket_name_distance_tfs, key=lambda x: x[1])[2]
+            # Create TransformStamped message
+            closest_bucket_tf.child_frame_id = "bucket_pinger1/centroid_ned"
+
+            self.tf_pub.publish(closest_bucket_tf)
+            self.br.sendTransform(closest_bucket_tf)
+
+
         self.positions_lock.release()
         self.centroid_det_pub.publish(output)
     def spin(self):
