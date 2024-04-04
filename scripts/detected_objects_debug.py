@@ -100,9 +100,10 @@ def callback(msg):
             marker.pose.orientation = quat
 
             # Set scale based on real_dims
-            marker.scale.x = obj.real_dims[0]
-            marker.scale.y = obj.real_dims[1]
-            marker.scale.z = obj.real_dims[2]
+            if len(obj.real_dims) == 3:
+                marker.scale.x = obj.real_dims[0]
+                marker.scale.y = obj.real_dims[1]
+                marker.scale.z = obj.real_dims[2]
             marker.id = idx
             object_markers[idx] = marker
             marker_msg.markers.append(marker)

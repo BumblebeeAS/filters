@@ -12,6 +12,7 @@ class Filter(filter.Filter):
         self.flare_height = config["flare_height"]
         self.flare_width = config["flare_width"]
         self.flare_yaw = self.estimate_yaw
+        rospy.loginfo(f"red_flare_yaw: {self.estimate_yaw}")
         self.estimate_pos = self.estimate_x, self.estimate_y
 
 

@@ -36,6 +36,7 @@ class CentroidTFPublisher:
         self.latest = {}
         self.bucket_centroids = {}
         self.latest_pinger_pos = None
+        self.pinger_bucket_name = ""
         self.max_bucket = -1
 
         rospy.init_node(self.node_name)
@@ -81,7 +82,13 @@ class CentroidTFPublisher:
         self.positions[srv.object_name] = self.positions[srv.object_name][0
             :min(len(self.positions[srv.object_name]), self.window_size[srv.object_name])]
 
-        if srv.object_name in self.latest:
+        if srv.object_name == "bucket_pinger1":
+            if self.pinger_bucket_name in self.latest:
+                _, stddev, num_estimates = self.latest[self.pinger_bucket_name]
+            else:
+                num_estimates = 0
+                stddev = 10000
+        elif srv.object_name in self.latest:
             _, stddev, num_estimates = self.latest[srv.object_name]
         else:
             num_estimates = 0
@@ -191,7 +198,9 @@ class CentroidTFPublisher:
                 rospy.logerr(f"Error publishing centroid for {name}: {e}")
                 traceback.print_exc(file=sys.stdout)
         if self.latest_pinger_pos is not None and len(bucket_name_distance_tfs) > 0:
-            closest_bucket_tf = min(bucket_name_distance_tfs, key=lambda x: x[1])[2]
+            closest_bucket = min(bucket_name_distance_tfs, key=lambda x: x[1])
+            closest_bucket_tf = closest_bucket[2]
+            self.pinger_bucket_name = closest_bucket[0]
             # Create TransformStamped message
             closest_bucket_tf.child_frame_id = "bucket_pinger1/centroid_ned"
 
