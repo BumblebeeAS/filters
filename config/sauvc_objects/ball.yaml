@@ -1,2 +1,4 @@
 ball_diameter: 0.036
-ball_depth: 1.98
+#shallow pool
+# ball_depth: 1.05
+ball_depth: 1.95
