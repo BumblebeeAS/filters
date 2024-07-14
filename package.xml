@@ -9,6 +9,7 @@
 
   <exec_depend>bb_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>message_filters</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -16,6 +17,6 @@
   <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>
