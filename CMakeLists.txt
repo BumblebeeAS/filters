@@ -49,7 +49,7 @@ install(PROGRAMS
   scripts/lidar_backproject.py
   scripts/UKF_Tracker.py
   scripts/lidar_detected_object_2d_filter.py
-  scripts/zed_tracker.py    
+  scripts/zed_detector.py    
   DESTINATION lib/${PROJECT_NAME}
 )
 

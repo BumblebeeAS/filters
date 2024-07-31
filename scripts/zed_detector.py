@@ -3,9 +3,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from geometry_msgs.msg import Quaternion
-# from zed_interfaces.msg import ConfidenceMap, Detection2DArray
 import cv2
-from bb_perception_msgs.msg import DetectedObject2DArray, DetectedObject3DArray, DetectedObject3D, Shape
+from bb_perception_msgs.msg import DetectedObject2DArray, DetectedObject3DArray, DetectedObject3D
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from cv_bridge import CvBridge
 import numpy as np
@@ -15,15 +14,15 @@ from operator import attrgetter
 from bb_filters.min_bounding_rect import minimum_bounding_rectangle
 from sklearn.cluster import DBSCAN
 
-class ZEDTrackerNode(Node):
+class ZEDDetectorNode(Node):
     def __init__(self):
-        super().__init__('zed_tracker_node')
+        super().__init__('zed_detector_node')
         self.depth_sub = Subscriber(self, Image, '/asv4/zed2i/zed_node/depth/depth_registered')
         self.confidence_sub = Subscriber(self, Image, '/asv4/zed2i/zed_node/confidence/confidence_map')
         self.image_sub = Subscriber(self, CompressedImage, '/asv4/zed2i/zed_node/left/image_rect_color/compressed')
         self.detection_sub = Subscriber(self, DetectedObject2DArray, '/asv4/vision/detections_2d_zed_left')
         self.detection_pub = self.create_publisher(DetectedObject3DArray, '/asv4/vision/detections_3d_zed_left', 10)
-        self.debug_img_pub = self.create_publisher(Image, '/asv4/vision/debug_img_zed_tracker', 10)
+        self.debug_img_pub = self.create_publisher(Image, '/asv4/vision/debug_img_zed_detector', 10)
         self.camera_info_sub = Subscriber(self, CameraInfo, '/asv4/zed2i/zed_node/left/camera_info')
         self.confidence_threshold = 0.5  # Initial confidence threshold
         self.declare_parameter('confidence_threshold', self.confidence_threshold)
@@ -89,7 +88,7 @@ class ZEDTrackerNode(Node):
         combined_mask = np.zeros_like(depth_img).astype(np.uint8)
         camera_pose = detections.sensor_pose
 
-        T_cam = ZEDTrackerNode.convert_pose_to_matrix(camera_pose)
+        T_cam = ZEDDetectorNode.convert_pose_to_matrix(camera_pose)
         K_cam = np.array(camera_info.k).reshape(3, 3)
 
         detections_3d = DetectedObject3DArray()
@@ -195,9 +194,9 @@ class ZEDTrackerNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    zed_tracker_node = ZEDTrackerNode()
-    rclpy.spin(zed_tracker_node)
-    zed_tracker_node.destroy_node()
+    zed_detector_node = ZEDDetectorNode()
+    rclpy.spin(zed_detector_node)
+    zed_detector_node.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
