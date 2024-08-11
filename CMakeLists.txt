@@ -45,11 +45,14 @@ endforeach()
 
 install(PROGRAMS
   scripts/detected_object_3d_filter.py
+  scripts/detected_object_3d_labelling.py
   scripts/lidar_backproject_ml.py
   scripts/lidar_backproject.py
   scripts/UKF_Tracker.py
   scripts/lidar_detected_object_2d_filter.py
-  scripts/zed_detector.py    
+  scripts/zed_detector.py
+  scripts/detected_object_2d_array_vis.py
+  scripts/detected_object_3d_array_vis.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

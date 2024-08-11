@@ -4,7 +4,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from geometry_msgs.msg import Quaternion
 import cv2
-from bb_perception_msgs.msg import DetectedObject2DArray, DetectedObject3DArray, DetectedObject3D
+from bb_perception_msgs.msg import (
+    DetectedObject2DArray,
+    DetectedObject3DArray,
+    DetectedObject3D,
+)
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from cv_bridge import CvBridge
 import numpy as np
@@ -14,52 +18,73 @@ from operator import attrgetter
 from bb_filters.min_bounding_rect import minimum_bounding_rectangle
 from sklearn.cluster import DBSCAN
 
+
 class ZEDDetectorNode(Node):
     def __init__(self):
-        super().__init__('zed_detector_node')
-        self.depth_sub = Subscriber(self, Image, '/asv4/zed2i/zed_node/depth/depth_registered')
-        self.confidence_sub = Subscriber(self, Image, '/asv4/zed2i/zed_node/confidence/confidence_map')
-        self.image_sub = Subscriber(self, CompressedImage, '/asv4/zed2i/zed_node/left/image_rect_color/compressed')
-        self.detection_sub = Subscriber(self, DetectedObject2DArray, '/asv4/vision/detections_2d_zed_left')
-        self.detection_pub = self.create_publisher(DetectedObject3DArray, '/asv4/vision/detections_3d_zed_left', 10)
-        self.debug_img_pub = self.create_publisher(Image, '/asv4/vision/debug_img_zed_detector', 10)
-        self.camera_info_sub = Subscriber(self, CameraInfo, '/asv4/zed2i/zed_node/left/camera_info')
+        super().__init__("zed_detector_node")
+        self.depth_sub = Subscriber(
+            self, Image, "/asv4/zed2i/zed_node/depth/depth_registered"
+        )
+        self.confidence_sub = Subscriber(
+            self, Image, "/asv4/zed2i/zed_node/confidence/confidence_map"
+        )
+        self.image_sub = Subscriber(
+            self,
+            CompressedImage,
+            "/asv4/zed2i/zed_node/left/image_rect_color/compressed",
+        )
+        self.detection_sub = Subscriber(
+            self, DetectedObject2DArray, "/asv4/vision/detections_2d_zed_left"
+        )
+        self.detection_pub = self.create_publisher(
+            DetectedObject3DArray, "/asv4/vision/detections_3d_zed_left", 10
+        )
+        self.debug_img_pub = self.create_publisher(
+            Image, "/asv4/vision/debug_img_zed_detector", 10
+        )
+        self.camera_info_sub = Subscriber(
+            self, CameraInfo, "/asv4/zed2i/zed_node/left/camera_info"
+        )
         self.confidence_threshold = 0.5  # Initial confidence threshold
-        self.declare_parameter('confidence_threshold', self.confidence_threshold)
-        self.declare_parameter('debug_confidence', False)
-        self.declare_parameter('debug_depth', False)
-        self.declare_parameter('skip_pixels', 15)
-        self.declare_parameter('mode_2d', False)
+        self.declare_parameter("confidence_threshold", self.confidence_threshold)
+        self.declare_parameter("debug_confidence", False)
+        self.declare_parameter("debug_depth", False)
+        self.declare_parameter("skip_pixels", 15)
+        self.declare_parameter("mode_2d", False)
 
         self.dbscan = DBSCAN(eps=0.1, min_samples=5)
-        
-        self.skip_pixels = self.get_parameter('skip_pixels').value  # Skip every n pixels
-        self.mode_2d = self.get_parameter('mode_2d').value
+
+        self.skip_pixels = self.get_parameter(
+            "skip_pixels"
+        ).value  # Skip every n pixels
+        self.mode_2d = self.get_parameter("mode_2d").value
         self.add_on_set_parameters_callback(self.on_set_parameters)
         self.bridge = CvBridge()
         self.camera_info = None
         self.time_sync = ApproximateTimeSynchronizer(
-            [   
+            [
                 self.depth_sub,
                 self.confidence_sub,
                 self.image_sub,
                 self.detection_sub,
-                self.camera_info_sub
-            ], 20, 0.01
+                self.camera_info_sub,
+            ],
+            20,
+            0.01,
         )
         self.time_sync.registerCallback(self.callback)
 
-
-
     def on_set_parameters(self, params):
         for param in params:
-            if param.name == 'confidence_threshold':
+            if param.name == "confidence_threshold":
                 self.confidence_threshold = param.value.double_value
-                self.get_logger().info(f"New confidence threshold: {self.confidence_threshold}")
-            elif param.name == 'debug_confidence':
+                self.get_logger().info(
+                    f"New confidence threshold: {self.confidence_threshold}"
+                )
+            elif param.name == "debug_confidence":
                 self.debug_confidence = param.value.bool_value
                 self.get_logger().info(f"Debug confidence: {self.debug_confidence}")
-            elif param.name == 'debug_depth':
+            elif param.name == "debug_depth":
                 self.debug_depth = param.value.bool_value
                 self.get_logger().info(f"Debug depth: {self.debug_depth}")
 
@@ -69,11 +94,18 @@ class ZEDDetectorNode(Node):
     @staticmethod
     def convert_pose_to_matrix(pose):
         T = np.eye(4)
-        T[0:3, 0:3] = quat2mat(attrgetter("w","x","y","z")(pose.orientation))
+        T[0:3, 0:3] = quat2mat(attrgetter("w", "x", "y", "z")(pose.orientation))
         T[0:3, 3] = attrgetter("x", "y", "z")(pose.position)
         return T
 
-    def callback(self, depth, confidence, image, detections: DetectedObject2DArray, camera_info: CameraInfo):
+    def callback(
+        self,
+        depth,
+        confidence,
+        image,
+        detections: DetectedObject2DArray,
+        camera_info: CameraInfo,
+    ):
         self.get_logger().info(f"{depth.header.stamp}")
         depth_img = self.bridge.imgmsg_to_cv2(depth)
         confidence_img = self.bridge.imgmsg_to_cv2(confidence)
@@ -95,7 +127,7 @@ class ZEDDetectorNode(Node):
 
         debug_img = np.zeros_like(depth_img).astype(np.uint8)
         for i, detection in enumerate(detection_array):
-            
+
             poly = np.array(detection.contour).reshape(-1, 2).astype(np.int32)
             mask = np.zeros_like(depth_img).astype(np.uint8)
             cv2.fillPoly(mask, pts=[poly], color=(1))
@@ -108,9 +140,13 @@ class ZEDDetectorNode(Node):
             # draw contours of color get_color(i) on debug_img
             print(i)
             cv2.drawContours(debug_img, [poly], -1, self.get_color(i), 2)
-            cx, cy, w, h = detection.centre_x, detection.centre_y, detection.bbox_width, detection.bbox_height
-            x1, x2, y1, y2 = map(int, (cx - w/2, cx + w/2, cy - h/2, cy + h/2))
-
+            cx, cy, w, h = (
+                detection.centre_x,
+                detection.centre_y,
+                detection.bbox_width,
+                detection.bbox_height,
+            )
+            x1, x2, y1, y2 = map(int, (cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2))
 
             # 3dpoints = []
 
@@ -137,12 +173,12 @@ class ZEDDetectorNode(Node):
             if len(projected_points) < 5:
                 continue
             try:
-                rect = minimum_bounding_rectangle(projected_points[:,:2])
+                rect = minimum_bounding_rectangle(projected_points[:, :2])
             except:
                 continue
             width = np.linalg.norm(rect[0] - rect[1])
             length = np.linalg.norm(rect[1] - rect[2])
-            height = np.max(projected_points[:, 2]) - np.min(projected_points[:, 2])            
+            height = np.max(projected_points[:, 2]) - np.min(projected_points[:, 2])
 
             det_3d = DetectedObject3D()
             det_3d.hypothesis = detection.hypothesis
@@ -152,14 +188,8 @@ class ZEDDetectorNode(Node):
             setattr(
                 det_3d.hypothesis.kinematics.pose_with_covariance.pose,
                 "orientation",
-                Quaternion(
-                    **dict(
-                        zip(
-                            ["w", "x", "y", "z"],
-                            euler2quat(0, 0, yaw)
-                        )
-                    )
-                ))
+                Quaternion(**dict(zip(["w", "x", "y", "z"], euler2quat(0, 0, yaw)))),
+            )
             det_3d.hypothesis.kinematics.header = detections.header
             det_3d.hypothesis.kinematics.pose_with_covariance.pose.position.x = x_3d
             det_3d.hypothesis.kinematics.pose_with_covariance.pose.position.y = y_3d
@@ -170,27 +200,24 @@ class ZEDDetectorNode(Node):
             det_3d.hypothesis.shape.dimensions.z = height
             det_3d.hypothesis.kinematics.yaw_ambiguity_deg = 180.0
             detections_3d.objects.append(det_3d)
-        
-        
+
         detections_3d.header = detections.header
         detections_3d.source = detections.sensor
         detections_3d.sensor_pose = detections.sensor_pose
 
+        # get depth values from mask
+        # estimate 3d position given Pose from detections.sensor_pose
 
-
-            # get depth values from mask
-            # estimate 3d position given Pose from detections.sensor_pose
-        
-        masked_rgb = cv2.bitwise_and(image_img, image_img, mask=combined_mask.astype(np.uint8))
+        masked_rgb = cv2.bitwise_and(
+            image_img, image_img, mask=combined_mask.astype(np.uint8)
+        )
         # print(type(masked_depth))
-        img = self.bridge.cv2_to_imgmsg(masked_rgb, encoding='bgr8')
+        img = self.bridge.cv2_to_imgmsg(masked_rgb, encoding="bgr8")
         img.header.stamp = image.header.stamp
         self.debug_img_pub.publish(img)
         self.detection_pub.publish(detections_3d)
         # print(len(detection_array))
 
-        
-        
 
 def main(args=None):
     rclpy.init(args=args)
@@ -199,5 +226,6 @@ def main(args=None):
     zed_detector_node.destroy_node()
     rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

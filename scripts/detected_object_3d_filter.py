@@ -1,85 +1,118 @@
-import rclpy
-from rclpy.node import Node
+#!/usr/bin/env python3
 from collections import defaultdict
-import numpy as np
-from bb_msgs.msg import DetectedObject, DetectedObjectsStamped
-from motrackers import IOUTracker, SORT
+from pathlib import Path
 
+import numpy as np
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from bb_perception_msgs.msg import DetectedObject3D, DetectedObject3DArray, ObjectHypothesis
+from geometry_msgs.msg import Vector3
+from ml_detector.schema_validator import get_config, load_schema
+from motrackers import SORT
+from rclpy.node import Node
 
 
 class TrackerFilter(Node):
     def __init__(self):
-        super().__init__('motracker_iou_tracker_node')
-        # self.declare_parameter("raw_topic", "/asv4/vision/lidar/detected_stamped")
-        self.declare_parameter("raw_topic", "/asv4/vision/external/detected_stamped")
-        self.declare_parameter("filtered_topic", "/asv4/vision/external/fused_detections")
-        self.raw_topic = self.get_parameter("raw_topic")\
-                                        .get_parameter_value().string_value
-        self.filtered_topic = self.get_parameter("filtered_topic")\
-                                        .get_parameter_value().string_value
+        super().__init__("motracker_iou_tracker_node")
+        self.declare_parameter(
+            "dets_3d_topic", "/asv4/vision/lidar_small_objects/dets_3d"
+        )
+        self.declare_parameter(
+            "filtered_topic", "/asv4/vision/lidar_small_objects/dets_3d/filtered"
+        )
+        self.declare_parameter("objects_config", "robotx.yaml")
+        objects_schema_path = (
+            Path(get_package_share_directory("ml_detector"))
+            / "configs"
+            / "objects_schema.json"
+        )
+        self.objects_schema = load_schema(objects_schema_path)
+        self.objects_config = get_config(
+            Path(get_package_share_directory("ml_detector"))
+            / "configs"
+            / "objects"
+            / self.get_parameter("objects_config").get_parameter_value().string_value,
+            self.objects_schema,
+        )
+        self.id_to_name = {
+            obj["label"]: obj["name"] for obj in self.objects_config["objects"]
+        }
+        self.name_to_id = {v: k for k, v in self.id_to_name.items()}
+
+        self.dets_3d_topic = (
+            self.get_parameter("dets_3d_topic").get_parameter_value().string_value
+        )
+        self.filtered_topic = (
+            self.get_parameter("filtered_topic").get_parameter_value().string_value
+        )
         self.tracked_objects_pub = self.create_publisher(
-            DetectedObjectsStamped, self.filtered_topic, 10)
-        self.object_list_sub = self.create_subscription(
-            DetectedObjectsStamped, self.raw_topic,
-            self.object_list_callback, 10)
+            DetectedObject3DArray, self.filtered_topic, 10
+        )
+
+        self.buffer = 1.5
         self.tracker = SORT(
-            max_lost=10,
+            max_lost=5,
             # min_detection_confidence=0.2,
             # max_detection_confidence=1.0,
             iou_threshold=0.001,
-            tracker_output_format="visdrone_challenge")
+            tracker_output_format="visdrone_challenge",
+        )
         self.latest_header = None
         self.min_age = 3
         self.track_counts = defaultdict(lambda: np.zeros(6))
+        self.detection_sub = self.create_subscription(
+            DetectedObject3DArray,
+            self.dets_3d_topic,
+            self.detection_callback,
+            10,
+        )
+        self.obj_heights = defaultdict(
+            lambda: (0, 0)
+        )
+        self.obj_z = defaultdict(
+            lambda: (0, 0)
+        )
 
-    @property
-    def name_to_id(self):
-        return {
-            "mb_round_buoy_black": 0,
-            "mb_round_buoy_orange": 1,
-            "mb_marker_buoy_red": 2,
-            "mb_marker_buoy_green": 3,
-            "mb_marker_buoy_black": 4,
-            "mb_marker_buoy_white": 5,
-            "pillar": 6,
-        }
-
-    @property
-    def id_to_name(self):
-        return {v: k for k, v in self.name_to_id.items()}
-
-    def object_list_callback(self, msg: DetectedObjectsStamped):
+    def detection_callback(self, msg: DetectedObject3DArray):
         self.latest_header = msg.header
         bboxes, confidences, ids = [], [], []
 
-        for det in msg.detected:
-            if len(det.world_coords) == 0:
+        for det in msg.objects:
+            if det.hypothesis.class_id not in self.id_to_name:
                 continue
-            if det.name not in self.name_to_id.keys():
-                continue
-            bboxes.append(
-                [
-                    det.world_coords[0] - 0.2,
-                    det.world_coords[1] - 0.2,
-                    0.4,
-                    0.4,
-                ]
-            )
-            confidences.append(det.extra[0] if len(det.extra) > 0 else 0.6)
-            ids.append(self.name_to_id[det.name])
+
+            x = det.hypothesis.kinematics.pose_with_covariance.pose.position.x
+            y = det.hypothesis.kinematics.pose_with_covariance.pose.position.y
+            dx = det.hypothesis.shape.dimensions.x + self.buffer
+            dy = det.hypothesis.shape.dimensions.y + self.buffer
+            bboxes.append([x - dx / y, y - dy / y, dx, dy])
+            prob = det.hypothesis.probability
+            if prob == 0:
+                prob = 0.6
+            confidences.append(prob)
+            ids.append(det.hypothesis.class_id)
+            (h, ct) = self.obj_heights[det.hypothesis.class_id]
+            self.obj_heights[det.hypothesis.class_id] = (
+                h + det.hypothesis.shape.dimensions.z,
+                ct + 1)
+            (h, ct) = self.obj_z[det.hypothesis.class_id]
+            self.obj_z[det.hypothesis.class_id] = (
+                h + det.hypothesis.kinematics.pose_with_covariance.pose.position.z,
+                ct + 1)
 
         tracked_objects = self.tracker.update(
             np.array(bboxes), np.array(confidences), np.array(ids)
         )
 
         # Publish tracked objects
-        output = DetectedObjectsStamped()
+        output = DetectedObject3DArray()
         output.header = msg.header
 
         for track in tracked_objects:
             (
                 frame,
-                id,
+                tid,
                 bb_left,
                 bb_top,
                 bb_width,
@@ -89,22 +122,37 @@ class TrackerFilter(Node):
                 trunc,
                 occ,
             ) = track
-            tracked_obj_msg = DetectedObject()
-            tracked_obj_msg.name = self.id_to_name[class_id]
-            tracked_obj_msg.world_coords = [
-                bb_left + bb_width / 2,
-                bb_top + bb_height / 2,
-                0.0,
-            ]
-            tracked_obj_msg.move_coords = 2
-            tracked_obj_msg.real_dims = [
-                bb_width,
-                bb_height,
-                0.5
-            ]
-            tracked_obj_msg.tracker_confidence = [int(confidence)]
-            tracked_obj_msg.extra = [int(frame)]
-            output.detected.append(tracked_obj_msg)
+            tracked_obj_msg = DetectedObject3D()
+            tracked_obj_msg.hypothesis.track_id = tid
+            print(class_id)
+            tracked_obj_msg.hypothesis.class_id = int(class_id)
+            tracked_obj_msg.hypothesis.kinematics.header = msg.objects[0].hypothesis.kinematics.header
+
+            width, height = max(bb_width - self.buffer, 0.2), max(bb_height - self.buffer, 0.2)
+            tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.x = (
+                bb_left + width / 2
+            )
+            tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.y = (
+                bb_top + height / 2
+            )
+            tracked_obj_msg.hypothesis.mode = ObjectHypothesis.MODE_TRACKED
+            tracked_obj_msg.hypothesis.probability = confidence
+            tracked_obj_msg.hypothesis.shape.category = 0
+            h = self.obj_heights[class_id]
+            tracked_obj_msg.hypothesis.shape.dimensions = Vector3(
+                x=width,
+                y=height,
+                z=h[0] / h[1]
+            )
+            z = self.obj_z[class_id]
+            tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.z = (
+               z[0] / z[1] / 2
+            )
+            output.objects.append(tracked_obj_msg)
+        output.header = msg.header
+        output.name = msg.name
+        output.source = msg.source
+        output.sensor_pose = msg.sensor_pose
         self.tracked_objects_pub.publish(output)
 
 
