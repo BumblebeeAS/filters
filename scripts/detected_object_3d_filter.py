@@ -146,7 +146,7 @@ class TrackerFilter(Node):
             )
             z = self.obj_z[class_id]
             tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.z = (
-               z[0] / z[1] / 2
+               np.sign(z[0]) * h[0] / h[1] / 2
             )
             output.objects.append(tracked_obj_msg)
         output.header = msg.header

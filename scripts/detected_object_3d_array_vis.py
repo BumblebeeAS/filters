@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import List
 
+from copy import deepcopy
+
 import rclpy
 import tf2_ros
 from ament_index_python.packages import get_package_share_directory
@@ -111,15 +113,36 @@ class DetectedObject3DArrayVisNode(Node):
                 elif "sphere" in class_name:
                     marker.type = Marker.SPHERE
                 marker.action = Marker.ADD
-                marker.pose = detection.hypothesis.kinematics.pose_with_covariance.pose
-                print(detection.hypothesis.shape.dimensions)
-                marker.scale = detection.hypothesis.shape.dimensions
+                marker.pose = deepcopy(detection.hypothesis.kinematics.pose_with_covariance.pose)
+                # if self.input_detections_topics[0] == "/asv4/vision/lidar_small_objects/dets_3d/labelled":
+                #     self.get_logger().info(f"frame: {marker.header.frame_id} z: {marker.pose.position.z} {detection.hypothesis.shape.dimensions.z}")
+                marker.scale = deepcopy(detection.hypothesis.shape.dimensions)
+                marker.scale.x *= 1.5
+                marker.scale.y *= 1.5
+                marker.scale.z *= 1.5
                 tid = detection.hypothesis.track_id
                 if detection.hypothesis.mode == ObjectHypothesis.MODE_DETECTED:
                     marker.color = self.get_color(class_name)
                     marker.color.a = 0.2
                 else:
                     marker.color = self.get_color(tid)
+
+                if "red" in class_name:
+                    marker.color.r = 1.0
+                    marker.color.g = 0.0
+                    marker.color.b = 0.0
+                elif "green" in class_name:
+                    marker.color.r = 0.0
+                    marker.color.g = 1.0
+                    marker.color.b = 0.0
+                elif "blue" in class_name:
+                    marker.color.r = 0.0
+                    marker.color.g = 0.0
+                    marker.color.b = 1.0
+                elif "black" in class_name:
+                    marker.color.r = marker.color.g = marker.color.b = 0.0
+                elif "light_tower" in class_name:
+                    marker.color.r = marker.color.g = marker.color.b = 0.2
 
                 marker.lifetime = Duration(sec=1)
                 markers.markers.append(marker)
@@ -132,9 +155,9 @@ class DetectedObject3DArrayVisNode(Node):
                 text_marker.type = Marker.TEXT_VIEW_FACING
                 text_marker.text = f"{class_name}: {tid}" if tid else class_name
                 text_marker.action = Marker.ADD
-                text_marker.pose.position = marker.pose.position
-                text_marker.pose.position.z += marker.scale.z / 2.0 + 0.2  # Lift text above the object
-                text_marker.scale.z = 0.3  # Set the scale of the text
+                text_marker.pose.position = deepcopy(marker.pose.position)
+                text_marker.pose.position.z += marker.scale.z + 0.5  # Lift text above the object
+                text_marker.scale.z = 1.0  # Set the scale of the text
                 text_marker.color = marker.color
                 text_marker.color.a = 1.0  # Make text fully opaque
                 text_marker.lifetime = marker.lifetime
