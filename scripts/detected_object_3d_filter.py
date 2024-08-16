@@ -73,6 +73,7 @@ class TrackerFilter(Node):
         self.obj_z = defaultdict(
             lambda: (0, 0)
         )
+        self.latest_header = None
 
     def detection_callback(self, msg: DetectedObject3DArray):
         self.latest_header = msg.header
@@ -100,6 +101,8 @@ class TrackerFilter(Node):
             self.obj_z[det.hypothesis.class_id] = (
                 h + det.hypothesis.kinematics.pose_with_covariance.pose.position.z,
                 ct + 1)
+        if len(msg.objects) > 0:
+            self.latest_header = msg.objects[0].hypothesis.kinematics.header
 
         tracked_objects = self.tracker.update(
             np.array(bboxes), np.array(confidences), np.array(ids)
@@ -126,7 +129,7 @@ class TrackerFilter(Node):
             tracked_obj_msg.hypothesis.track_id = tid
             print(class_id)
             tracked_obj_msg.hypothesis.class_id = int(class_id)
-            tracked_obj_msg.hypothesis.kinematics.header = msg.objects[0].hypothesis.kinematics.header
+            tracked_obj_msg.hypothesis.kinematics.header = self.latest_header
 
             width, height = max(bb_width - self.buffer, 0.2), max(bb_height - self.buffer, 0.2)
             tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.x = (
