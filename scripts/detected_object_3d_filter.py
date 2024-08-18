@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 from collections import defaultdict
 from pathlib import Path
-
+from operator import attrgetter
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from bb_perception_msgs.msg import DetectedObject3D, DetectedObject3DArray, ObjectHypothesis
-from geometry_msgs.msg import Vector3
+from bb_perception_msgs.msg import (
+    DetectedObject3D,
+    DetectedObject3DArray,
+    ObjectHypothesis,
+)
+from geometry_msgs.msg import Vector3, Quaternion
 from ml_detector.schema_validator import get_config, load_schema
-from motrackers import SORT
+
+# from motrackers import SORT
+from bb_filters.sort_3d import SORT3D
 from rclpy.node import Node
+from transforms3d.euler import quat2euler, euler2quat
 
 
 class TrackerFilter(Node):
@@ -51,12 +58,13 @@ class TrackerFilter(Node):
         )
 
         self.buffer = 1.5
-        self.tracker = SORT(
-            max_lost=5,
+        self.tracker = SORT3D(
+            max_lost=10,
             # min_detection_confidence=0.2,
             # max_detection_confidence=1.0,
-            iou_threshold=0.001,
-            tracker_output_format="visdrone_challenge",
+            # iou_threshold=0.001,
+            dist_threshold=1.0,
+            # tracker_output_format="visdrone_challenge",
         )
         self.latest_header = None
         self.min_age = 3
@@ -67,12 +75,8 @@ class TrackerFilter(Node):
             self.detection_callback,
             10,
         )
-        self.obj_heights = defaultdict(
-            lambda: (0, 0)
-        )
-        self.obj_z = defaultdict(
-            lambda: (0, 0)
-        )
+        self.obj_heights = defaultdict(lambda: (0, 0))
+        self.obj_z = defaultdict(lambda: (0, 0))
         self.latest_header = None
 
     def detection_callback(self, msg: DetectedObject3DArray):
@@ -83,11 +87,16 @@ class TrackerFilter(Node):
             if det.hypothesis.class_id not in self.id_to_name:
                 continue
 
-            x = det.hypothesis.kinematics.pose_with_covariance.pose.position.x
-            y = det.hypothesis.kinematics.pose_with_covariance.pose.position.y
+            pose = det.hypothesis.kinematics.pose_with_covariance.pose
+            x = pose.position.x - det.hypothesis.shape.dimensions.x / 2
+            y = pose.position.y - det.hypothesis.shape.dimensions.y / 2
+            z = pose.position.z - det.hypothesis.shape.dimensions.z / 2
             dx = det.hypothesis.shape.dimensions.x + self.buffer
             dy = det.hypothesis.shape.dimensions.y + self.buffer
-            bboxes.append([x - dx / y, y - dy / y, dx, dy])
+            dz = det.hypothesis.shape.dimensions.z + self.buffer
+            yaw = quat2euler(attrgetter("w", "x", "y", "z")(pose.orientation))[2]
+            # self.get_logger().info(f"{self.latest_header}, {np.rad2deg(yaw)}")
+            bboxes.append([x, y, z, dx, dy, dz, yaw])
             prob = det.hypothesis.probability
             if prob == 0:
                 prob = 0.6
@@ -96,11 +105,13 @@ class TrackerFilter(Node):
             (h, ct) = self.obj_heights[det.hypothesis.class_id]
             self.obj_heights[det.hypothesis.class_id] = (
                 h + det.hypothesis.shape.dimensions.z,
-                ct + 1)
+                ct + 1,
+            )
             (h, ct) = self.obj_z[det.hypothesis.class_id]
             self.obj_z[det.hypothesis.class_id] = (
                 h + det.hypothesis.kinematics.pose_with_covariance.pose.position.z,
-                ct + 1)
+                ct + 1,
+            )
         if len(msg.objects) > 0:
             self.latest_header = msg.objects[0].hypothesis.kinematics.header
 
@@ -116,10 +127,13 @@ class TrackerFilter(Node):
             (
                 frame,
                 tid,
-                bb_left,
-                bb_top,
-                bb_width,
-                bb_height,
+                bb_x,
+                bb_y,
+                bb_z,
+                bb_dx,
+                bb_dy,
+                bb_dz,
+                bb_yaw,
                 confidence,
                 class_id,
                 trunc,
@@ -131,25 +145,34 @@ class TrackerFilter(Node):
             tracked_obj_msg.hypothesis.class_id = int(class_id)
             tracked_obj_msg.hypothesis.kinematics.header = self.latest_header
 
-            width, height = max(bb_width - self.buffer, 0.2), max(bb_height - self.buffer, 0.2)
+            width, length, height = (
+                max(bb_dx - self.buffer, 0.2),
+                max(bb_dy - self.buffer, 0.2),
+                max(bb_dz - self.buffer, 0.2),
+            )
             tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.x = (
-                bb_left + width / 2
+                bb_x + width / 2
             )
             tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.y = (
-                bb_top + height / 2
+                bb_y + length / 2
+            )
+            tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.z = (
+                bb_z + height / 2
             )
             tracked_obj_msg.hypothesis.mode = ObjectHypothesis.MODE_TRACKED
             tracked_obj_msg.hypothesis.probability = confidence
             tracked_obj_msg.hypothesis.shape.category = 0
-            h = self.obj_heights[class_id]
             tracked_obj_msg.hypothesis.shape.dimensions = Vector3(
-                x=width,
-                y=height,
-                z=h[0] / h[1]
+                x=width, y=length, z=height
             )
-            z = self.obj_z[class_id]
-            tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.z = (
-               np.sign(z[0]) * h[0] / h[1] / 2
+            # z = self.obj_z[class_id]
+            # tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.position.z = (
+            #     np.sign(z[0]) * h[0] / h[1] / 2
+            # )
+            q = euler2quat(0, 0, bb_yaw)
+            # self.get_logger().info(f"post yaw: {np.rad2deg(bb_yaw)}")
+            tracked_obj_msg.hypothesis.kinematics.pose_with_covariance.pose.orientation = Quaternion(
+                **dict(zip("wxyz", q))
             )
             output.objects.append(tracked_obj_msg)
         output.header = msg.header

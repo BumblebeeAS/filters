@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- Define macros for origin tags -->
+    <xacro:macro name="fixed_joint_origin" params="xyz rpy">
+        <origin xyz="${xyz}" rpy="${rpy}" />
+    </xacro:macro>
+
+    <xacro:macro name="hole_origin" params="x y z">
+        <origin xyz="${x} ${y} ${z}" rpy="0 0 0" />
+    </xacro:macro>
+
+    <!-- Base Links -->
+    <xacro:macro name="create_base_link" params="name parent parent_xyz rpy">
+        <link name="${name}" />
+        <joint name="${name}_joint" type="fixed">
+          <xacro:fixed_joint_origin xyz="${parent_xyz}" rpy="${rpy}" />
+          <parent link="${parent}" />
+          <child link="${name}" />
+        </joint>
+    </xacro:macro>
+
+    <!-- Dock -->
+    <xacro:create_base_link name="dock/base_link_ned" parent="dock" parent_xyz="0 0 0" rpy="0 0 0" />
+    <xacro:create_base_link name="dock/base_link" parent="dock/base_link_ned" parent_xyz="0 0 0" rpy="1.5708 0 0" />
+    <link name="dock"/>
+
+    <!-- Placards -->
+    <xacro:macro name="create_placard" params="name parent_xyz">
+        <link name="${name}" />
+        <joint name="${name}_joint" type="fixed">
+          <xacro:fixed_joint_origin xyz="${parent_xyz}" rpy="0 0 0" />
+          <parent link="dock/base_link_ned" />
+          <child link="${name}" />
+        </joint>
+    </xacro:macro>
+
+    <xacro:create_placard name="placard1/base_link_ned" parent_xyz="2.8 -6 -1.5" />
+    <xacro:create_placard name="placard2/base_link_ned" parent_xyz="2.8 0 -1.5" />
+    <xacro:create_placard name="placard3/base_link_ned" parent_xyz="2.8 6 -1.5" />
+
+    <!-- Holes -->
+    <xacro:macro name="create_hole" params="placard name x y z">
+        <link name="${placard}/${name}/base_link_ned" />
+        <joint name="${placard}/${name}/base_link_ned_joint" type="fixed">
+          <xacro:hole_origin x="${x}" y="${y}" z="${z}" />
+          <parent link="${placard}/base_link_ned" />
+          <child link="${placard}/${name}/base_link_ned" />
+        </joint>
+    </xacro:macro>
+
+    <xacro:create_hole placard="placard1" name="big_hole" x="0" y="-0.5" z="-1.4" />
+    <xacro:create_hole placard="placard1" name="small_hole" x="0" y="0.625" z="-1.4" />
+
+    <xacro:create_hole placard="placard2" name="big_hole" x="0" y="-0.5" z="-1.4" />
+    <xacro:create_hole placard="placard2" name="small_hole" x="0" y="0.625" z="-1.4" />
+
+    <xacro:create_hole placard="placard3" name="big_hole" x="0" y="-0.5" z="-1.4" />
+    <xacro:create_hole placard="placard3" name="small_hole" x="0" y="0.625" z="-1.4" />
+
+</robot>

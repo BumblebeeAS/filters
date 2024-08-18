@@ -21,26 +21,15 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 
-foreach (FOLDER configs)
-  if (${CMAKE_INSTALL_PREFIX} MATCHES "^.*install/${PROJECT_NAME}.*$")
-    message("Non-merge install: Creating symbolic link to ${FOLDER} in ${CMAKE_INSTALL_PREFIX}/share/")
-    file(MAKE_DIRECTORY ${CMAKE_INSTALL_PREFIX}/share)
-    file(
-      CREATE_LINK
-      ${CMAKE_CURRENT_SOURCE_DIR}/${FOLDER}
-      ${CMAKE_INSTALL_PREFIX}/share/${FOLDER}
-      SYMBOLIC
-      )
-  else()
-      message("Merge install: Creating symbolic link to ${FOLDER} in ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}")
-      file(MAKE_DIRECTORY ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME})
-      file(
-        CREATE_LINK
-        ${CMAKE_CURRENT_SOURCE_DIR}/${FOLDER}
-        ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/${FOLDER}
-        SYMBOLIC
-      )
-  endif()
+foreach (FOLDER configs urdf)
+  message("Merge install: Creating symbolic link to ${FOLDER} in ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}")
+  file(MAKE_DIRECTORY ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME})
+  file(
+    CREATE_LINK
+    ${CMAKE_CURRENT_SOURCE_DIR}/${FOLDER}
+    ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/${FOLDER}
+    SYMBOLIC
+  )
 endforeach()
 
 install(PROGRAMS

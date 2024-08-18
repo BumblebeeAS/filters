@@ -29,6 +29,8 @@ class DetectedObject3DArrayVisNode(Node):
         self.declare_parameter("output_markers_topic", "debug_markers_topic")
         self.declare_parameter("objects_config", "robotx.yaml")
         self.declare_parameter("publish_tf", False)
+        # if publish_tf_unique true, publish tf as the object name. else, publish as object name _ id
+        self.declare_parameter("publish_tf_unique", False)
 
         self.input_detections_topics = (
             self.get_parameter("input_detections_topics")
@@ -39,6 +41,7 @@ class DetectedObject3DArrayVisNode(Node):
             self.get_parameter("output_markers_topic").get_parameter_value().string_value
         )
         self.publish_tf = self.get_parameter("publish_tf").get_parameter_value().bool_value
+        self.publish_tf_unique = self.get_parameter("publish_tf_unique").get_parameter_value().bool_value
         self.logger = logging.getLogger("detected_object_3d_visualization")
         self.logger.level = logging.INFO
         self.logger.propagate = False
@@ -117,9 +120,6 @@ class DetectedObject3DArrayVisNode(Node):
                 # if self.input_detections_topics[0] == "/asv4/vision/lidar_small_objects/dets_3d/labelled":
                 #     self.get_logger().info(f"frame: {marker.header.frame_id} z: {marker.pose.position.z} {detection.hypothesis.shape.dimensions.z}")
                 marker.scale = deepcopy(detection.hypothesis.shape.dimensions)
-                marker.scale.x *= 1.5
-                marker.scale.y *= 1.5
-                marker.scale.z *= 1.5
                 tid = detection.hypothesis.track_id
                 if detection.hypothesis.mode == ObjectHypothesis.MODE_DETECTED:
                     marker.color = self.get_color(class_name)
@@ -167,7 +167,10 @@ class DetectedObject3DArrayVisNode(Node):
                     transform = tf2_ros.TransformStamped()
                     transform.header.stamp = detection.hypothesis.kinematics.header.stamp
                     transform.header.frame_id = detection.hypothesis.kinematics.header.frame_id
-                    transform.child_frame_id = f"{class_name}_{i}"
+                    if self.publish_tf_unique:
+                        transform.child_frame_id = f"{class_name}"
+                    else:
+                        transform.child_frame_id = f"{class_name}_{i}"
                     transform.transform.translation = Vector3(
                         x=marker.pose.position.x,
                         y=marker.pose.position.y,

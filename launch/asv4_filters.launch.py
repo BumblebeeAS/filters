@@ -63,6 +63,31 @@ def generate_launch_description():
         ),
         Node(
             package="bb_filters",
+            executable="detected_object_3d_filter.py",
+            name="bev_det_3d_sort_filter",
+            parameters=[{
+                "dets_3d_topic": "/asv4/bev_detections",
+                "filtered_topic": "/asv4/bev_detections/filtered",
+                "objects_config": "robotx.yaml"
+            }]
+        ),
+
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_array_vis.py",
+            name="bev_labelled_dets_vis",
+            parameters=[{
+                "input_detections_topics": [
+                    "/asv4/bev_detections/filtered",
+                ],
+                "output_markers_topic": "/asv4/bev_detections/filtered/marker",
+                "objects_config": "robotx.yaml",
+                "publish_tf": True,
+                "publish_tf_unique": True,
+            }]
+        ),
+        Node(
+            package="bb_filters",
             executable="detected_object_3d_labelling.py",
             name="det_3d_labeller",
             parameters=[{
