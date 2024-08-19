@@ -104,6 +104,22 @@ def generate_launch_description():
         ),
         Node(
             package="bb_filters",
+            executable="detected_object_3d_labelling.py",
+            name="large_det_3d_labeller",
+            parameters=[{
+                "detection_2d_topic": "/asv4/vision/detections_2d",
+                "detection_3d_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered",
+                "camera_info_topics": [
+                    "/asv4/left_cam/camera_info",
+                    "/asv4/right_cam/camera_info",
+                    "/asv4/zed2i/zed_node/left/camera_info",
+                ],
+                "output_labeled_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled",
+                "objects_config": "robotx.yaml"
+            }]
+        ),
+        Node(
+            package="bb_filters",
             executable="detected_object_3d_array_vis.py",
             name="labelled_dets_vis",
             parameters=[{
@@ -111,6 +127,48 @@ def generate_launch_description():
                     "/asv4/vision/lidar_small_objects/dets_3d/labelled",
                 ],
                 "output_markers_topic": "/asv4/vision/lidar_small_objects/dets_3d/labelled/marker",
+                "objects_config": "robotx.yaml",
+                "publish_tf": True
+            }]
+        ),
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_array_vis.py",
+            name="large_labelled_dets_vis",
+            parameters=[{
+                "input_detections_topics": [
+                    "/asv4/vision/lidar_large_objects/dets_3d/labelled",
+                ],
+                "output_markers_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled/marker",
+                "objects_config": "robotx.yaml",
+                "publish_tf": True
+            }]
+        ),
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_labelling.py",
+            name="large_det_3d_labeller",
+            parameters=[{
+                "detection_2d_topic": "/asv4/vision/detections_2d",
+                "detection_3d_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered",
+                "camera_info_topics": [
+                    "/asv4/left_cam/camera_info",
+                    "/asv4/right_cam/camera_info",
+                    "/asv4/zed2i/zed_node/left/camera_info",
+                ],
+                "output_labeled_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled",
+                "objects_config": "robotx.yaml"
+            }]
+        ),
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_array_vis.py",
+            name="large_labelled_dets_vis",
+            parameters=[{
+                "input_detections_topics": [
+                    "/asv4/vision/lidar_large_objects/dets_3d/labelled",
+                ],
+                "output_markers_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled/marker",
                 "objects_config": "robotx.yaml",
                 "publish_tf": True
             }]

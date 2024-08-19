@@ -203,6 +203,7 @@ class DetectedObject3DLabelingNode(Node):
                 camera_info.header.frame_id,
                 obj_3d.hypothesis.kinematics.header.frame_id,
                 rclpy.time.Time(),
+                Duration(seconds=0.1)
             )
 
             # Create a PoseStamped object for transformation
