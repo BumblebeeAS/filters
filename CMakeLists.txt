@@ -34,6 +34,7 @@ endforeach()
 
 install(PROGRAMS
   scripts/detected_object_3d_filter.py
+  scripts/detected_object_3d_composite_filter.py
   scripts/detected_object_3d_labelling.py
   scripts/lidar_backproject_ml.py
   scripts/lidar_backproject.py
@@ -42,6 +43,7 @@ install(PROGRAMS
   scripts/zed_detector.py
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py
+  scripts/robotx_sim_obstacles_converter.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

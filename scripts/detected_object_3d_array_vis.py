@@ -120,6 +120,9 @@ class DetectedObject3DArrayVisNode(Node):
                 # if self.input_detections_topics[0] == "/asv4/vision/lidar_small_objects/dets_3d/labelled":
                 #     self.get_logger().info(f"frame: {marker.header.frame_id} z: {marker.pose.position.z} {detection.hypothesis.shape.dimensions.z}")
                 marker.scale = deepcopy(detection.hypothesis.shape.dimensions)
+                marker.scale.x = max(0.5, marker.scale.x)
+                marker.scale.y = max(0.5, marker.scale.y)
+                marker.scale.z = max(0.5, marker.scale.z)
                 tid = detection.hypothesis.track_id
                 if detection.hypothesis.mode == ObjectHypothesis.MODE_DETECTED:
                     marker.color = self.get_color(class_name)

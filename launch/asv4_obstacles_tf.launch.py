@@ -4,8 +4,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch.substitutions import Command
 
-# Launch File for running the lidar segmentation pipeline on the BBASV4 Simulation
-
+# Launch File for fixed obstacles tfs e.g. from dock to placards
 
 def generate_launch_description():
     obstacles_urdf = os.path.join(

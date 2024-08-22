@@ -59,11 +59,11 @@ class TrackerFilter(Node):
 
         self.buffer = 1.5
         self.tracker = SORT3D(
-            max_lost=10,
+            max_lost=30,
             # min_detection_confidence=0.2,
             # max_detection_confidence=1.0,
             # iou_threshold=0.001,
-            dist_threshold=1.0,
+            dist_threshold=1.5,
             # tracker_output_format="visdrone_challenge",
         )
         self.latest_header = None
