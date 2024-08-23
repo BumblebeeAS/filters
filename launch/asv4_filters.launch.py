@@ -22,6 +22,18 @@ def generate_launch_description():
                 "objects_config": "robotx.yaml"
             }]
         ),
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_array_vis.py",
+            name="large_raw_dets_vis",
+            parameters=[{
+                "input_detections_topics": [
+                    "/asv4/vision/lidar_large_objects/dets_3d",
+                ],
+                "output_markers_topic": "/asv4/vision/lidar_large_objects/dets_3d/marker",
+                "objects_config": "robotx.yaml"
+            }]
+        ),
         # Node(
         #     package="bb_filters",
         #     executable="detected_object_3d_array_vis.py",
@@ -59,6 +71,17 @@ def generate_launch_description():
             parameters=[{
                 "dets_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
                 "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
+                "objects_config": "robotx.yaml"
+            }]
+        ),
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_filter.py",
+            # executable="detected_object_3d_composite_filter.py",
+            name="large_det_3d_sort_filter",
+            parameters=[{
+                "dets_3d_topic": "/asv4/vision/lidar_large_objects/dets_3d",
+                "filtered_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered",
                 "objects_config": "robotx.yaml"
             }]
         ),
@@ -143,7 +166,20 @@ def generate_launch_description():
                 ],
                 "output_markers_topic": "/asv4/vision/lidar_small_objects/dets_3d/labelled/marker",
                 "objects_config": "robotx.yaml",
-                "publish_tf": True
+                "publish_tf": False
+            }]
+        ),
+        Node(
+            package="bb_filters",
+            executable="detected_object_3d_array_vis.py",
+            name="large_filtered_dets_vis",
+            parameters=[{
+                "input_detections_topics": [
+                    "/asv4/vision/lidar_large_objects/dets_3d/labelled",
+                ],
+                "output_markers_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered/marker",
+                "objects_config": "robotx.yaml",
+                "publish_tf": False
             }]
         ),
         Node(
@@ -156,7 +192,7 @@ def generate_launch_description():
                 ],
                 "output_markers_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled/marker",
                 "objects_config": "robotx.yaml",
-                "publish_tf": True
+                "publish_tf": False
             }]
         ),
         Node(
