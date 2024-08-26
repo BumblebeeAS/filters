@@ -71,7 +71,9 @@ def generate_launch_description():
             parameters=[{
                 "dets_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
                 "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
-                "objects_config": "robotx.yaml"
+                "objects_config": "robotx.yaml",
+                "max_lost": 100,
+                "dist_threshold": 4.0
             }]
         ),
         Node(
@@ -82,7 +84,9 @@ def generate_launch_description():
             parameters=[{
                 "dets_3d_topic": "/asv4/vision/lidar_large_objects/dets_3d",
                 "filtered_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered",
-                "objects_config": "robotx.yaml"
+                "objects_config": "robotx.yaml",
+                "max_lost": 150,
+                "dist_threshold": 10.0
             }]
         ),
         Node(

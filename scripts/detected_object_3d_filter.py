@@ -28,6 +28,14 @@ class TrackerFilter(Node):
         self.declare_parameter(
             "filtered_topic", "/asv4/vision/lidar_small_objects/dets_3d/filtered"
         )
+        self.declare_parameter(
+            "max_lost", 30
+        )
+        self.declare_parameter(
+            "dist_threshold", 1.5
+        )
+        self.max_lost = self.get_parameter("max_lost").get_parameter_value().integer_value
+        self.dist_threshold = self.get_parameter("dist_threshold").get_parameter_value().double_value
         self.declare_parameter("objects_config", "robotx.yaml")
         objects_schema_path = (
             Path(get_package_share_directory("ml_detector"))
@@ -57,13 +65,13 @@ class TrackerFilter(Node):
             DetectedObject3DArray, self.filtered_topic, 10
         )
 
-        self.buffer = 1.5
+        self.buffer = self.dist_threshold
         self.tracker = SORT3D(
-            max_lost=30,
+            max_lost=self.max_lost,
             # min_detection_confidence=0.2,
             # max_detection_confidence=1.0,
             # iou_threshold=0.001,
-            dist_threshold=1.5,
+            dist_threshold=self.dist_threshold,
             # tracker_output_format="visdrone_challenge",
         )
         self.latest_header = None
