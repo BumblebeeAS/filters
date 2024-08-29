@@ -42,12 +42,44 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_composite_filter.py",
-                name="composite_gt_filter",
+                executable="detected_object_3d_filter.py",
+                # executable="detected_object_3d_composite_filter.py",
+                name="det_3d_sort_filter",
                 parameters=[
                     {
-                        "dets_3d_topic": "/robotx/detections",
-                        "filtered_topic": "/robotx/detections/filtered",
+                        "dets_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
+                        "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
+                        "objects_config": "robotx.yaml",
+                        "max_lost": 100,
+                        "dist_threshold": 4.0,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_filter.py",
+                # executable="detected_object_3d_composite_filter.py",
+                name="large_det_3d_sort_filter",
+                parameters=[
+                    {
+                        "dets_3d_topic": "/asv4/vision/lidar_large_objects/dets_3d",
+                        "filtered_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered",
+                        "objects_config": "robotx.yaml",
+                        "max_lost": 150,
+                        "dist_threshold": 10.0,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_filter.py",
+                # executable="detected_object_3d_composite_filter.py",
+                name="bev_det_3d_sort_filter",
+                parameters=[
+                    {
+                        "dets_3d_topic": "/asv4/bev_detections",
+                        "filtered_topic": "/asv4/bev_detections/filtered",
+                        "objects_config": "robotx.yaml",
                     }
                 ],
             ),

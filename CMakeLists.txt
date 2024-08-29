@@ -44,6 +44,8 @@ install(PROGRAMS
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py
   scripts/robotx_sim_obstacles_converter.py
+  scripts/detected_object_2d_filter_projection.py
+  scripts/lidar_bbox_extractor.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

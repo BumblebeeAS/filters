@@ -6,6 +6,7 @@ from scipy.spatial.distance import cdist
 from motrackers.utils.misc import iou
 from motrackers.track import Track
 from motrackers.kalman_tracker import KFTrackerConstantAcceleration
+
 # from motrackers.sort_tracker import assign_tracks2detection_iou
 from motrackers.centroid_kf_tracker import CentroidKF_Tracker
 from collections import OrderedDict
@@ -24,8 +25,18 @@ def iou_xywh(bbox1, bbox2):
     Returns:
         float: intersection-over-onion of bbox1, bbox2.
     """
-    b1 = bbox1[0]-bbox1[3]*0.5, bbox1[1]-bbox1[4]*0.5, bbox1[0]+bbox1[3]*0.5, bbox1[1]+bbox1[4]*0.5
-    b2 = bbox2[0]-bbox2[3]*0.5, bbox2[1]-bbox2[4]*0.5, bbox2[0]+bbox2[3]*0.5, bbox2[1]+bbox2[4]*0.5
+    b1 = (
+        bbox1[0] - bbox1[3] * 0.5,
+        bbox1[1] - bbox1[4] * 0.5,
+        bbox1[0] + bbox1[3] * 0.5,
+        bbox1[1] + bbox1[4] * 0.5,
+    )
+    b2 = (
+        bbox2[0] - bbox2[3] * 0.5,
+        bbox2[1] - bbox2[4] * 0.5,
+        bbox2[0] + bbox2[3] * 0.5,
+        bbox2[1] + bbox2[4] * 0.5,
+    )
 
     iou_ = iou(b1, b2)
 
@@ -49,7 +60,11 @@ def assign_tracks2detection_iou(bbox_tracks, bbox_detections, dist_threshold=1.5
     """
 
     if (bbox_tracks.size == 0) or (bbox_detections.size == 0):
-        return np.empty((0, 2), dtype=int), np.arange(len(bbox_detections), dtype=int), np.empty((0,), dtype=int)
+        return (
+            np.empty((0, 2), dtype=int),
+            np.arange(len(bbox_detections), dtype=int),
+            np.empty((0,), dtype=int),
+        )
 
     if len(bbox_tracks.shape) == 1:
         bbox_tracks = bbox_tracks[None, :]
@@ -90,15 +105,23 @@ def assign_tracks2detection_iou(bbox_tracks, bbox_detections, dist_threshold=1.5
 
     return matches, np.array(unmatched_detections), np.array(unmatched_tracks)
 
+
 class KFTracker7D(KFTrackerConstantAcceleration):
-    def __init__(self, initial_measurement=np.array([0., 0., 0., 0., 0., 0., 0.]),
-                 time_step=1, process_noise_scale=1.0,
-                 measurement_noise_scale=1.0):
+    def __init__(
+        self,
+        initial_measurement=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        time_step=1,
+        process_noise_scale=1.0,
+        measurement_noise_scale=1.0,
+    ):
         assert initial_measurement.shape[0] == 7, initial_measurement.shape
         super().__init__(
-            initial_measurement=initial_measurement, time_step=time_step, process_noise_scale=process_noise_scale,
-            measurement_noise_scale=measurement_noise_scale
+            initial_measurement=initial_measurement,
+            time_step=time_step,
+            process_noise_scale=process_noise_scale,
+            measurement_noise_scale=measurement_noise_scale,
         )
+
 
 class Track3D:
     """
@@ -126,13 +149,13 @@ class Track3D:
         detection_confidence,
         class_id=None,
         lost=0,
-        iou_score=0.,
-        **kwargs
+        iou_score=0.0,
+        **kwargs,
     ):
         Track.count += 1
         self.id = track_id
 
-        self.detection_confidence_max = 0.
+        self.detection_confidence_max = 0.0
         self.lost = 0
         self.age = 0
 
@@ -140,11 +163,28 @@ class Track3D:
         self.identities_count = defaultdict(int)
         self.track_hist = []
 
-        self.update(frame_id, bbox, detection_confidence, class_id=class_id, lost=lost, iou_score=iou_score, **kwargs)
+        self.update(
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            lost=lost,
+            iou_score=iou_score,
+            **kwargs,
+        )
 
         self.output = self.get_output
 
-    def update(self, frame_id, bbox, detection_confidence, class_id=None, lost=0, iou_score=0., **kwargs):
+    def update(
+        self,
+        frame_id,
+        bbox,
+        detection_confidence,
+        class_id=None,
+        lost=0,
+        iou_score=0.0,
+        **kwargs,
+    ):
         """
         Update the track.
 
@@ -171,16 +211,20 @@ class Track3D:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-        self.detection_confidence_max = max(self.detection_confidence_max, detection_confidence)
+        self.detection_confidence_max = max(
+            self.detection_confidence_max, detection_confidence
+        )
         self.track_hist.append((bbox[0], bbox[1], bbox[2]))
 
         self.age += 1
 
     def update_2d(self, detection_confidence, class_id=None, distance=100, **kwargs):
         for c in self.identities.keys():
-            self.identities[c]*=0.8
-            self.identities_count[c]*=0.8
-        self.identities[class_id] += detection_confidence / 100 * min(1, 1/(distance+1e-9))
+            self.identities[c] *= 0.8
+            self.identities_count[c] *= 0.8
+        self.identities[class_id] += (
+            detection_confidence / 100 * min(1, 1 / (distance + 1e-9))
+        )
         self.identities_count[class_id] += 1
 
     @property
@@ -212,9 +256,19 @@ class Track3D:
             score, object_category, truncation, occlusion)`.
         """
         return (
-            self.frame_id, self.id,
-            self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3], self.bbox[4], self.bbox[5], self.bbox[6],
-            self.detection_confidence, self.class_id, -1, -1
+            self.frame_id,
+            self.id,
+            self.bbox[0],
+            self.bbox[1],
+            self.bbox[2],
+            self.bbox[3],
+            self.bbox[4],
+            self.bbox[5],
+            self.bbox[6],
+            self.detection_confidence,
+            self.class_id,
+            -1,
+            -1,
         )
 
     def predict(self):
@@ -222,6 +276,7 @@ class Track3D:
         Implement to prediction the next estimate of track.
         """
         raise NotImplemented
+
 
 class KFTrack7DSORT(Track3D):
     """
@@ -240,15 +295,37 @@ class KFTrack7DSORT(Track3D):
         kwargs (dict): Additional key word arguments.
 
     """
-    def __init__(self, track_id, frame_id, bbox, detection_confidence, class_id=None, lost=0, iou_score=0.,
-                 process_noise_scale=1.0, measurement_noise_scale=1.0,
-                 kf_time_step=1, **kwargs):
+
+    def __init__(
+        self,
+        track_id,
+        frame_id,
+        bbox,
+        detection_confidence,
+        class_id=None,
+        lost=0,
+        iou_score=0.0,
+        process_noise_scale=1.0,
+        measurement_noise_scale=1.0,
+        kf_time_step=1,
+        **kwargs,
+    ):
         self.kf = KFTracker7D(
             bbox.copy(),
-            process_noise_scale=process_noise_scale, measurement_noise_scale=measurement_noise_scale,
-            time_step=kf_time_step)
-        super().__init__(track_id, frame_id, bbox, detection_confidence, class_id=class_id, lost=lost,
-                         iou_score=iou_score, **kwargs)
+            process_noise_scale=process_noise_scale,
+            measurement_noise_scale=measurement_noise_scale,
+            time_step=kf_time_step,
+        )
+        super().__init__(
+            track_id,
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            lost=lost,
+            iou_score=iou_score,
+            **kwargs,
+        )
 
     def get_bbox(self):
         # x = self.kf.x
@@ -259,10 +336,27 @@ class KFTrack7DSORT(Track3D):
         bb = np.array([x[0], x[3], x[6], x[9], x[12], x[15], x[18]])
         return bb
 
-    def update(self, frame_id, bbox, detection_confidence, class_id=None, lost=0, iou_score=0., **kwargs):
+    def update(
+        self,
+        frame_id,
+        bbox,
+        detection_confidence,
+        class_id=None,
+        lost=0,
+        iou_score=0.0,
+        **kwargs,
+    ):
         super().update(
-            frame_id, bbox, detection_confidence, class_id=class_id, lost=lost, iou_score=iou_score, **kwargs)
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            lost=lost,
+            iou_score=iou_score,
+            **kwargs,
+        )
         self.kf.update(bbox.copy())
+
 
 def get_centroid3d(bboxes):
     """
@@ -292,6 +386,7 @@ def get_centroid3d(bboxes):
         output = output.flatten()
     return output
 
+
 class Tracker3D:
     """
     Greedy Tracker with tracking based on ``centroid`` location of the bounding box of the object.
@@ -320,8 +415,12 @@ class Tracker3D:
         """
 
         self.tracks[self.next_track_id] = Track3D(
-            self.next_track_id, frame_id, bbox, detection_confidence, class_id=class_id,
-            **kwargs
+            self.next_track_id,
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            **kwargs,
         )
         self.next_track_id += 1
 
@@ -335,7 +434,17 @@ class Tracker3D:
 
         del self.tracks[track_id]
 
-    def _update_track(self, track_id, frame_id, bbox, detection_confidence, class_id, lost=0, iou_score=0., **kwargs):
+    def _update_track(
+        self,
+        track_id,
+        frame_id,
+        bbox,
+        detection_confidence,
+        class_id,
+        lost=0,
+        iou_score=0.0,
+        **kwargs,
+    ):
         """
         Update track state.
 
@@ -351,10 +460,18 @@ class Tracker3D:
         """
 
         self.tracks[track_id].update(
-            frame_id, bbox, detection_confidence, class_id=class_id, lost=lost, iou_score=iou_score, **kwargs
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            lost=lost,
+            iou_score=iou_score,
+            **kwargs,
         )
 
-    def _update_track_2d(self, track_id, detection_confidence, class_id, distance=0., **kwargs):
+    def _update_track_2d(
+        self, track_id, detection_confidence, class_id, distance=0.0, **kwargs
+    ):
         """
         Update track state.
 
@@ -405,8 +522,8 @@ class Tracker3D:
             detections (list[Tuple]): Data for detections as list of tuples containing `(bbox, class_id, detection_score)`.
         """
 
-        new_bboxes = np.array(bboxes, dtype='float')
-        new_class_ids = np.array(class_ids, dtype='int')
+        new_bboxes = np.array(bboxes, dtype="float")
+        new_class_ids = np.array(class_ids, dtype="int")
         new_detection_scores = np.array(detection_scores)
 
         new_detections = list(zip(new_bboxes, new_class_ids, new_detection_scores))
@@ -457,12 +574,19 @@ class Tracker3D:
                 track_id = track_ids[idx]
 
                 remaining_detections = [
-                    (i, d) for (i, d) in enumerate(centroid_distances[idx, :]) if i not in updated_detections]
+                    (i, d)
+                    for (i, d) in enumerate(centroid_distances[idx, :])
+                    if i not in updated_detections
+                ]
 
                 if len(remaining_detections):
-                    detection_idx, detection_distance = min(remaining_detections, key=lambda x: x[1])
+                    detection_idx, detection_distance = min(
+                        remaining_detections, key=lambda x: x[1]
+                    )
                     bbox, class_id, confidence = detections[detection_idx]
-                    self._update_track(track_id, self.frame_count, bbox, confidence, class_id=class_id)
+                    self._update_track(
+                        track_id, self.frame_count, bbox, confidence, class_id=class_id
+                    )
                     updated_detections.append(detection_idx)
                     updated_tracks.append(track_id)
 
@@ -495,12 +619,36 @@ class KFTrackCentroid3D(Track3D):
         measurement_noise_scale (float): Measurement noise covariance scale or covariance magnitude as scalar value.
         kwargs (dict): Additional key word arguments.
     """
-    def __init__(self, track_id, frame_id, bbox, detection_confidence, class_id=None, lost=0, iou_score=0.,
-                 process_noise_scale=1.0, measurement_noise_scale=1.0, **kwargs):
+
+    def __init__(
+        self,
+        track_id,
+        frame_id,
+        bbox,
+        detection_confidence,
+        class_id=None,
+        lost=0,
+        iou_score=0.0,
+        process_noise_scale=1.0,
+        measurement_noise_scale=1.0,
+        **kwargs,
+    ):
         c = np.array((bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5], bbox[6]))
-        self.kf = KFTracker7D(c, process_noise_scale=process_noise_scale, measurement_noise_scale=measurement_noise_scale)
-        super().__init__(track_id, frame_id, bbox, detection_confidence, class_id=class_id, lost=lost,
-                         iou_score=iou_score, **kwargs)
+        self.kf = KFTracker7D(
+            c,
+            process_noise_scale=process_noise_scale,
+            measurement_noise_scale=measurement_noise_scale,
+        )
+        super().__init__(
+            track_id,
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            lost=lost,
+            iou_score=iou_score,
+            **kwargs,
+        )
 
     def predict(self):
         """
@@ -514,16 +662,34 @@ class KFTrackCentroid3D(Track3D):
         xmid, ymid, zmid = s[0], s[3], s[6]
         dx, dy, dz = self.bbox[3], self.bbox[4], self.bbox[5]
         yaw = self.bbox[6]
-        
+
         return np.array([xmid, ymid, zmid, dx, dy, dz, yaw]).astype(int)
 
-    def update(self, frame_id, bbox, detection_confidence, class_id=None, lost=0, iou_score=0., **kwargs):
+    def update(
+        self,
+        frame_id,
+        bbox,
+        detection_confidence,
+        class_id=None,
+        lost=0,
+        iou_score=0.0,
+        **kwargs,
+    ):
         super().update(
-            frame_id, bbox, detection_confidence, class_id=class_id, lost=lost, iou_score=iou_score, **kwargs)
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
+            lost=lost,
+            iou_score=iou_score,
+            **kwargs,
+        )
         self.kf.update(self.centroid)
 
 
-def assign_tracks2detection_centroid_distances_3d(bbox_tracks, bbox_detections, distance_threshold=0.3):
+def assign_tracks2detection_centroid_distances_3d(
+    bbox_tracks, bbox_detections, distance_threshold=0.3
+):
     """
     Assigns detected bounding boxes to tracked bounding boxes using IoU as a distance metric.
 
@@ -544,7 +710,11 @@ def assign_tracks2detection_centroid_distances_3d(bbox_tracks, bbox_detections, 
     """
 
     if (bbox_tracks.size == 0) or (bbox_detections.size == 0):
-        return np.empty((0, 2), dtype=int), np.arange(len(bbox_detections), dtype=int), np.empty((0,), dtype=int)
+        return (
+            np.empty((0, 2), dtype=int),
+            np.arange(len(bbox_detections), dtype=int),
+            np.empty((0,), dtype=int),
+        )
 
     if len(bbox_tracks.shape) == 1:
         bbox_tracks = bbox_tracks[None, :]
@@ -585,7 +755,9 @@ def assign_tracks2detection_centroid_distances_3d(bbox_tracks, bbox_detections, 
     return matches, np.array(unmatched_detections), np.array(unmatched_tracks)
 
 
-def assign_tracks2rays_centroid_distances_3d(bbox_tracks, rays_detections, distance_threshold=10.):
+def assign_tracks2rays_centroid_distances_3d(
+    bbox_tracks, rays_detections, distance_threshold=10.0
+):
     """
     Assigns detected bounding boxes to tracked bounding boxes using IoU as a distance metric.
 
@@ -606,23 +778,50 @@ def assign_tracks2rays_centroid_distances_3d(bbox_tracks, rays_detections, dista
     """
 
     if (bbox_tracks.size == 0) or (rays_detections.size == 0):
-        return np.empty((0, 2), dtype=int), np.arange(len(rays_detections), dtype=int), np.empty((0,), dtype=int)
+        return (
+            np.empty((0, 2), dtype=int),
+            np.arange(len(rays_detections), dtype=int),
+            np.empty((0,), dtype=int),
+        )
 
     if len(bbox_tracks.shape) == 1:
         bbox_tracks = bbox_tracks[None, :]
 
     if len(rays_detections.shape) == 1:
         rays_detections = rays_detections[None, :]
-    plucker_vecs = np.hstack((rays_detections[:,:3], np.cross(rays_detections[:,3:], rays_detections[:,3:] + rays_detections[:,:3])))
+    plucker_vecs = np.hstack(
+        (
+            rays_detections[:, :3],
+            np.cross(
+                rays_detections[:, 3:], rays_detections[:, 3:] + rays_detections[:, :3]
+            ),
+        )
+    )
     estimated_track_centroids = get_centroid3d(bbox_tracks)
     # TODO: get plucker vector of rays, compute and assign based on distances to tracks
     # detection_centroids = get_centroid3d(rays_detections)
 
-    centroid_distances = np.vstack([np.linalg.norm(np.cross(estimated_track_centroids.T, ray[:3], axis=0).T - ray[None, 3:], axis=1) for ray in plucker_vecs]).T
+    centroid_distances = np.vstack(
+        [
+            np.linalg.norm(
+                np.cross(estimated_track_centroids.T, ray[:3], axis=0).T
+                - ray[None, 3:],
+                axis=1,
+            )
+            for ray in plucker_vecs
+        ]
+    ).T
 
-    masks = np.vstack([np.dot(estimated_track_centroids - ray[3:], ray[:3])>0 for ray in rays_detections]).T
+    masks = np.vstack(
+        [
+            np.dot(estimated_track_centroids - ray[3:], ray[:3]) > 0
+            for ray in rays_detections
+        ]
+    ).T
 
-    distances = centroid_distances + 50*centroid_distances*~masks # inflates distance of objects behind the camera
+    distances = (
+        centroid_distances + 50 * centroid_distances * ~masks
+    )  # inflates distance of objects behind the camera
 
     assigned_tracks, assigned_detections = linear_sum_assignment(distances)
 
@@ -667,12 +866,12 @@ class Centroid3DKF_Tracker(Tracker3D):
     """
 
     def __init__(
-            self,
-            max_lost=1,
-            centroid_distance_threshold=30.,
-            process_noise_scale=1.0,
-            measurement_noise_scale=1.0,
-            time_step=1
+        self,
+        max_lost=1,
+        centroid_distance_threshold=30.0,
+        process_noise_scale=1.0,
+        measurement_noise_scale=1.0,
+        time_step=1,
     ):
         self.time_step = time_step
         self.process_noise_scale = process_noise_scale
@@ -683,14 +882,19 @@ class Centroid3DKF_Tracker(Tracker3D):
 
     def _add_track(self, frame_id, bbox, detection_confidence, class_id, **kwargs):
         self.tracks[self.next_track_id] = KFTrackCentroid3D(
-            self.next_track_id, frame_id, bbox, detection_confidence, class_id=class_id,
+            self.next_track_id,
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
             process_noise_scale=self.process_noise_scale,
-            measurement_noise_scale=self.measurement_noise_scale, **kwargs
+            measurement_noise_scale=self.measurement_noise_scale,
+            **kwargs,
         )
         self.next_track_id += 1
 
     def update_2d(self, rays, detection_scores, class_ids):
-        rays_detections = np.array(rays, dtype='float')
+        rays_detections = np.array(rays, dtype="float")
         # rays_detections = np.hstack((rays_detections[:,:3], np.cross(rays_detections[:,:3], rays_detections[:,3:])))
 
         track_ids = list(self.tracks.keys())
@@ -700,8 +904,12 @@ class Centroid3DKF_Tracker(Tracker3D):
         bbox_tracks = np.array(bbox_tracks)
 
         if len(rays) > 0:
-            matches, unmatched_detections, unmatched_tracks = assign_tracks2rays_centroid_distances_3d(
-                bbox_tracks, rays_detections, distance_threshold=1.0 # at most 10 cm from ray to detection
+            matches, unmatched_detections, unmatched_tracks = (
+                assign_tracks2rays_centroid_distances_3d(
+                    bbox_tracks,
+                    rays_detections,
+                    distance_threshold=1.0,  # at most 10 cm from ray to detection
+                )
             )
 
             for i in range(matches.shape[0]):
@@ -723,7 +931,7 @@ class Centroid3DKF_Tracker(Tracker3D):
 
     def update(self, bboxes, detection_scores, class_ids):
         self.frame_count += 1
-        bbox_detections = np.array(bboxes, dtype='int')
+        bbox_detections = np.array(bboxes, dtype="int")
 
         track_ids = list(self.tracks.keys())
         bbox_tracks = []
@@ -737,12 +945,23 @@ class Centroid3DKF_Tracker(Tracker3D):
                 bbox = bbox_tracks[i, :]
                 confidence = self.tracks[track_id].detection_confidence
                 cid = self.tracks[track_id].class_id
-                self._update_track(track_id, self.frame_count, bbox, detection_confidence=confidence, class_id=cid, lost=1)
+                self._update_track(
+                    track_id,
+                    self.frame_count,
+                    bbox,
+                    detection_confidence=confidence,
+                    class_id=cid,
+                    lost=1,
+                )
                 if self.tracks[track_id].lost > self.max_lost:
                     self._remove_track(track_id)
         else:
-            matches, unmatched_detections, unmatched_tracks = assign_tracks2detection_centroid_distances_3d(
-                bbox_tracks, bbox_detections, distance_threshold=self.centroid_distance_threshold
+            matches, unmatched_detections, unmatched_tracks = (
+                assign_tracks2detection_centroid_distances_3d(
+                    bbox_tracks,
+                    bbox_detections,
+                    distance_threshold=self.centroid_distance_threshold,
+                )
             )
 
             for i in range(matches.shape[0]):
@@ -751,7 +970,9 @@ class Centroid3DKF_Tracker(Tracker3D):
                 bbox = bboxes[d, :]
                 cid = class_ids[d]
                 confidence = detection_scores[d]
-                self._update_track(track_id, self.frame_count, bbox, confidence, cid, lost=0)
+                self._update_track(
+                    track_id, self.frame_count, bbox, confidence, cid, lost=0
+                )
 
             for d in unmatched_detections:
                 bbox = bboxes[d, :]
@@ -764,13 +985,16 @@ class Centroid3DKF_Tracker(Tracker3D):
                 bbox = bbox_tracks[t, :]
                 confidence = self.tracks[track_id].detection_confidence
                 cid = self.tracks[track_id].class_id
-                self._update_track(track_id, self.frame_count, bbox, confidence, cid, lost=1)
+                self._update_track(
+                    track_id, self.frame_count, bbox, confidence, cid, lost=1
+                )
 
                 if self.tracks[track_id].lost > self.max_lost:
                     self._remove_track(track_id)
 
         outputs = self._get_tracks(self.tracks)
         return outputs
+
 
 class SORT3D(Centroid3DKF_Tracker):
     """
@@ -787,31 +1011,40 @@ class SORT3D(Centroid3DKF_Tracker):
     """
 
     def __init__(
-            self, max_lost=0,
-            dist_threshold=1.0,
-            process_noise_scale=1.0,
-            measurement_noise_scale=1.0,
-            time_step=1
+        self,
+        max_lost=0,
+        dist_threshold=1.0,
+        process_noise_scale=1.0,
+        measurement_noise_scale=1.0,
+        time_step=1,
     ):
         self.dist_threshold = dist_threshold
 
         super().__init__(
             max_lost=max_lost,
             process_noise_scale=process_noise_scale,
-            measurement_noise_scale=measurement_noise_scale, time_step=time_step
+            measurement_noise_scale=measurement_noise_scale,
+            time_step=time_step,
         )
 
     def _add_track(self, frame_id, bbox, detection_confidence, class_id, **kwargs):
         self.tracks[self.next_track_id] = KFTrack7DSORT(
-            self.next_track_id, frame_id, bbox, detection_confidence, class_id=class_id,
+            self.next_track_id,
+            frame_id,
+            bbox,
+            detection_confidence,
+            class_id=class_id,
             process_noise_scale=self.process_noise_scale,
-            measurement_noise_scale=self.measurement_noise_scale, kf_time_step=1, **kwargs)
+            measurement_noise_scale=self.measurement_noise_scale,
+            kf_time_step=1,
+            **kwargs,
+        )
         self.next_track_id += 1
 
     def update(self, bboxes, detection_scores, class_ids):
         self.frame_count += 1
 
-        bbox_detections = np.array(bboxes, dtype='int')
+        bbox_detections = np.array(bboxes, dtype="int")
 
         # track_ids_all = list(self.tracks.keys())
         # bbox_tracks = []
@@ -837,13 +1070,23 @@ class SORT3D(Centroid3DKF_Tracker):
                 bbox = bbox_tracks[i, :]
                 confidence = self.tracks[track_id].detection_confidence
                 cid = self.tracks[track_id].class_id
-                self._update_track(track_id, self.frame_count, bbox, detection_confidence=confidence, class_id=cid, lost=1)
+                self._update_track(
+                    track_id,
+                    self.frame_count,
+                    bbox,
+                    detection_confidence=confidence,
+                    class_id=cid,
+                    lost=1,
+                )
                 if self.tracks[track_id].lost > self.max_lost:
                     self._remove_track(track_id)
         else:
             t1 = time.time()
-            matches, unmatched_detections, unmatched_tracks = assign_tracks2detection_iou(
-                bbox_tracks, bbox_detections, dist_threshold=self.dist_threshold)
+            matches, unmatched_detections, unmatched_tracks = (
+                assign_tracks2detection_iou(
+                    bbox_tracks, bbox_detections, dist_threshold=self.dist_threshold
+                )
+            )
             t2 = time.time()
 
             for i in range(matches.shape[0]):
@@ -852,7 +1095,9 @@ class SORT3D(Centroid3DKF_Tracker):
                 bbox = bboxes[d, :]
                 cid = class_ids[d]
                 confidence = detection_scores[d]
-                self._update_track(track_id, self.frame_count, bbox, confidence, cid, lost=0)
+                self._update_track(
+                    track_id, self.frame_count, bbox, confidence, cid, lost=0
+                )
             t3 = time.time()
 
             for d in unmatched_detections:
@@ -867,12 +1112,21 @@ class SORT3D(Centroid3DKF_Tracker):
                 bbox = bbox_tracks[t, :]
                 confidence = self.tracks[track_id].detection_confidence
                 cid = self.tracks[track_id].class_id
-                self._update_track(track_id, self.frame_count, bbox, detection_confidence=confidence, class_id=cid, lost=1)
+                self._update_track(
+                    track_id,
+                    self.frame_count,
+                    bbox,
+                    detection_confidence=confidence,
+                    class_id=cid,
+                    lost=1,
+                )
                 if self.tracks[track_id].lost > self.max_lost:
                     self._remove_track(track_id)
 
-            print(f"assign_tracks2detection_iou: iou assign: {t2-t1}, update: {t3-t2},"
-                  f" add: {t4-t3}, remove: {time.time()-t4}, # tracks {len(track_ids)} # bboxes {len(bboxes)}"
-                  f" # remove: {len(unmatched_tracks)} # add: {len(unmatched_detections)}")
+            print(
+                f"assign_tracks2detection_iou: iou assign: {t2-t1}, update: {t3-t2},"
+                f" add: {t4-t3}, remove: {time.time()-t4}, # tracks {len(track_ids)} # bboxes {len(bboxes)}"
+                f" # remove: {len(unmatched_tracks)} # add: {len(unmatched_detections)}"
+            )
         outputs = self._get_tracks(self.tracks)
         return outputs
