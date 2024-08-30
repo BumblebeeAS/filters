@@ -258,5 +258,26 @@ def generate_launch_description():
                     }
                 ],
             ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_2d_filter_projection.py",
+                name="dets_2d_projection",
+                parameters=[],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_array_vis.py",
+                name="det_2d_proj_vis",
+                parameters=[
+                    {
+                        "input_detections_topics": [
+                            "/asv4/vision/detections_2d/projected",
+                        ],
+                        "output_markers_topic": "/asv4/vision/detections_2d/projected/marker",
+                        "objects_config": "robotx.yaml",
+                        "publish_tf": False,
+                    }
+                ],
+            ),
         ]
     )
