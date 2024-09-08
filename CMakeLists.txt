@@ -41,6 +41,7 @@ install(PROGRAMS
   scripts/UKF_Tracker.py
   scripts/lidar_detected_object_2d_filter.py
   scripts/zed_detector.py
+  scripts/lidar_bbox_extractor.py
   scripts/robotx_gate_detection.py
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py
