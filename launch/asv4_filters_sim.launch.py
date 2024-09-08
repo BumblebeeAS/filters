@@ -51,7 +51,7 @@ def generate_launch_description():
                         "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
                         "objects_config": "robotx.yaml",
                         "max_lost": 100,
-                        "dist_threshold": 4.0,
+                        "dist_threshold": 5.0,
                     }
                 ],
             ),

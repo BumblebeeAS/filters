@@ -63,7 +63,7 @@ def generate_launch_description():
                         "camera_info_topics": [
                             "/asv4/left_cam/camera_info",
                             "/asv4/right_cam/camera_info",
-                            "/asv4/zed2i/zed_node/left/camera_info",
+                            "/asv4/front_cam/camera_info",
                         ],
                         "output_markers_topic": "/asv4/vision/detections_2d/marker",
                         "objects_config": "robotx.yaml",
@@ -81,7 +81,7 @@ def generate_launch_description():
                         "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
                         "objects_config": "robotx.yaml",
                         "max_lost": 100,
-                        "dist_threshold": 4.0,
+                        "dist_threshold": 5.0,
                     }
                 ],
             ),
@@ -140,7 +140,7 @@ def generate_launch_description():
                         "camera_info_topics": [
                             "/asv4/left_cam/camera_info",
                             "/asv4/right_cam/camera_info",
-                            "/asv4/zed2i/zed_node/left/camera_info",
+                            "/asv4/front_cam/camera_info",
                         ],
                         "output_labeled_topic": "/asv4/vision/lidar_small_objects/dets_3d/labelled",
                         "objects_config": "robotx.yaml",
@@ -158,7 +158,7 @@ def generate_launch_description():
                         "camera_info_topics": [
                             "/asv4/left_cam/camera_info",
                             "/asv4/right_cam/camera_info",
-                            "/asv4/zed2i/zed_node/left/camera_info",
+                            "/asv4/front_cam/camera_info",
                         ],
                         "output_labeled_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled",
                         "objects_config": "robotx.yaml",
@@ -236,7 +236,7 @@ def generate_launch_description():
                         "camera_info_topics": [
                             "/asv4/left_cam/camera_info",
                             "/asv4/right_cam/camera_info",
-                            "/asv4/zed2i/zed_node/left/camera_info",
+                            "/asv4/front_cam/camera_info",
                         ],
                         "output_labeled_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled",
                         "objects_config": "robotx.yaml",
