@@ -30,6 +30,7 @@ Dependencies:
 import colorsys
 import random
 from pathlib import Path
+from operator import attrgetter
 
 import cv2
 import numpy as np
@@ -47,7 +48,7 @@ from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from sklearn.cluster import AgglomerativeClustering, KMeans
-from transforms3d.euler import euler2quat
+from transforms3d.euler import euler2quat, quat2euler
 
 
 class GateDetection(Node):
@@ -200,7 +201,10 @@ class GateDetection(Node):
             distance_threshold=15,  # Similar to 'eps', defines max distance for clusters
             linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
-        cluster_labels = hierarchical_clusterer.fit_predict(positions)
+        if len(positions) == 1:
+            cluster_labels = [0]
+        else:
+            cluster_labels = hierarchical_clusterer.fit_predict(positions)
         # for each cluster, check if any of the buoy track ids are in past_buoy_ids
         # if so, add self.buoy_id_to_gate_id[track_id] = that gate id for all buoys in the cluster
         # if not, add a new gate id to self.buoy_id_to_gate_id[track_id] for all buoys in the cluster
@@ -328,11 +332,7 @@ class GateDetection(Node):
                 )
                 x = int((gate_pose.position.x) * self.debug_image_scale - min_x)
                 y = int((gate_pose.position.y) * self.debug_image_scale - min_y)
-                yaw = np.arctan2(gate_pose.orientation.y, gate_pose.orientation.x)
-                if self.is_ned:
-                    yaw -= np.pi / 2
-                else:
-                    yaw = -yaw
+                yaw = quat2euler(attrgetter("w", "x", "y", "z")(gate_pose.orientation))[2]
                 cv2.line(
                     image,
                     (x, y),
