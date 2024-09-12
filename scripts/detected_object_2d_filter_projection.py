@@ -33,7 +33,11 @@ class DetectedObject2DProjection(Node):
         )
         self.declare_parameter(
             "camera_info_topics",
-            ["/asv4/left_cam/camera_info", "/asv4/right_cam/camera_info"],
+            [
+                "/asv4/left_cam/camera_info",
+                "/asv4/right_cam/camera_info",
+                "/asv4/front_cam/camera_info",
+            ],
         )
         self.declare_parameter(
             "output_detections_topic", "/asv4/vision/detections_2d/projected"

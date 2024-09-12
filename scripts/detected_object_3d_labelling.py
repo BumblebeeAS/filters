@@ -19,11 +19,11 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from tf2_geometry_msgs import do_transform_pose
 from geometry_msgs.msg import PoseStamped
-from transforms3d.quaternions import quat2mat
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Header
 from typing import List, Tuple
 from shapely.geometry import box
+from scipy.optimize import linear_sum_assignment
 
 
 class DetectedObject3DLabelingNode(Node):
@@ -40,7 +40,7 @@ class DetectedObject3DLabelingNode(Node):
             [
                 "/asv4/left_cam/camera_info",
                 "/asv4/right_cam/camera_info",
-                "/asv4/zed2i/zed_node/left/camera_info",
+                "/asv4/front_cam/camera_info",
             ],
         )
         self.declare_parameter(
@@ -117,7 +117,8 @@ class DetectedObject3DLabelingNode(Node):
         labeled_3d_objects.source = self.latest_3d_detections.source
         labeled_3d_objects.sensor_pose = self.latest_3d_detections.sensor_pose
 
-        for obj_3d in self.latest_3d_detections.objects:
+        cost_matrix = np.ones((len(self.latest_3d_detections.objects), len(detection_2d_msg.objects))) * 1e9
+        for i, obj_3d in enumerate(self.latest_3d_detections.objects):
             projected_2d_points = self.project_3d_to_2d(
                 camera_info,
                 detection_2d_msg.header,
@@ -128,20 +129,31 @@ class DetectedObject3DLabelingNode(Node):
             if not projected_2d_points:
                 continue
 
-            best_overlap = 0
-            best_class_id = -1
+            # best_overlap = 0
+            # best_class_id = -1
 
-            for det_2d in detection_2d_msg.objects:
+            for j, det_2d in enumerate(detection_2d_msg.objects):
                 det_bbox = self.get_bbox_from_2d_detection(det_2d)
                 proj_bbox = self.get_bbox_from_2d_points(projected_2d_points)
                 overlap = self.compute_overlap(det_bbox, proj_bbox)
+                cost_matrix[i][j] = 1/(overlap+1e-9)
 
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_class_id = det_2d.hypothesis.class_id
+                # if overlap > best_overlap:
+                #     best_overlap = overlap
+                #     best_class_id = det_2d.hypothesis.class_id
 
-            if best_overlap > 0.02:
-                self.track_identities[obj_3d.hypothesis.track_id][best_class_id] += 1
+            # if best_overlap > 0.02:
+            #     self.track_identities[obj_3d.hypothesis.track_id][best_class_id] += 1
+        if min(cost_matrix.shape) == 0:
+            return
+        if cost_matrix.min() > 1/(0.02 + 1e-9):
+            return
+        assignments = linear_sum_assignment(cost_matrix)
+
+        for row, col in zip(assignments[0], assignments[1]):
+            track_id = self.latest_3d_detections.objects[row].hypothesis.track_id
+            class_id = detection_2d_msg.objects[col].hypothesis.class_id
+            self.track_identities[track_id][class_id] += 1
 
         # Label 3D objects based on the highest count
         for obj_3d in self.latest_3d_detections.objects:
