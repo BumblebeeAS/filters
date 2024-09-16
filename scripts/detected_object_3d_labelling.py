@@ -230,7 +230,6 @@ class DetectedObject3DLabelingNode(Node):
             self.get_logger().warn(f"Transform lookup failed: {e}")
             return []
 
-
         # Check if the object is in front of the camera
         if transformed_pose.position.z <= 0:
             return []
@@ -254,7 +253,7 @@ class DetectedObject3DLabelingNode(Node):
             * fx
         )
         bbox_height = (
-            (obj_3d.hypothesis.shape.dimensions.z + self.inflate_width)
+            (obj_3d.hypothesis.shape.dimensions.z + self.inflate_width * 2)
             / transformed_pose.position.z
             * fy
         )
