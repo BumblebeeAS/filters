@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(bb_msgs REQUIRED)
 find_package(bb_perception_msgs REQUIRED)
@@ -20,6 +21,7 @@ ament_python_install_package(${PROJECT_NAME})
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
+
 
 foreach (FOLDER configs urdf)
   message("Merge install: Creating symbolic link to ${FOLDER} in ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}")
@@ -42,6 +44,7 @@ install(PROGRAMS
   scripts/lidar_detected_object_2d_filter.py
   scripts/zed_detector.py
   scripts/lidar_bbox_extractor.py
+  scripts/robotx_prequali_gate_detection.py
   scripts/robotx_gate_detection.py
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py

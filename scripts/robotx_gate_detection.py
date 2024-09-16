@@ -6,7 +6,8 @@ This ROS2 node detects gates based on 3D buoy data from a LiDAR sensor. It uses 
 
 The node performs the following tasks:
 1. Subscribes to a `DetectedObject3DArray` topic to receive buoy detection data.
-2. Clusters buoys using Agglomerative Clustering to group them into potential gates. Scales buoy positions in certain direction to improve clustering based on prior knowledge of rough direction of gates
+2. Clusters buoys using Agglomerative Clustering to group them into potential clusters of 4 buoys (gates).
+    Unlike quali gate estimation, doesn't scale buoy positions (identity mat)
 TODO: expose the setting of direction as service.
 3. Calculates the position, orientation, and width of each gate based on clustered buoy positions.
 4. Publishes detected gates as `DetectedObject3DArray` messages.
@@ -41,18 +42,17 @@ from bb_perception_msgs.msg import (
     DetectedObject3D,
     DetectedObject3DArray,
     DetectorSource,
-    ObjectHypothesis,
+    ObjectHypothesis
 )
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Pose, Quaternion, TransformStamped
-from nav_msgs.msg import Odometry
 from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from sklearn.cluster import AgglomerativeClustering, KMeans
 from transforms3d.euler import euler2quat, quat2euler, quat2mat
 from tf2_ros.transform_broadcaster import TransformBroadcaster
-
+from typing import Optional, Tuple
 
 class GateDetection(Node):
     def __init__(self):
@@ -91,20 +91,19 @@ class GateDetection(Node):
         self.name_to_id = {v: k for k, v in self.id_to_name.items()}
         self.green_buoy_id = self.name_to_id["green_cylinder"]
         self.red_buoy_id = self.name_to_id["red_cylinder"]
+        self.white_buoy_id = self.name_to_id["white_cylinder"]
         self.unknown_id = self.name_to_id["unknown"]
         self.gate_id = self.name_to_id["gate"]
 
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
         self.use_heading = True
-        self.heading_direction = np.deg2rad(-90) # degrees ned
+        # TODO: expose this as service or parameter
+        self.heading_direction = np.deg2rad(-90)  # degrees ned
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
-        R = np.array([
-            (c, -s), (s, c)
-        ])
-        self.clustering_T = R @ np.array([
-            [2, 0], [0, 1]
-        ]) @ R.T
+        R = np.array([(c, -s), (s, c)])
+        # self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
+        self.clustering_T = np.eye(2)
         self.inv_clustering_T = np.linalg.inv(self.clustering_T)
         self.forward_direction = R @ np.array([1, 0])
 
@@ -112,7 +111,7 @@ class GateDetection(Node):
         self.latest_gate_id = -1
         self.gate_poses = {}
         self.debug_image_scale = 10
-        self.debug_pub = self.create_publisher(Image, "/asv4/robotx/gates/debug", 10)
+        # self.debug_pub = self.create_publisher(Image, "/asv4/robotx/gates/debug", 10)
         self.gate_detections_pub = self.create_publisher(
             DetectedObject3DArray, "/asv4/vision/gate_detections", 10
         )
@@ -123,13 +122,6 @@ class GateDetection(Node):
             "/asv4/vision/lidar_small_objects/dets_3d/labelled",
             self.detected_objects_callback,
             10,
-        )
-        self.odom_msg = None
-        self.odom_subscription = self.create_subscription(
-            Odometry,
-            "/asv4/nav/world_ned",
-            self.odom_callback,
-            10
         )
         self.create_timer(0.1, self.show_buoys)
 
@@ -150,9 +142,6 @@ class GateDetection(Node):
 
         return rgb
 
-    def odom_callback(self, msg):
-        self.odom_msg = msg
-
     def detected_objects_callback(self, msg):
         self.buoys = {}
         if len(msg.objects) != 0:
@@ -164,59 +153,197 @@ class GateDetection(Node):
             is_green_red_buoy = (
                 det.hypothesis.class_id == self.red_buoy_id
                 or det.hypothesis.class_id == self.green_buoy_id
+                or det.hypothesis.class_id == self.white_buoy_id
                 or det.hypothesis.class_id == self.unknown_id
             )
             if not is_green_red_buoy:
                 continue
             pose = det.hypothesis.kinematics.pose_with_covariance.pose
-            self.buoys[det.hypothesis.track_id] = [
-                pose.position.x,
-                pose.position.y,
-                [0, 0],  # red, green
-            ]
+            if det.hypothesis.track_id not in self.buoys:
+                self.buoys[det.hypothesis.track_id] = [
+                    pose.position.x,
+                    pose.position.y,
+                    [0, 0, 0],  # red, green, white
+                ]
+            self.buoys[det.hypothesis.track_id][0] = pose.position.x
+            self.buoys[det.hypothesis.track_id][1] = pose.position.y
             for class_ in det.hypothesis.classes:
                 if class_.class_id == self.red_buoy_id:  # red
                     self.buoys[det.hypothesis.track_id][2][0] += class_.score
                 elif class_.class_id == self.green_buoy_id:  # green
                     self.buoys[det.hypothesis.track_id][2][1] += class_.score
+                elif class_.class_id == self.white_buoy_id:  # white
+                    self.buoys[det.hypothesis.track_id][2][2] += class_.score
                 elif class_.class_id == self.unknown_id:
-                    self.buoys[det.hypothesis.track_id][2][0] += class_.score / 2
-                    self.buoys[det.hypothesis.track_id][2][1] += class_.score / 2
+                    self.buoys[det.hypothesis.track_id][2][0] += class_.score / 3
+                    self.buoys[det.hypothesis.track_id][2][1] += class_.score / 3
+                    self.buoys[det.hypothesis.track_id][2][2] += class_.score / 3
 
-    def calculate_gate_pose(self, cluster):
+    def inject_missing_pose_between(self, poses):
+        assert len(poses) == 3
+        d1 = np.linalg.norm(poses[0] - poses[1])
+        d2 = np.linalg.norm(poses[1] - poses[2])
+        if d1 > d2:
+            poses.insert(1, (poses[0] + poses[1]) / 2)
+        else:
+            poses.insert(2, (poses[1] + poses[2]) / 2)
+        return poses
+
+    def calculate_gate_poses(self, cluster) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], float]]:
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
-        if len(cluster) < 2:
-            return None, None, None
-        km = KMeans(n_clusters=2)
-        positions = np.array([[t[1][0], t[1][1]] for t in cluster])
-        green_red_clusters = km.fit_predict(positions)
-        cluster_centers = km.cluster_centers_
-        green_identities = [0, 0]  # green_red_cluster_0, green_red_cluster_1
-        for i, c in enumerate(green_red_clusters):
-            probabilities = cluster[i][1][2]
-            if c == 0:
-                green_identities[0] += probabilities[1] - probabilities[0]
-            else:
-                green_identities[1] += probabilities[1] - probabilities[0]
-        if green_identities[0] > green_identities[1]:
-            green_buoy_cluster = 0
-        else:
-            green_buoy_cluster = 1
-        green_buoy_pose = cluster_centers[green_buoy_cluster]
-        red_buoy_pose = cluster_centers[1 - green_buoy_cluster]
-        gate_position = [
-            (green_buoy_pose[0] + red_buoy_pose[0]) / 2,
-            (green_buoy_pose[1] + red_buoy_pose[1]) / 2,
-        ]
-        gate_orientation = np.arctan2(
-            green_buoy_pose[1] - red_buoy_pose[1], green_buoy_pose[0] - red_buoy_pose[0]
+        if len(cluster) < 3:
+            return None
+        recluster = AgglomerativeClustering(
+            n_clusters=None, distance_threshold=6, linkage="ward"
         )
-        gate_width = np.linalg.norm(np.array(green_buoy_pose) - np.array(red_buoy_pose))
-        if self.is_ned:
-            gate_orientation -= np.pi / 2
-        else:
-            gate_orientation += np.pi / 2
-        return gate_position, gate_orientation, gate_width
+        cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
+        num_children = recluster.n_clusters_
+        if num_children < 3 or num_children > 4:
+            return None
+        cluster_centroids = np.zeros((num_children, 2))
+        for i in range(num_children):
+            cluster_centroids[i] = np.mean(
+                np.array([c[1][:2] for c in cluster])[cluster_labels == i], axis=0
+            )
+
+        m, b = np.polyfit(cluster_centroids[:, 0], cluster_centroids[:, 1], 1)
+        v = np.array([1, m])
+        yaw = np.arctan2(v[1], v[0]) - np.pi / 2 # in NED frame
+        order = np.argsort(cluster_centroids @ v.T)
+        id_to_order = {order[i]: i for i in range(num_children)}
+
+        if num_children == 4:
+            gate_poses = [
+                np.mean(
+                    [cluster_centroids[order[0]], cluster_centroids[order[1]]], axis=0
+                ),
+                np.mean(
+                    [cluster_centroids[order[1]], cluster_centroids[order[2]]], axis=0
+                ),
+                np.mean(
+                    [cluster_centroids[order[2]], cluster_centroids[order[3]]], axis=0
+                ),
+            ]
+
+            buoy_colours = np.zeros(
+                (4, 3)
+            )  # first row is left most cluster, columns are red green white
+            for i, c in enumerate(cluster):
+                internal_cluster_id = cluster_labels[i]
+                buoy_colours[id_to_order[internal_cluster_id]] += c[1][2]
+            for i in range(4):
+                if np.sum(buoy_colours[i]) == 0:
+                    continue
+                buoy_colours[i] /= np.sum(buoy_colours[i])
+
+            if np.all(np.argmax(buoy_colours, axis=1) == np.array([0, 2, 2, 1])):
+                # red on left,
+                return gate_poses, yaw
+            elif np.all(np.argmax(buoy_colours, axis=1) == np.array([1, 2, 2, 0])):
+                # red on right
+                return gate_poses[::-1], yaw + np.pi
+            else:
+                self.get_logger().info(f"Gate colours does not match r w w g: {buoy_colours}")
+                return None
+        elif num_children == 3:
+            # case 1: missing buoy on either edge
+            d12 = np.linalg.norm(
+                cluster_centroids[order[1]] - cluster_centroids[order[0]]
+            )
+            d23 = np.linalg.norm(
+                cluster_centroids[order[2]] - cluster_centroids[order[1]]
+            )
+            buoy_colours = np.zeros(
+                (3, 3)
+            )  # first row is left most cluster, columns are red green white
+            for i, c in enumerate(cluster):
+                internal_cluster_id = cluster_labels[i]
+                buoy_colours[id_to_order[internal_cluster_id]] += c[1][2]
+            for i in range(3):
+                buoy_colours[i] /= np.sum(buoy_colours[i])
+            missing_buoy_in_middle = d12 > d23 * 1.75 or d23 > d12 * 1.75
+            gate_poses = None
+            output_yaw = yaw
+            if missing_buoy_in_middle:
+                updated_poses = self.inject_missing_pose_between(
+                    [c[1][:2] for c in cluster]
+                )
+                if np.all(np.argmax(buoy_colours, axis=1) == np.array([0, 2, 1])):
+                    gate_poses = updated_poses
+                elif np.all(np.argmax(buoy_colours, axis=1) == np.array([1, 2, 0])):
+                    gate_poses = updated_poses[::-1]
+                else:
+                    self.get_logger().info("Gate colours does not match r w g")
+                    return None
+            else:
+                if np.all(
+                    np.argmax(buoy_colours, axis=1) == np.array([0, 2, 2])
+                ):  # rww
+                    gate_poses = [
+                        cluster_centroids[order[0]],
+                        cluster_centroids[order[1]],
+                        cluster_centroids[order[2]],
+                        cluster_centroids[order[2]]
+                        + v
+                        * np.linalg.norm(
+                            cluster_centroids[order[2]] - cluster_centroids[order[1]]
+                        ),
+                    ]                    
+                elif np.all(
+                    np.argmax(buoy_colours, axis=1) == np.array([2, 2, 0])
+                ):  # wwr
+                    gate_poses = [
+                        cluster_centroids[order[2]],
+                        cluster_centroids[order[1]],
+                        cluster_centroids[order[0]],
+                        cluster_centroids[order[0]]
+                        - v
+                        * np.linalg.norm(
+                            cluster_centroids[order[0]] - cluster_centroids[order[1]]
+                        ),
+                    ]
+                    output_yaw += np.pi
+                elif np.all(
+                    np.argmax(buoy_colours, axis=1) == np.array([2, 2, 1])
+                ):  # wwg
+                    gate_poses = [
+                        cluster_centroids[order[0]]
+                        - v
+                        * np.linalg.norm(
+                            cluster_centroids[order[0]] - cluster_centroids[order[1]]
+                        ),
+                        cluster_centroids[order[0]],
+                        cluster_centroids[order[1]],
+                        cluster_centroids[order[2]],
+                    ]
+                elif np.all(
+                    np.argmax(buoy_colours, axis=1) == np.array([1, 2, 2])
+                ):  # gww
+                    gate_poses = [
+                        cluster_centroids[order[2]]
+                        + v
+                        * np.linalg.norm(
+                            cluster_centroids[order[2]] - cluster_centroids[order[1]]
+                        ),
+                        cluster_centroids[order[2]],
+                        cluster_centroids[order[1]],
+                        cluster_centroids[order[0]],
+                    ]
+                    output_yaw += np.pi
+                else:
+                    return None
+            return [
+                np.mean(
+                    [gate_poses[0], gate_poses[1]], axis=0
+                ),
+                np.mean(
+                    [gate_poses[1], gate_poses[2]], axis=0
+                ),
+                np.mean(
+                    [gate_poses[2], gate_poses[3]], axis=0
+                ),
+            ], output_yaw
+
 
     @staticmethod
     def distance_point_to_vector(v1, v2):
@@ -224,7 +351,9 @@ class GateDetection(Node):
         diff_x = v2[0] - v1[0]
         diff_y = v2[1] - v1[1]
         # Compute the distance using the formula for 2D point to line distance
-        return np.abs(diff_x * v1[3] - diff_y * v1[2]) / np.sqrt(v1[2]**2 + v1[3]**2)
+        return np.abs(diff_x * v1[3] - diff_y * v1[2]) / np.sqrt(
+            v1[2] ** 2 + v1[3] ** 2
+        )
 
     def calculate_gate_entrance_exit_pairs(self, gate_detections):
         def det_to_xyv(detection):
@@ -241,7 +370,12 @@ class GateDetection(Node):
             # Calculate the score
             return 0.5 * (dist_b_to_a + dist_a_to_b)
 
-        vectors = np.array([det_to_xyv(gate_detections.objects[i]) for i in range(len(gate_detections.objects))])
+        vectors = np.array(
+            [
+                det_to_xyv(gate_detections.objects[i])
+                for i in range(len(gate_detections.objects))
+            ]
+        )
         scores = []
         for i in range(len(vectors)):
             for j in range(i + 1, len(vectors)):
@@ -251,7 +385,7 @@ class GateDetection(Node):
         best_pairs = []
         visited = set()
         for matches in sorted(scores, key=lambda x: x[1]):
-            if (any(x in visited for x in matches[0])):
+            if any(x in visited for x in matches[0]):
                 continue
             visited |= set(matches[0])
             best_pairs.append(matches)
@@ -265,85 +399,47 @@ class GateDetection(Node):
             output_gates.append(gates)
         return output_gates
 
-    def get_best_entrance_exit(self, pairs):
-        if self.odom_msg is None:
-            return None
-
-        def dist(odom_msg, v1):
-            return self.distance_point_to_vector(v1, (odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, 0, 0))
-        return min(pairs, key=lambda x: dist(self.odom_msg, x[0]))
-
-    def publish_gate_transform(self, entrance_gate, exit_gate):
+    def publish_gate_transform(self, gate_detections: DetectedObject3DArray):
         # Extract position and direction for entrance gate
-        x_e, y_e, vx_e, vy_e = entrance_gate
-        # Compute yaw from vx, vy for entrance gate
-        yaw_e = np.arctan2(vy_e, vx_e)
-        # Convert yaw to quaternion
-        quat_e = euler2quat(0, 0, yaw_e)
-
-        # Extract position and direction for exit gate
-        x_ex, y_ex, vx_ex, vy_ex = exit_gate
-        # Compute yaw from vx, vy for exit gate
-        yaw_ex = np.arctan2(vy_ex, vx_ex)
-        # Convert yaw to quaternion
-        quat_ex = euler2quat(0, 0, yaw_ex)
-
-        # Create a TransformStamped message for entrance gate
-        entrance_transform = TransformStamped()
-        entrance_transform.header.stamp = self.get_clock().now().to_msg()
-        entrance_transform.header.frame_id = 'map_ned'
-        entrance_transform.child_frame_id = 'entrance_gate_ned'
-        entrance_transform.transform.translation.x = x_e
-        entrance_transform.transform.translation.y = y_e
-        entrance_transform.transform.translation.z = 0.0
-        entrance_transform.transform.rotation.w = quat_e[0]
-        entrance_transform.transform.rotation.x = quat_e[1]
-        entrance_transform.transform.rotation.y = quat_e[2]
-        entrance_transform.transform.rotation.z = quat_e[3]
-
-        # Create a TransformStamped message for exit gate
-        exit_transform = TransformStamped()
-        exit_transform.header.stamp = self.get_clock().now().to_msg()
-        exit_transform.header.frame_id = 'map_ned'
-        exit_transform.child_frame_id = 'exit_gate_ned'
-        exit_transform.transform.translation.x = x_ex
-        exit_transform.transform.translation.y = y_ex
-        exit_transform.transform.translation.z = 0.0
-        exit_transform.transform.rotation.w = quat_e[0]
-        exit_transform.transform.rotation.x = quat_e[1]
-        exit_transform.transform.rotation.y = quat_e[2]
-        exit_transform.transform.rotation.z = quat_e[3]
-
-        # Broadcast the transforms
-        self.tf_broadcaster.sendTransform(entrance_transform)
-        self.tf_broadcaster.sendTransform(exit_transform)
+        frame_ids = [
+            "gate_left_ned",
+            "gate_middle_ned",
+            "gate_right_ned",
+        ]
+        for i, gate in enumerate(gate_detections.objects):
+            gate_transform = TransformStamped()
+            gate_transform.header.stamp = self.get_clock().now().to_msg()
+            gate_transform.header.frame_id = "map_ned"
+            gate_transform.child_frame_id = frame_ids[i]
+            gate_transform.transform.translation.x = gate.hypothesis.kinematics.pose_with_covariance.pose.position.x
+            gate_transform.transform.translation.y = gate.hypothesis.kinematics.pose_with_covariance.pose.position.y
+            gate_transform.transform.translation.z = 0.0
+            gate_transform.transform.rotation = gate.hypothesis.kinematics.pose_with_covariance.pose.orientation
+            self.tf_broadcaster.sendTransform(gate_transform)
 
     def show_buoys(self):
         if not self.buoys:
             return
 
         # Extract buoy positions for clustering
-        positions = np.array([[buoy[0], buoy[1]] for buoy in self.buoys.values()]) @ self.clustering_T.T
+        positions = (
+            np.array([[buoy[0], buoy[1]] for buoy in self.buoys.values()])
+            @ self.clustering_T.T
+        )
 
-        # # Apply DBSCAN clustering
-        # dbscan = DBSCAN(
-        #     eps=15, min_samples=2
-        # )  # Adjust eps based on required distance threshold e.g. 10m between robotx buoys
-        # cluster_labels = dbscan.fit_predict(positions)
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
-            distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
-            linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
+            distance_threshold=15,  # Similar to 'eps', defines max distance for clusters
+            linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
-            cluster_labels = [0]
+            return
         else:
             cluster_labels = hierarchical_clusterer.fit_predict(positions)
         # for each cluster, check if any of the buoy track ids are in past_buoy_ids
         # if so, add self.buoy_id_to_gate_id[track_id] = that gate id for all buoys in the cluster
         # if not, add a new gate id to self.buoy_id_to_gate_id[track_id] for all buoys in the cluster
         # new gate id is just incremented from the previous gate id with self.get_new_gate_id()
-
         clusters = {}
         for i, cluster_label in enumerate(cluster_labels):
             if cluster_label not in clusters:
@@ -368,131 +464,41 @@ class GateDetection(Node):
             # logic for calculating gate pose given cluster of buoy poses
             cluster_tids = [list(self.buoys.keys())[i] for i in cluster]
             cluster_details = [(tid, self.buoys[tid]) for tid in cluster_tids]
-            gate_position, yaw, width = self.calculate_gate_pose(cluster_details)
-            if gate_position is None:
+            poses = self.calculate_gate_poses(cluster_details)
+            if poses is None:
                 continue
-            gate_detection = DetectedObject3D()
-            gate_detection.hypothesis.mode = ObjectHypothesis.MODE_TRACKED
-            gate_detection.hypothesis.track_id = self.buoy_id_to_gate_id[
-                cluster_tids[0]
-            ]
-            gate_detection.hypothesis.class_id = self.name_to_id[
-                "gate"
-            ]  # gate class id
-            gate_detection.hypothesis.kinematics.header = self.header
-            gate_pose = Pose()
-            gate_pose.position.x = gate_position[0]
-            gate_pose.position.y = gate_position[1]
-            gate_pose.position.z = 0.0
-
-            quat = euler2quat(0, 0, yaw)
-            gate_pose.orientation = Quaternion(
-                w=quat[0], x=quat[1], y=quat[2], z=quat[3]
+            gate_position, yaw = poses
+            gate_quat = euler2quat(0, 0, yaw)
+            gate_quat = Quaternion(
+                w=gate_quat[0], x=gate_quat[1], y=gate_quat[2], z=gate_quat[3]
             )
-            gate_detection.hypothesis.kinematics.pose_with_covariance.pose = gate_pose
-            gate_detection.hypothesis.shape.dimensions.x = 0.5
-            gate_detection.hypothesis.shape.dimensions.y = width
-            gate_detection.hypothesis.shape.dimensions.z = 1.0
+            for i, (gate_name, pos) in enumerate(zip(["gate_left", "gate_middle", "gate_right"], gate_position)):
+                gate_detection = DetectedObject3D()
+                gate_detection.hypothesis.mode = ObjectHypothesis.MODE_TRACKED
+                gate_detection.hypothesis.track_id = self.buoy_id_to_gate_id[
+                    cluster_tids[0]
+                ]
+                gate_detection.hypothesis.class_id = self.name_to_id[
+                    gate_name
+                ]  # gate class id
+                gate_detection.hypothesis.kinematics.header = self.header
+                gate_pose = Pose()
+                gate_pose.position.x = pos[0]
+                gate_pose.position.y = pos[1]
+                gate_pose.position.z = 0.0
 
-            gate_detections.objects.append(gate_detection)
+                gate_pose.orientation = gate_quat
+                gate_detection.hypothesis.kinematics.pose_with_covariance.pose = gate_pose
+                gate_detection.hypothesis.shape.dimensions.x = 0.5
+                gate_detection.hypothesis.shape.dimensions.y = 10.0
+                gate_detection.hypothesis.shape.dimensions.z = 1.0
+
+                gate_detections.objects.append(gate_detection)
         self.gate_detections_pub.publish(gate_detections)
-        gate_pairs = self.calculate_gate_entrance_exit_pairs(gate_detections)
-        best_pair = self.get_best_entrance_exit(gate_pairs)
-        if best_pair is not None:
-            self.publish_gate_transform(*best_pair)
+        self.publish_gate_transform(gate_detections)
 
-        if self.debug:
-            min_x = min(buoy[0] for buoy in self.buoys.values())
-            max_x = max(buoy[0] for buoy in self.buoys.values())
-            min_y = min(buoy[1] for buoy in self.buoys.values())
-            max_y = max(buoy[1] for buoy in self.buoys.values())
-            extension = max(0, 50 - max_x + min_x, 50 - max_y + min_y)
-            min_x -= int(extension / 2)
-            max_x += int(extension / 2)
-            min_y -= int(extension / 2)
-            max_y += int(extension / 2)
-
-            min_x *= self.debug_image_scale
-            max_x *= self.debug_image_scale
-            min_y *= self.debug_image_scale
-            max_y *= self.debug_image_scale
-
-            image = 255 * np.ones(
-                (
-                    int(max_y - min_y + 1),
-                    int(max_x - min_x + 1),
-                    3,
-                ),
-                np.uint8,
-            )
-
-            for i, (track_id, buoy) in enumerate(self.buoys.items()):
-                x, y, [red, green] = buoy
-                x_scaled = int(x * self.debug_image_scale - min_x)
-                y_scaled = int(y * self.debug_image_scale - min_y)
-
-                # Assign color based on cluster label
-                cluster_label = cluster_labels[i]
-                color = self.get_color(cluster_label)
-
-                # Draw a triangle for green buoys and a circle for red buoys
-                if green > red:
-                    # Draw triangle for green buoy
-                    points = np.array(
-                        [
-                            [x_scaled, y_scaled - 15],
-                            [x_scaled - 15, y_scaled + 15],
-                            [x_scaled + 15, y_scaled + 15],
-                        ],
-                        np.int32,
-                    )
-                    cv2.polylines(
-                        image, [points], isClosed=True, color=color, thickness=2
-                    )
-                else:
-                    # Draw circle for red buoy
-                    cv2.circle(image, (x_scaled, y_scaled), 10, color, -1)
-
-                # Display track_id and probabilities as text
-                cv2.putText(
-                    image,
-                    f"{track_id}",
-                    (x_scaled, y_scaled - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    1,
-                )
-
-            # for each gate detection, draw arrow, direction based on yaw
-            for gate_detection in gate_detections.objects:
-                gate_pose = (
-                    gate_detection.hypothesis.kinematics.pose_with_covariance.pose
-                )
-                x = int((gate_pose.position.x) * self.debug_image_scale - min_x)
-                y = int((gate_pose.position.y) * self.debug_image_scale - min_y)
-                yaw = quat2euler(attrgetter("w", "x", "y", "z")(gate_pose.orientation))[2]
-                cv2.line(
-                    image,
-                    (x, y),
-                    (
-                        int(x + 50 * np.cos(yaw)),
-                        int(y + 50 * np.sin(yaw)),
-                    ),
-                    (0, 100, 0),
-                    5,
-                )
-            # add stamp as text at bottom corner
-            cv2.putText(
-                image,
-                f"Stamp: {self.header.stamp.sec}.{self.header.stamp.nanosec}",
-                (10, int(max_y - min_y - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 0),
-                1,
-            )
-            self.debug_pub.publish(self.bridge.cv2_to_imgmsg(image, "bgr8"))
+        # if self.debug:
+        #     pass
 
 
 def main(args=None):
