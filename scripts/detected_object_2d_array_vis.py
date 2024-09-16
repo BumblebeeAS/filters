@@ -11,7 +11,6 @@ import tf2_ros
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import DetectedObject2D, DetectedObject2DArray
 from geometry_msgs.msg import Point, Vector3
-from message_filters import Subscriber, TimeSynchronizer
 from ml_detector.helpers.log import RclLogHandler
 from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
@@ -25,10 +24,24 @@ class DetectedObject2DArrayVisNode(Node):
     def __init__(self):
         super().__init__("detected_object_2d_visualization_node")
         self.declare_parameter(
-            "input_detections_topics", ["/asv4/vision/detections_2d"]
+            "input_detections_topics",
+            [
+                "/asv4/vision/detections_2d_left",
+                "/asv4/vision/detections_2d_right",
+                "/asv4/vision/detections_2d_front",
+            ],
         )
-        self.declare_parameter("camera_info_topics", ["/asv4/camera_info"])
-        self.declare_parameter("output_markers_topic", "debug_markers_topic")
+        self.declare_parameter(
+            "camera_info_topics",
+            [
+                "/asv4/left_cam/camera_info",
+                "/asv4/right_cam/camera_info",
+                "/asv4/front_cam/camera_info",
+            ],
+        )
+        self.declare_parameter(
+            "output_markers_topic", "/asv4/vision/detections_2d/marker"
+        )
         self.declare_parameter("objects_config", "robotx.yaml")
         self.declare_parameter("publish_tf", False)
 
@@ -87,20 +100,25 @@ class DetectedObject2DArrayVisNode(Node):
         self.tf_broadcast = tf2_ros.TransformBroadcaster(self)
 
         self.camera_info_subscribers = [
-            Subscriber(self, CameraInfo, topic, qos_profile=qos)
+            self.create_subscription(
+                CameraInfo,
+                topic,
+                self.camera_info_callback,
+                1
+            )
             for topic in self.camera_info_topics
         ]
 
         self.camera_info_dict: Dict[str, CameraInfo] = {}
-        for subscriber in self.camera_info_subscribers:
-            subscriber.registerCallback(self.camera_info_callback)
 
         self.detection_subscribers = [
-            Subscriber(self, DetectedObject2DArray, topic, qos_profile=qos)
-            for topic in self.input_detections_topics
+            self.create_subscription(
+                DetectedObject2DArray,
+                topic,
+                self.callback,
+                1
+            ) for topic in self.input_detections_topics
         ]
-        self.time_sync = TimeSynchronizer([*self.detection_subscribers], 10)
-        self.time_sync.registerCallback(self.callback)
 
     def camera_info_callback(self, camera_info: CameraInfo):
         self.camera_info_dict[camera_info.header.frame_id] = camera_info
@@ -112,63 +130,66 @@ class DetectedObject2DArrayVisNode(Node):
         b = (hash(i) % 256) / 255.0
         return ColorRGBA(r=float(r), g=float(g), b=float(b), a=1.0)
 
-    def callback(self, *detection_msgs):
+    def callback(self, detection_msg):
         markers = MarkerArray()
         i = -1
-        for detection_msg in detection_msgs:
-            objects: List[DetectedObject2D] = detection_msg.objects
+        objects: List[DetectedObject2D] = detection_msg.objects
 
-            for detection in objects:
-                i += 1
-                class_name = self.id_to_name[detection.hypothesis.class_id]
-                marker = Marker()
-                marker.header.frame_id = detection_msg.header.frame_id
-                marker.header.stamp = detection_msg.header.stamp
-                marker.ns = class_name
-                marker.id = i
-                marker.type = Marker.LINE_STRIP
-                marker.action = Marker.ADD
-                marker.lifetime = Duration(sec=1)
+        for detection in objects:
+            i += 1
+            class_name = self.id_to_name[detection.hypothesis.class_id]
+            marker = Marker()
+            marker.header.frame_id = detection_msg.header.frame_id
+            marker.header.stamp = detection_msg.header.stamp
+            marker.ns = class_name
+            marker.id = i
+            marker.type = Marker.LINE_STRIP
+            marker.action = Marker.ADD
+            marker.lifetime = Duration(sec=1)
 
-                camera_info = self.camera_info_dict.get(detection_msg.sensor.frame_id)
-                if not camera_info:
-                    self.logger.warning(
-                        f"No CameraInfo found for frame {detection_msg.sensor.frame_id}"
-                    )
-                    continue
-
-                # Compute the ray based on camera intrinsics and detection center
-                ray_start = Point(
-                    x=detection_msg.sensor_pose.position.x,
-                    y=detection_msg.sensor_pose.position.y,
-                    z=detection_msg.sensor_pose.position.z,
+            camera_info = self.camera_info_dict.get(detection_msg.sensor.frame_id)
+            if not camera_info:
+                self.logger.warning(
+                    f"No CameraInfo found for frame {detection_msg.sensor.frame_id}"
                 )
-                ray_ends = self.calculate_rays(
-                    camera_info,
-                    detection.centre_x,
-                    detection.centre_y,
-                    detection.bbox_width,
-                    detection.bbox_height,
-                    detection_msg.sensor_pose,
-                )
+                continue
 
-                marker.points = [
-                    ray_start,
-                    ray_ends[0],
-                    ray_ends[1],
-                    ray_start,
-                    ray_ends[3],
-                    ray_ends[2],
-                    ray_start,
-                    ray_ends[0],
-                    ray_ends[1],
-                    ray_ends[3],
-                    ray_ends[2],
-                    ray_ends[0],
-                ]
-                marker.scale = Vector3(x=0.05, y=0.05, z=0.05)  # Line thickness
-                marker.color = self.get_color(class_name)
-                markers.markers.append(marker)
+            # Compute the ray based on camera intrinsics and detection center
+            ray_start = Point(
+                x=detection_msg.sensor_pose.position.x,
+                y=detection_msg.sensor_pose.position.y,
+                z=detection_msg.sensor_pose.position.z,
+            )
+            print(class_name)
+            ray_ends = self.calculate_rays(
+                camera_info,
+                detection.centre_x,
+                detection.centre_y,
+                detection.bbox_width,
+                detection.bbox_height,
+                detection_msg.sensor_pose,
+            )
+            if ray_ends is None:
+                continue
+
+            marker.points = [
+                ray_start,
+                ray_ends[0],
+                ray_ends[1],
+                ray_start,
+                ray_ends[3],
+                ray_ends[2],
+                ray_start,
+                ray_ends[0],
+                ray_ends[1],
+                ray_ends[3],
+                ray_ends[2],
+                ray_ends[0],
+            ]
+            marker.scale = Vector3(x=0.05, y=0.05, z=0.05)  # Line thickness
+            marker.color = self.get_color(class_name)
+            marker.ns = f"{detection_msg.sensor.sensor_name}/{class_name}"
+            markers.markers.append(marker)
 
         self.publisher.publish(markers)
 
@@ -206,9 +227,16 @@ class DetectedObject2DArrayVisNode(Node):
             rotation_matrix = self.quaternion_to_rotation_matrix(q)
             ray_dir_world = rotation_matrix @ ray_dir_camera
 
+            camera_forward = rotation_matrix @ np.array([0, 0, 1])
+            camera_forward[2] = 0
+
             # Calculate the intersection with the ground plane (z = 0)
             t = -sensor_pose.position.z / ray_dir_world[2]
             ts.append(t)
+            # if i == 0:
+            #     # check if direction is same as camera forward direction
+            #     if np.dot(ray_dir_world, camera_forward) < 0:
+            #         return None
             if len(ts) > 1:
                 t = ts[i - 2]
             ray_end = Point(
