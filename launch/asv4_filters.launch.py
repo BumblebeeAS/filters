@@ -80,7 +80,7 @@ def generate_launch_description():
                         "dets_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
                         "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
                         "objects_config": "robotx.yaml",
-                        "max_lost": 100,
+                        "max_lost": 10,
                         "dist_threshold": 5.0,
                     }
                 ],
@@ -95,7 +95,7 @@ def generate_launch_description():
                         "dets_3d_topic": "/asv4/vision/lidar_large_objects/dets_3d",
                         "filtered_topic": "/asv4/vision/lidar_large_objects/dets_3d/filtered",
                         "objects_config": "robotx.yaml",
-                        "max_lost": 150,
+                        "max_lost": 15,
                         "dist_threshold": 10.0,
                     }
                 ],
@@ -260,6 +260,21 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
+                executable="detected_object_3d_filter.py",
+                # executable="detected_object_3d_composite_filter.py",
+                name="det_2d_proj_filter",
+                parameters=[
+                    {
+                        "dets_3d_topic": "/asv4/vision/detections_2d/projected",
+                        "filtered_topic": "/asv4/vision/detections_2d/projected/filtered",
+                        "objects_config": "robotx.yaml",
+                        "max_lost": 10,
+                        "dist_threshold": 5.0,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
                 executable="detected_object_2d_filter_projection.py",
                 name="dets_2d_projection",
                 parameters=[],
@@ -271,9 +286,9 @@ def generate_launch_description():
                 parameters=[
                     {
                         "input_detections_topics": [
-                            "/asv4/vision/detections_2d/projected",
+                            "/asv4/vision/detections_2d/projected/filtered",
                         ],
-                        "output_markers_topic": "/asv4/vision/detections_2d/projected/marker",
+                        "output_markers_topic": "/asv4/vision/detections_2d/projected/filtered/marker",
                         "objects_config": "robotx.yaml",
                         "publish_tf": False,
                     }

@@ -87,7 +87,8 @@ class DetectedObject3DLabelingNode(Node):
             DetectedObject3DArray, self.output_labeled_topic, 10
         )
 
-        self.inflate_width = 1.5
+        # self.inflate_width = 1.5
+        self.inflate_width = 0.8
         self.latest_3d_detections = None
         self.track_identities = defaultdict(Counter)
 

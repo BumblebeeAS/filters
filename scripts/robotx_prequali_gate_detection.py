@@ -96,7 +96,8 @@ class PrequaliGateDetection(Node):
 
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
         self.use_heading = True
-        self.heading_direction = np.deg2rad(-90) # degrees ned
+        # self.heading_direction = np.deg2rad(-90) # degrees ned
+        self.heading_direction = np.deg2rad(0) # degrees ned
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([
@@ -120,7 +121,8 @@ class PrequaliGateDetection(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
         self.subscription = self.create_subscription(
             DetectedObject3DArray,
-            "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            "/asv4/vision/detections_2d/projected/filtered",
             self.detected_objects_callback,
             10,
         )
@@ -164,7 +166,7 @@ class PrequaliGateDetection(Node):
             is_green_red_buoy = (
                 det.hypothesis.class_id == self.red_buoy_id
                 or det.hypothesis.class_id == self.green_buoy_id
-                or det.hypothesis.class_id == self.unknown_id
+                # or det.hypothesis.class_id == self.unknown_id
             )
             if not is_green_red_buoy:
                 continue
@@ -179,18 +181,23 @@ class PrequaliGateDetection(Node):
                     self.buoys[det.hypothesis.track_id][2][0] += class_.score
                 elif class_.class_id == self.green_buoy_id:  # green
                     self.buoys[det.hypothesis.track_id][2][1] += class_.score
-                elif class_.class_id == self.unknown_id:
-                    self.buoys[det.hypothesis.track_id][2][0] += class_.score / 2
-                    self.buoys[det.hypothesis.track_id][2][1] += class_.score / 2
+                else:
+                    print(f"Unknown class id: {class_.class_id}")
+                # elif class_.class_id == self.unknown_id:
+                #     self.buoys[det.hypothesis.track_id][2][0] += class_.score / 2
+                #     self.buoys[det.hypothesis.track_id][2][1] += class_.score / 2
 
     def calculate_gate_pose(self, cluster):
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
         if len(cluster) < 2:
             return None, None, None
+        print("Kmeans")
         km = KMeans(n_clusters=2)
         positions = np.array([[t[1][0], t[1][1]] for t in cluster])
         green_red_clusters = km.fit_predict(positions)
         cluster_centers = km.cluster_centers_
+        if np.linalg.norm(cluster_centers[0] - cluster_centers[1]) < 4:
+            return None, None, None
         green_identities = [0, 0]  # green_red_cluster_0, green_red_cluster_1
         for i, c in enumerate(green_red_clusters):
             probabilities = cluster[i][1][2]
@@ -241,6 +248,7 @@ class PrequaliGateDetection(Node):
             # Calculate the score
             return 0.5 * (dist_b_to_a + dist_a_to_b)
 
+        # print(gate_detections)
         vectors = np.array([det_to_xyv(gate_detections.objects[i]) for i in range(len(gate_detections.objects))])
         scores = []
         for i in range(len(vectors)):
@@ -323,7 +331,9 @@ class PrequaliGateDetection(Node):
             return
 
         # Extract buoy positions for clustering
-        positions = np.array([[buoy[0], buoy[1]] for buoy in self.buoys.values()]) @ self.clustering_T.T
+        positions = np.array([[buoy[0], buoy[1]] for buoy in self.buoys.values()])
+        if self.use_heading:
+            positions = positions @ self.clustering_T.T
 
         # # Apply DBSCAN clustering
         # dbscan = DBSCAN(
@@ -332,8 +342,10 @@ class PrequaliGateDetection(Node):
         # cluster_labels = dbscan.fit_predict(positions)
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
+            # distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
+            # linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
             distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
-            linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
+            linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
             cluster_labels = [0]
@@ -369,6 +381,7 @@ class PrequaliGateDetection(Node):
             cluster_tids = [list(self.buoys.keys())[i] for i in cluster]
             cluster_details = [(tid, self.buoys[tid]) for tid in cluster_tids]
             gate_position, yaw, width = self.calculate_gate_pose(cluster_details)
+            print(gate_position, yaw, width)
             if gate_position is None:
                 continue
             gate_detection = DetectedObject3D()
@@ -397,7 +410,10 @@ class PrequaliGateDetection(Node):
             gate_detections.objects.append(gate_detection)
         self.gate_detections_pub.publish(gate_detections)
         gate_pairs = self.calculate_gate_entrance_exit_pairs(gate_detections)
-        best_pair = self.get_best_entrance_exit(gate_pairs)
+        if len(gate_pairs) == 0:
+            best_pair = None
+        else:
+            best_pair = self.get_best_entrance_exit(gate_pairs)
         if best_pair is not None:
             self.publish_gate_transform(*best_pair)
 

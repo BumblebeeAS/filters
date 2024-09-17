@@ -75,7 +75,7 @@ class TrackerFilter(Node):
             # tracker_output_format="visdrone_challenge",
         )
         self.latest_header = None
-        self.min_age = 3
+        self.min_age = 5
         self.track_counts = defaultdict(lambda: np.zeros(6))
         self.detection_sub = self.create_subscription(
             DetectedObject3DArray,
