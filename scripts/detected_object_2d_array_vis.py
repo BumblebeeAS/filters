@@ -125,9 +125,9 @@ class DetectedObject2DArrayVisNode(Node):
 
     def get_color(self, i):
         # random color
-        r = ((hash(i) >> 16) % 256) / 255.0
-        g = ((hash(i) >> 8) % 256) / 255.0
-        b = (hash(i) % 256) / 255.0
+        r = max(10.0, ((hash(i) >> 16) % 256) / 255.0)
+        g = max(10.0, ((hash(i) >> 8) % 256) / 255.0)
+        b = max(10.0, (hash(i) % 256) / 255.0)
         return ColorRGBA(r=float(r), g=float(g), b=float(b), a=1.0)
 
     def callback(self, detection_msg):

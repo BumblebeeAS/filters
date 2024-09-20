@@ -119,6 +119,8 @@ class DetectedObject3DArrayVisNode(Node):
                 marker.pose = deepcopy(detection.hypothesis.kinematics.pose_with_covariance.pose)
                 # if self.input_detections_topics[0] == "/asv4/vision/lidar_small_objects/dets_3d/labelled":
                 #     self.get_logger().info(f"frame: {marker.header.frame_id} z: {marker.pose.position.z} {detection.hypothesis.shape.dimensions.z}")
+
+                marker.pose.position.z += detection.hypothesis.shape.dimensions.z / 2
                 marker.scale = deepcopy(detection.hypothesis.shape.dimensions)
                 marker.scale.x = max(0.5, marker.scale.x)
                 marker.scale.y = max(0.5, marker.scale.y)
