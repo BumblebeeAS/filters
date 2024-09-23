@@ -128,21 +128,21 @@ private:
       marker.action = visualization_msgs::msg::Marker::ADD;
       marker.lifetime = rclcpp::Duration(1, 0);
       std::string fixed_frame = detection_msg->header.frame_id;
-      std::string frame_v1 = "asv4/" + detection_msg->sensor.sensor_name + "_optical";
+      std::string frame_v1 = "asv4/" + detection_msg->sensor.frame_id + "_optical";
       std::string frame = ""; // camera frame either xx or asv4/xx_optical
       bool found_cam_info = false;
-      if (cam_info_map_.find(detection_msg->sensor.sensor_name) != cam_info_map_.end())
+      if (cam_info_map_.find(detection_msg->sensor.frame_id) != cam_info_map_.end())
       {
         // RCLCPP_WARN(
         //     this->get_logger(), "No CameraInfo found for frame %s",
-        //     detection_msg->sensor.sensor_name.c_str());   // Modify logging as needed
+        //     detection_msg->sensor.frame_id.c_str());   // Modify logging as needed
         found_cam_info = true;
-        frame = detection_msg->sensor.sensor_name;
+        frame = detection_msg->sensor.frame_id;
       } else if (cam_info_map_.find(frame_v1) != cam_info_map_.end())
       {
         // RCLCPP_WARN(
         //     this->get_logger(), "No CameraInfo found for frame %s",
-        //     detection_msg->sensor.sensor_name.c_str());   // Modify logging as needed
+        //     detection_msg->sensor.frame_id.c_str());   // Modify logging as needed
         found_cam_info = true;
         frame = frame_v1;
       }
@@ -150,7 +150,7 @@ private:
       {
         RCLCPP_WARN(
           this->get_logger(), "No CameraInfo found for frame %s",
-          detection_msg->sensor.sensor_name.c_str());   // Modify logging as needed
+          detection_msg->sensor.frame_id.c_str());   // Modify logging as needed
         continue;
       }
       auto camera_info =
