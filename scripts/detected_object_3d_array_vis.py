@@ -127,7 +127,7 @@ class DetectedObject3DArrayVisNode(Node):
                 marker.scale.z = max(0.5, marker.scale.z)
                 tid = detection.hypothesis.track_id
                 if detection.hypothesis.mode == ObjectHypothesis.MODE_DETECTED:
-                    marker.color = self.get_color(class_name)
+                    marker.color = self.get_color(detection.hypothesis.class_id)
                     marker.color.a = 0.2
                 else:
                     marker.color = self.get_color(tid)

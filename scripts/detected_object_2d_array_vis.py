@@ -43,7 +43,6 @@ class DetectedObject2DArrayVisNode(Node):
             "output_markers_topic", "/asv4/vision/detections_2d/marker"
         )
         self.declare_parameter("objects_config", "robotx.yaml")
-        self.declare_parameter("publish_tf", False)
 
         self.input_detections_topics = (
             self.get_parameter("input_detections_topics")
@@ -59,9 +58,6 @@ class DetectedObject2DArrayVisNode(Node):
             self.get_parameter("output_markers_topic")
             .get_parameter_value()
             .string_value
-        )
-        self.publish_tf = (
-            self.get_parameter("publish_tf").get_parameter_value().bool_value
         )
         self.logger = logging.getLogger("detected_object_2d_visualization")
         self.logger.level = logging.INFO
@@ -96,8 +92,6 @@ class DetectedObject2DArrayVisNode(Node):
         self.publisher = self.create_publisher(
             MarkerArray, self.output_markers_topic, 10
         )
-
-        self.tf_broadcast = tf2_ros.TransformBroadcaster(self)
 
         self.camera_info_subscribers = [
             self.create_subscription(
