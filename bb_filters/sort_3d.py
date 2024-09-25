@@ -2,7 +2,6 @@ import numpy as np
 import time
 from collections import Counter, defaultdict
 from scipy.optimize import linear_sum_assignment
-from scipy.spatial.distance import cdist
 from motrackers.utils.misc import iou
 from motrackers.track import Track
 from motrackers.kalman_tracker import KFTrackerConstantAcceleration
@@ -10,7 +9,27 @@ from motrackers.kalman_tracker import KFTrackerConstantAcceleration
 # from motrackers.sort_tracker import assign_tracks2detection_iou
 from motrackers.centroid_kf_tracker import CentroidKF_Tracker
 from collections import OrderedDict
-from scipy.spatial import distance
+
+def pairwise_distances(x, y):
+    """
+    Compute pair-wise distances between points in x and y.
+
+    Parameters:
+        x (ndarray): Numpy array of shape (n_samples_x, n_features).
+        y (ndarray): Numpy array of shape (n_samples_y, n_features).
+
+    Returns:
+        ndarray: Numpy array of shape (n_samples_x, n_samples_y) containing
+        the pair-wise distances between points in x and y.
+    """
+    # Reshape x and y to enable broadcasting
+    x_reshaped = x[:, np.newaxis, :]  # Shape: (n_samples_x, 1, n_features)
+    y_reshaped = y[np.newaxis, :, :]  # Shape: (1, n_samples_y, n_features)
+
+    # Compute pair-wise distances using Euclidean distance formula
+    pairwise_distances = np.sqrt(np.sum((x_reshaped - y_reshaped)**2, axis=2))
+
+    return pairwise_distances
 
 
 def iou_xywh(bbox1, bbox2):
@@ -76,7 +95,8 @@ def assign_tracks2detection_iou(bbox_tracks, bbox_detections, dist_threshold=1.5
     # for t in range(bbox_tracks.shape[0]):
     #     for d in range(bbox_detections.shape[0]):
     #         iou_matrix[t, d] = iou_xywh(bbox_tracks[t, :], bbox_detections[d, :])
-    dist_matrix = cdist(bbox_tracks, bbox_detections)
+    print(type(bbox_tracks), bbox_tracks.shape, type(bbox_detections), bbox_detections.shape)
+    dist_matrix = pairwise_distances(bbox_tracks, bbox_detections)
 
     assigned_tracks, assigned_detections = linear_sum_assignment(dist_matrix)
     unmatched_detections, unmatched_tracks = [], []
@@ -566,7 +586,8 @@ class Tracker3D:
             track_centroids = np.array([self.tracks[tid].centroid for tid in track_ids])
             detection_centroids = get_centroid3d(np.asarray(bboxes))
 
-            centroid_distances = distance.cdist(track_centroids, detection_centroids)
+            print(type(track_centroids), track_centroids.shape, type(detection_centroids), detection_centroids.shape)
+            centroid_distances = pairwise_distances(track_centroids, detection_centroids)
 
             track_indices = np.amin(centroid_distances, axis=1).argsort()
 
@@ -724,7 +745,8 @@ def assign_tracks2detection_centroid_distances_3d(
 
     estimated_track_centroids = get_centroid3d(bbox_tracks)
     detection_centroids = get_centroid3d(bbox_detections)
-    centroid_distances = distance.cdist(estimated_track_centroids, detection_centroids)
+    print(type(estimated_track_centroids), estimated_track_centroids.shape, type(detection_centroids), detection_centroids.shape)
+    centroid_distances = pairwise_distances(estimated_track_centroids, detection_centroids)
 
     assigned_tracks, assigned_detections = linear_sum_assignment(centroid_distances)
 
