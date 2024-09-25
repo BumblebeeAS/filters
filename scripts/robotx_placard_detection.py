@@ -24,12 +24,14 @@ import cv2
 import numpy as np
 import tf2_ros
 from transforms3d.euler import euler2mat, euler2quat
+from transforms3d.quaternions import mat2quat
 from cv_bridge import CvBridge
+import tf2_geometry_msgs
 
 # Define the HSV threshold for red color, can add bounds for other colours
-lower_red1 = np.array([0, 50, 50])
-upper_red1 = np.array([40, 255, 200])
-lower_red2 = np.array([170, 120, 50])
+lower_red1 = np.array([0, 80, 100])
+upper_red1 = np.array([40, 255, 255])
+lower_red2 = np.array([170, 120, 100])
 upper_red2 = np.array([180, 255, 120])
 
 class PlacardPoseNode(Node):
@@ -37,16 +39,17 @@ class PlacardPoseNode(Node):
         super().__init__('placard_pose_node')
         self.image_subscription = self.create_subscription(
             CompressedImage,
-            '/asv4/left_cam/image_rect_color/compressed',
+            '/asv4/right_cam/image_rect_color/compressed',
             self.image_callback,
             10
         )
         self.camera_info_subscription = self.create_subscription(
             CameraInfo,
-            '/asv4/left_cam/camera_info',
+            '/asv4/right_cam/camera_info',
             self.camera_info_callback,
             10
         )
+        self.cam_frame = None
         self.placard_pose_pub = self.create_publisher(PoseStamped, '/placard_pose_cv', 10) # not implemented
         self.bridge = CvBridge()
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -61,6 +64,7 @@ class PlacardPoseNode(Node):
             return
 
         self.camera_info_received = True
+        self.cam_frame = msg.header.frame_id
         # capture projection matrix and other camera info
         self.projection_matrix = np.array(msg.p).reshape(3, 4)
         self.camera_matrix = np.array(msg.k).reshape(3, 3)
@@ -88,7 +92,7 @@ class PlacardPoseNode(Node):
         # Find contours of the red square
         red_contours, _ = cv2.findContours(red_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-
+        cv2.drawContours(image, red_contours, -1, (0, 255, 0), 3)
 
         # extract 4 point simplified contour
         try:
@@ -125,7 +129,11 @@ class PlacardPoseNode(Node):
                 distance_v1 = (left_dist + right_dist) / 2
                 # get yaw of placard relative to camera by considering distance difference from camera plane
                 try:
+                    if (np.abs((left_dist - right_dist) / placard_size_real) > 1):
+                        self.get_logger().warn('invalid solution')
+                        return
                     yaw_v1 = np.arcsin((left_dist - right_dist) / placard_size_real)
+                    self.get_logger().info(f"Yaw: {np.degrees(yaw_v1):.2f} degrees, left-right: {left_dist - right_dist}")
                 except Exception as e:
                     self.get_logger().error('Error computing yaw: %s' % str(e))
                     return
@@ -186,36 +194,37 @@ class PlacardPoseNode(Node):
 
                 self.placard_detect_pub.publish(image_msg)
                 # Obtain pose of the placard relative to the camera and publish it
-                # try: 
-                #     self.get_logger().info('Publishing placard pose')
-                #     placard_pose = PoseStamped()
-                #     placard_pose.header.stamp = image_msg.header.stamp
-                #     placard_pose.header.frame_id = "asv4/left_cam"
-                #     placard_pose.pose.position.x = float(x_shift_v1)
-                #     placard_pose.pose.position.y = float(y_shift_v1)
-                #     placard_pose.pose.position.z = float(z_shift_v1)
-                #     placard_pose.pose.orientation.x = quat[0]
-                #     placard_pose.pose.orientation.y = quat[1]
-                #     placard_pose.pose.orientation.z = quat[2]
-                #     placard_pose.pose.orientation.w = quat[3]
-                #     self.placard_pose_pub.publish(placard_pose)
+                try: 
+                    self.get_logger().info('Publishing placard pose')
+                    placard_pose = PoseStamped()
+                    placard_pose.header.stamp = image_msg.header.stamp
+                    placard_pose.header.frame_id = self.cam_frame
+                    placard_pose.pose.position.x = float(x_shift_v1)
+                    placard_pose.pose.position.y = float(y_shift_v1)
+                    placard_pose.pose.position.z = float(z_shift_v1)
+                    quat = mat2quat(rot)
+                    placard_pose.pose.orientation.x = quat[1]
+                    placard_pose.pose.orientation.y = quat[2]
+                    placard_pose.pose.orientation.z = quat[3]
+                    placard_pose.pose.orientation.w = quat[0]
+                    # self.placard_pose_pub.publish(placard_pose)
+                    p_map = self.tf_buffer.transform(placard_pose, "map", Duration(seconds=0.05))
+                    self.placard_pose_pub.publish(p_map)
+                    # transform to world frame
+                    t = TransformStamped()
+                    t.header.stamp = image_msg.header.stamp
+                    t.header.frame_id = "map"
+                    t.child_frame_id = "placard"
+                    t.transform.translation.x = p_map.pose.position.x
+                    t.transform.translation.y = p_map.pose.position.y
+                    t.transform.translation.z = p_map.pose.position.z
+                    t.transform.rotation = p_map.pose.orientation
 
-                #     world_pose = self.tf_buffer.transform(
-                #         placard_pose, "map_ned", Duration(seconds=0.05)
-                #     )
-                    
-                #     t = TransformStamped()
-                #     t.header = world_pose.header
-                #     t.child_frame_id = "placard"
-                #     t.transform.translation.x = float(world_pose.pose.position.x)
-                #     t.transform.translation.y = float(world_pose.pose.position.y)
-                #     t.transform.translation.z = 0.0
-                #     t.transform.rotation = world_pose.pose.orientation
-
-                #     self.tf_broadcaster.sendTransform(t)
+                    # t in "map" frame
+                    self.tf_broadcaster.sendTransform(t)
                 
-                # except Exception as e:
-                #     self.get_logger().error('Error publishing placard pose: %s' % str(e))
+                except Exception as e:
+                    self.get_logger().error('Error publishing placard pose: %s' % str(e))
 
 
         except Exception as e:

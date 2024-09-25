@@ -123,6 +123,7 @@ class TrackerFilter(Node):
         if len(msg.objects) > 0:
             self.latest_header = msg.objects[0].hypothesis.kinematics.header
 
+        # self.get_logger().info(f"Received {len(bboxes)} detections {np.array(bboxes)} conf {np.array(confidences)}")
         tracked_objects = self.tracker.update(
             np.array(bboxes), np.array(confidences), np.array(ids)
         )
