@@ -14,18 +14,22 @@ Dependencies:
 """
 from pathlib import Path
 import numpy as np
+from sklearn.cluster import DBSCAN
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
     DetectedObject2DArray,
+    DetectedObject3DArray,
     DetectorSource,
 )
 from bb_robotx_msgs.msg import LightSequence
 from cv_bridge import CvBridge
 from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
-from sensor_msgs.msg import Image
-from collections import deque
+from sensor_msgs.msg import CameraInfo, Image
+from geometry_msgs.msg import TransformStamped
+from collections import Counter, deque
+from tf2_ros import TransformBroadcaster
 
 
 class LightTowerDetection(Node):
@@ -66,8 +70,17 @@ class LightTowerDetection(Node):
         self.green_panel_id = self.name_to_id["light_tower_panel_green"]
         self.red_panel_id = self.name_to_id["light_tower_panel_red"]
         self.black_panel_id = self.name_to_id["light_tower_panel_black"]
+        self.light_tower_id = self.name_to_id["light_tower"]
 
-        self.degree = 10  # only update transition up to degree time steps in the past.
+        # Begin: Light tower pose estimation variables
+        self.light_tower_known_height = 2  # meters
+        self.light_tower_positions = deque(maxlen=100)
+        self.last_pose_estimate = None
+        # Noise model for measurements
+        self.tf_broadcaster = TransformBroadcaster(self)
+        # End: Light tower pose estimation variables
+
+        self.degree = 3  # only update transition up to degree time steps in the past.
         # e.g. if degree is 2, increments state n-1 -> n by 2 and state n-2 -> n by 1
         self.colors = {
             "black": 0,
@@ -79,7 +92,7 @@ class LightTowerDetection(Node):
             self.black_panel_id: 0,
             self.red_panel_id: 1,
             self.blue_panel_id: 2,
-            self.green_panel_id: 3
+            self.green_panel_id: 3,
         }
         self.colors_enums = [
             LightSequence.UNKNOWN,
@@ -89,9 +102,9 @@ class LightTowerDetection(Node):
         ]
         self.transition_matrix = np.zeros((4, 4))
         self.debug_img = np.zeros((5, 5, 3))
-        self.debug_img[0, 1] = self.debug_img[1, 0] = np.array([0, 0, 255])
-        self.debug_img[0, 2] = self.debug_img[2, 0] = np.array([255, 0, 0])
-        self.debug_img[0, 3] = self.debug_img[3, 0] = np.array([0, 255, 0])
+        self.debug_img[0, 2] = self.debug_img[2, 0] = np.array([0, 0, 255])
+        self.debug_img[0, 3] = self.debug_img[3, 0] = np.array([255, 0, 0])
+        self.debug_img[0, 4] = self.debug_img[4, 0] = np.array([0, 255, 0])
         self.scaling_factor = (
             self.degree * (self.degree + 1) / 2
         )  # scale transition matrix by factor
@@ -104,19 +117,35 @@ class LightTowerDetection(Node):
         self.light_sequence_pub = self.create_publisher(
             LightSequence, "/robotx24/light_sequence", 1
         )
-        # self.subscription = self.create_subscription(
-        #     DetectedObject3DArray,
-        #     "/asv4/vision/lidar_small_objects/dets_3d/labelled",
-        #     self.detected_objects_3d_callback,
-        #     10,
-        # )
         self.subscription_2d = self.create_subscription(
             DetectedObject2DArray,
             "/asv4/vision/detections_2d",
             self.detected_objects_2d_callback,
             10,
         )
+        self.subscription_3d = self.create_subscription(
+            DetectedObject3DArray,
+            "/asv4/vision/detections_2d/projected/filtered",
+            self.detected_objects_3d_callback,
+            10
+        )
         self.create_timer(1, self.publish_sequence)
+        self.update_timer = self.create_timer(2.0, self.update_pose_estimate)
+
+    def publish_tf_transform(self, centroid):
+        """Publish the latest estimated object pose as a TF transform."""
+        t = TransformStamped()
+        # Fill in header information
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "map"  # Global frame
+        # Set the name of the object (e.g., "tracked_object")
+        t.child_frame_id = "light_tower"
+        # Set the position (translation)
+        t.transform.translation.x = centroid[0]
+        t.transform.translation.y = centroid[1]
+        t.transform.translation.z = 0.0
+        # Broadcast the transform
+        self.tf_broadcaster.sendTransform(t)
 
     def check_condition(self):
         if np.sum(self.transition_matrix >= 2) >= 3:
@@ -135,7 +164,14 @@ class LightTowerDetection(Node):
                 )
             ):
                 return False
-            if c1 == c11 and c2 == c21 and c3 == c31 and c1 != c2 and c1 != c3 and c2 != c3:
+            if (
+                c1 == c11
+                and c2 == c21
+                and c3 == c31
+                and c1 != c2
+                and c1 != c3
+                and c2 != c3
+            ):
                 self.best_sequence = LightSequence(
                     first=self.colors_enums[c1],
                     second=self.colors_enums[c2],
@@ -148,9 +184,13 @@ class LightTowerDetection(Node):
 
     def publish_sequence(self):
         if self.debug and self.transition_matrix.max() > 0:
-            self.debug_img[1:, 1:, 0] = self.transition_matrix / self.transition_matrix.max() * 255
-            debug_img = self.bridge.cv2_to_imgmsg(self.debug_img)
+            self.debug_img[1:, 1:, 0] = (
+                self.transition_matrix / self.transition_matrix.max() * 255
+            )
+            self.debug_img = self.debug_img.astype(np.uint8)
+            debug_img = self.bridge.cv2_to_imgmsg(self.debug_img, encoding='rgb8')
             self.debug_pub.publish(debug_img)
+        # store best sequence and don't recompute subsequently (no point since probably reported alr)
         if self.best_sequence is not None:
             self.light_sequence_pub.publish(self.best_sequence)
             return
@@ -175,17 +215,77 @@ class LightTowerDetection(Node):
                 self.black_panel_id,
             ]
         ]
-        if len(placard_dets) == 0:
+        if len(placard_dets) != 0:
+            best_placard = max(placard_dets, key=lambda det: det.hypothesis.probability)
+            color = self.id_to_color[best_placard.hypothesis.class_id]
+            if len(self.latest_colors) >= self.degree:
+                for i, prev_color in enumerate(self.latest_colors):
+                    if prev_color != color:
+                        print(f"transition {prev_color} -> {color}")
+                        self.transition_matrix[prev_color][color] += (
+                            i + 1
+                        ) / self.scaling_factor
+            self.latest_colors.append(color)
+            self.get_logger().info(f"{self.transition_matrix}")
+
+    def detected_objects_3d_callback(self, msg):
+        towers = [
+            det for det in msg.objects if det.hypothesis.class_id == self.light_tower_id
+        ]
+        if len(towers) == 0:
             return
-        best_placard = max(placard_dets, key=lambda det: det.hypothesis.probability)
-        color = self.id_to_color[best_placard.hypothesis.class_id]
-        if len(self.latest_colors) >= self.degree:
-            for i, prev_color in enumerate(self.latest_colors):
-                if prev_color != color:
-                    print(f"transition {prev_color} -> {color}")
-                    self.transition_matrix[prev_color][color] += (i + 1) / self.scaling_factor
-        self.latest_colors.append(color)
-        self.get_logger().info(f"{self.transition_matrix}")
+        best_tower = max(towers, key=lambda det: det.hypothesis.probability)
+        self.light_tower_positions.append((
+            best_tower.hypothesis.kinematics.pose_with_covariance.pose.position.x,
+            best_tower.hypothesis.kinematics.pose_with_covariance.pose.position.y,
+        ))
+        return
+
+    def update_pose_estimate(self):
+        """
+        Update the pose estimate based on clustered light tower positions.
+
+        Parameters:
+        - msg: Message containing light tower positions (assumed to be a list of [x, y, z] coordinates).
+        """
+        # Extract light tower positions from the msg
+        light_tower_positions = np.array(self.light_tower_positions)  # Ensure this extracts correctly
+        if len(light_tower_positions) < 3:
+            return
+        # Apply DBSCAN clustering
+        dbscan = DBSCAN(eps=0.5, min_samples=2)  # Adjust eps and min_samples as needed
+        labels = dbscan.fit_predict(light_tower_positions)
+
+        # Count the occurrences of each cluster (ignore outliers)
+        label_counts = Counter(labels)
+
+        # Ignore the noise label (-1) and find the largest cluster label
+        if -1 in label_counts:
+            del label_counts[-1]  # Remove outliers from the count
+
+        if not label_counts:
+            print("No clusters found. Unable to compute centroid.")
+            return None  # Return or handle the case of no valid positions
+
+        # Find the label of the largest cluster
+        largest_cluster_label = max(label_counts, key=label_counts.get)
+
+        # Get the indices of the largest cluster
+        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
+        largest_cluster_positions = light_tower_positions[largest_cluster_indices]
+
+        # Calculate the centroid of the largest cluster
+        centroid = np.mean(largest_cluster_positions, axis=0)
+
+        # Update the pose estimate
+        print(f"Updated pose estimate (centroid of largest cluster): {centroid}")
+
+        # If needed, store or use the centroid for further processing
+        # For example, you might want to store it in an instance variable
+        self.last_pose_estimate = centroid  # or another suitable attribute
+
+        # publish tf
+        self.publish_tf_transform(centroid)
 
     # def calculate_placard_pose(self, cluster):
     #     # cluster the cluster into 2 clusters based on the x,y positions of the buoys
