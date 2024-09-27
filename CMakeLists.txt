@@ -103,6 +103,7 @@ install(PROGRAMS
   scripts/robotx_placard_detection.py
   scripts/robotx_prequali_gate_detection.py
   scripts/robotx_gate_detection.py
+  scripts/robotx_light_tower_detection.py
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py
   scripts/robotx_sim_obstacles_converter.py
