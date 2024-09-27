@@ -14,7 +14,7 @@ def generate_launch_description():
             # ComposableNodeContainer(),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="raw_dets_vis",
                 parameters=[
                     {
@@ -28,7 +28,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="large_raw_dets_vis",
                 parameters=[
                     {
@@ -42,7 +42,7 @@ def generate_launch_description():
             ),
             # Node(
             #     package="bb_filters",
-            #     executable="detected_object_3d_vis",
+            #     executable="detected_object_3d_array_vis.py",
             #     name="raw_dets_vis",
             #     parameters=[{
             #         "input_detections_topics": [
@@ -116,7 +116,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="bev_labelled_dets_vis",
                 parameters=[
                     {
@@ -168,7 +168,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="filtered_dets_vis",
                 parameters=[
                     {
@@ -183,7 +183,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="labelled_dets_vis",
                 parameters=[
                     {
@@ -198,7 +198,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="large_filtered_dets_vis",
                 parameters=[
                     {
@@ -213,7 +213,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="large_labelled_dets_vis",
                 parameters=[
                     {
@@ -246,7 +246,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="large_labelled_dets_vis",
                 parameters=[
                     {
@@ -282,7 +282,7 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_vis",
+                executable="detected_object_3d_array_vis.py",
                 name="det_2d_proj_vis",
                 parameters=[
                     {

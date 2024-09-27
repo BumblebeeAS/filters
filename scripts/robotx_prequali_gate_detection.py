@@ -96,8 +96,8 @@ class PrequaliGateDetection(Node):
 
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
         self.use_heading = True
-        self.heading_direction = np.deg2rad(180) # degrees enu # for nbpark # point west
-        # self.heading_direction = np.deg2rad(90) # degrees enu for rsyc
+        # self.heading_direction = np.deg2rad(180) # degrees enu # for nbpark # point west
+        self.heading_direction = np.deg2rad(240) # degrees enu for rsyc
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([
@@ -166,7 +166,7 @@ class PrequaliGateDetection(Node):
             is_green_red_buoy = (
                 det.hypothesis.class_id == self.red_buoy_id
                 or det.hypothesis.class_id == self.green_buoy_id
-                or det.hypothesis.class_id == self.unknown_id
+                # or det.hypothesis.class_id == self.unknown_id
             )
             if not is_green_red_buoy:
                 continue
