@@ -100,8 +100,8 @@ class GateDetection(Node):
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
         self.use_heading = True
         # TODO: expose this as service or parameter
-        self.heading_direction = np.deg2rad(180) # degrees enu # for nbpark # point west
-        # self.heading_direction = np.deg2rad(90) # degrees enu for rsyc
+        # self.heading_direction = np.deg2rad(180) # degrees enu # for nbpark # point west
+        self.heading_direction = np.deg2rad(-30) # degrees enu for rsyc
 
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
@@ -448,7 +448,7 @@ class GateDetection(Node):
 
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
-            distance_threshold=15,  # Similar to 'eps', defines max distance for clusters
+            distance_threshold=20,  # Similar to 'eps', defines max distance for clusters
             linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
