@@ -120,14 +120,14 @@ class DetectedObject3DLabelingNode(Node):
 
         cost_matrix = np.ones((len(self.latest_3d_detections.objects), len(detection_2d_msg.objects))) * 1e9
         for i, obj_3d in enumerate(self.latest_3d_detections.objects):
-            projected_2d_points = self.project_3d_to_2d(
+            projected_2d_points, dist = self.project_3d_to_2d(
                 camera_info,
                 detection_2d_msg.header,
                 detection_2d_msg.sensor_pose,
                 obj_3d,
             )
 
-            if not projected_2d_points:
+            if not projected_2d_points or dist < 0:
                 continue
 
             # best_overlap = 0
@@ -136,8 +136,8 @@ class DetectedObject3DLabelingNode(Node):
             for j, det_2d in enumerate(detection_2d_msg.objects):
                 det_bbox = self.get_bbox_from_2d_detection(det_2d)
                 proj_bbox = self.get_bbox_from_2d_points(projected_2d_points)
-                overlap = self.compute_overlap(det_bbox, proj_bbox)
-                cost_matrix[i][j] = 1/(overlap+1e-9)
+                overlap = self.compute_overlap(det_bbox, proj_bbox)                
+                cost_matrix[i][j] = 1/(overlap+1e-9) * dist **2# prioritize nearer objects
 
                 # if overlap > best_overlap:
                 #     best_overlap = overlap
@@ -229,11 +229,11 @@ class DetectedObject3DLabelingNode(Node):
 
         except Exception as e:
             self.get_logger().warn(f"Transform lookup failed: {e}")
-            return []
+            return [], -1
 
         # Check if the object is in front of the camera
         if transformed_pose.position.z <= 0:
-            return []
+            return [], -1
 
         # self.get_logger().info(f"pt: {point_in_sensor_frame} {header.frame_id}")
 
@@ -267,7 +267,7 @@ class DetectedObject3DLabelingNode(Node):
             (u - bbox_width / 2, v + bbox_height / 2),  # Top-left corner
         ]
 
-        return bbox_corners
+        return bbox_corners, np.linalg.norm([transformed_pose.position.x, transformed_pose.position.y])
 
 
 
