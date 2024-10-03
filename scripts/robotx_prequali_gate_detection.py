@@ -52,6 +52,7 @@ from sensor_msgs.msg import Image
 from sklearn.cluster import AgglomerativeClustering, KMeans
 from transforms3d.euler import euler2quat, quat2euler, quat2mat
 from tf2_ros.transform_broadcaster import TransformBroadcaster
+from scipy.spatial.distance import pdist, squareform
 
 
 class PrequaliGateDetection(Node):
@@ -97,7 +98,8 @@ class PrequaliGateDetection(Node):
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
         self.use_heading = True
         # self.heading_direction = np.deg2rad(180) # degrees enu # for nbpark # point west
-        self.heading_direction = np.deg2rad(240) # degrees enu for rsyc
+        # self.heading_direction = np.deg2rad(240) # degrees enu for rsyc
+        self.heading_direction = np.deg2rad(-30) # degrees enu for rsyc
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([
@@ -129,12 +131,52 @@ class PrequaliGateDetection(Node):
         self.odom_msg = None
         self.odom_subscription = self.create_subscription(
             Odometry,
-            "/asv4/nav/world_ned",
+            "/asv4/nav/world",
             self.odom_callback,
             10
         )
         self.create_timer(0.1, self.show_buoys)
 
+    def merge_close_detections(self, buoys, threshold=2.0):
+        # Convert the buoys dict to a list for easier manipulation
+        buoy_list = list(buoys.items())
+        if len(buoy_list) < 2:
+            return buoys
+        positions = np.array([buoy[1][:2] for buoy in buoy_list])  # Extract buoy positions (x, y)
+        
+        # Calculate pairwise distances
+        distances = squareform(pdist(positions))
+        
+        merged_buoys = {}
+        merged_ids = set()
+
+        for i in range(len(buoy_list)):
+            if buoy_list[i][0] in merged_ids:
+                continue
+            merged_buoy = buoy_list[i][1]
+            merged_count = 1
+            
+            # Check all other buoys to see if they are within the threshold distance
+            for j in range(i + 1, len(buoy_list)):
+                if buoy_list[j][0] in merged_ids:
+                    continue
+                if distances[i, j] < threshold:
+                    # Merge positions (average the coordinates) and add class probabilities
+                    merged_buoy[:2] = [
+                        (merged_buoy[0] * merged_count + buoy_list[j][1][0]) / (merged_count + 1),
+                        (merged_buoy[1] * merged_count + buoy_list[j][1][1]) / (merged_count + 1)
+                    ]
+                    merged_buoy[2] = [
+                        merged_buoy[2][0] + buoy_list[j][1][2][0],
+                        merged_buoy[2][1] + buoy_list[j][1][2][1]
+                    ]
+                    merged_ids.add(buoy_list[j][0])
+                    merged_count += 1
+            
+            # Add the merged buoy to the result
+            merged_buoys[buoy_list[i][0]] = merged_buoy
+        
+        return merged_buoys
     def get_new_gate_id(self):
         self.latest_gate_id += 1
         return self.latest_gate_id
@@ -154,19 +196,15 @@ class PrequaliGateDetection(Node):
 
     def odom_callback(self, msg):
         self.odom_msg = msg
-
     def detected_objects_callback(self, msg):
         self.buoys = {}
         if len(msg.objects) != 0:
-            self.is_ned = msg.objects[0].hypothesis.kinematics.header.frame_id.endswith(
-                "ned"
-            )
+            self.is_ned = msg.objects[0].hypothesis.kinematics.header.frame_id.endswith("ned")
             self.header = msg.objects[0].hypothesis.kinematics.header
         for det in msg.objects:
             is_green_red_buoy = (
                 det.hypothesis.class_id == self.red_buoy_id
                 or det.hypothesis.class_id == self.green_buoy_id
-                # or det.hypothesis.class_id == self.unknown_id
             )
             if not is_green_red_buoy:
                 continue
@@ -184,6 +222,9 @@ class PrequaliGateDetection(Node):
                 elif class_.class_id == self.unknown_id:
                     self.buoys[det.hypothesis.track_id][2][0] += class_.score / 2
                     self.buoys[det.hypothesis.track_id][2][1] += class_.score / 2
+        
+        # Merge close detections within 2 meters
+        self.buoys = self.merge_close_detections(self.buoys, threshold=2.0)
 
     def calculate_gate_pose(self, cluster):
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
@@ -194,7 +235,7 @@ class PrequaliGateDetection(Node):
         positions = np.array([[t[1][0], t[1][1]] for t in cluster])
         green_red_clusters = km.fit_predict(positions)
         cluster_centers = km.cluster_centers_
-        if np.linalg.norm(cluster_centers[0] - cluster_centers[1]) < 4:
+        if np.linalg.norm(cluster_centers[0] - cluster_centers[1]) < 6: # keep buoys at least 6m apart
             return None, None, None
         green_identities = [0, 0]  # green_red_cluster_0, green_red_cluster_1
         for i, c in enumerate(green_red_clusters):
@@ -344,7 +385,7 @@ class PrequaliGateDetection(Node):
             n_clusters=None,  # Set to None to allow distance-based threshold
             # distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
             # linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
-            distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
+            distance_threshold=15,  # Similar to 'eps', defines max distance for clusters
             linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
@@ -417,10 +458,19 @@ class PrequaliGateDetection(Node):
             self.publish_gate_transform(*best_pair)
 
         if self.debug:
+            if self.odom_msg is None:
+                return
+            odom_x = self.odom_msg.pose.pose.position.x
+            odom_y = self.odom_msg.pose.pose.position.y
             min_x = min(buoy[0] for buoy in self.buoys.values())
             max_x = max(buoy[0] for buoy in self.buoys.values())
             min_y = min(buoy[1] for buoy in self.buoys.values())
             max_y = max(buoy[1] for buoy in self.buoys.values())
+            min_x = min(odom_x, min_x)
+            max_x = max(odom_x, max_x)
+            min_y = min(odom_y, min_y)
+            max_y = max(odom_y, max_y)
+
             extension = max(0, 50 - max_x + min_x, 50 - max_y + min_y)
             min_x -= int(extension / 2)
             max_x += int(extension / 2)
@@ -431,6 +481,9 @@ class PrequaliGateDetection(Node):
             max_x *= self.debug_image_scale
             min_y *= self.debug_image_scale
             max_y *= self.debug_image_scale
+            if max_y-min_y  > 2000 or max_x - min_x > 2000:
+                print("Image too large, not publishing")
+                return
 
             image = 255 * np.ones(
                 (
@@ -478,6 +531,14 @@ class PrequaliGateDetection(Node):
                     color,
                     1,
                 )
+
+            # draw arrow where vehicle is
+            # Plot the vehicle's current odometry
+            odom_x_scaled = int(odom_x * self.debug_image_scale - min_x)
+            odom_y_scaled = int(odom_y * self.debug_image_scale - min_y)
+            # Draw a circle for the vehicle's current position
+            cv2.circle(image, (odom_x_scaled, odom_y_scaled), 10, (0, 0, 255), -1)  # Red circle for vehicle position
+            
 
             # for each gate detection, draw arrow, direction based on yaw
             for gate_detection in gate_detections.objects:

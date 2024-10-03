@@ -448,7 +448,7 @@ class GateDetection(Node):
 
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
-            distance_threshold=20,  # Similar to 'eps', defines max distance for clusters
+            distance_threshold=10,  # Similar to 'eps', defines max distance for clusters
             linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:

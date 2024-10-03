@@ -3,7 +3,7 @@
 Labelling 3d tracks with 2d sensors
 """
 import numpy as np
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
@@ -88,8 +88,9 @@ class DetectedObject3DLabelingNode(Node):
         )
 
         # self.inflate_width = 1.5
-        self.inflate_width = 0.8
-        self.latest_3d_detections = None
+        self.inflate_width = 0.4
+        self.bbox_inflate_factor = 1.5
+        self.latest_3d_detections = deque(maxlen=1)
         self.track_identities = defaultdict(Counter)
 
         self.tf_buffer = Buffer(Duration(seconds=15), self)
@@ -99,12 +100,12 @@ class DetectedObject3DLabelingNode(Node):
         self.camera_info_dict[camera_info.header.frame_id] = camera_info
 
     def detection_3d_callback(self, detection_3d_msg: DetectedObject3DArray):
-        self.latest_3d_detections = detection_3d_msg
+        self.latest_3d_detections.append(detection_3d_msg)
 
     def detection_2d_callback(self, detection_2d_msg: DetectedObject2DArray):
-        if self.latest_3d_detections is None:
+        if len(self.latest_3d_detections) == 0:
             return
-
+        next_dets = self.latest_3d_detections.popleft()
         camera_info = self.camera_info_dict.get(detection_2d_msg.sensor.frame_id)
         if not camera_info:
             self.get_logger().warn(
@@ -113,13 +114,14 @@ class DetectedObject3DLabelingNode(Node):
             return
 
         labeled_3d_objects = DetectedObject3DArray()
-        labeled_3d_objects.header = self.latest_3d_detections.header
-        labeled_3d_objects.name = self.latest_3d_detections.name
-        labeled_3d_objects.source = self.latest_3d_detections.source
-        labeled_3d_objects.sensor_pose = self.latest_3d_detections.sensor_pose
+        labeled_3d_objects.header = next_dets.header
+        labeled_3d_objects.name = next_dets.name
+        labeled_3d_objects.source = next_dets.source
+        labeled_3d_objects.sensor_pose = next_dets.sensor_pose
 
-        cost_matrix = np.ones((len(self.latest_3d_detections.objects), len(detection_2d_msg.objects))) * 1e9
-        for i, obj_3d in enumerate(self.latest_3d_detections.objects):
+        cost_matrix = np.ones((len(next_dets.objects), len(detection_2d_msg.objects))) * 1e9
+        # self.get_logger().info(f"Num objects: {len(next_dets.objects)} {len(detection_2d_msg.objects)}")
+        for i, obj_3d in enumerate(next_dets.objects):
             projected_2d_points, dist = self.project_3d_to_2d(
                 camera_info,
                 detection_2d_msg.header,
@@ -137,7 +139,7 @@ class DetectedObject3DLabelingNode(Node):
                 det_bbox = self.get_bbox_from_2d_detection(det_2d)
                 proj_bbox = self.get_bbox_from_2d_points(projected_2d_points)
                 overlap = self.compute_overlap(det_bbox, proj_bbox)                
-                cost_matrix[i][j] = 1/(overlap+1e-9) * dist **2# prioritize nearer objects
+                cost_matrix[i][j] = 1/(overlap+1e-9) * dist# prioritize nearer objects
 
                 # if overlap > best_overlap:
                 #     best_overlap = overlap
@@ -152,12 +154,12 @@ class DetectedObject3DLabelingNode(Node):
         assignments = linear_sum_assignment(cost_matrix)
 
         for row, col in zip(assignments[0], assignments[1]):
-            track_id = self.latest_3d_detections.objects[row].hypothesis.track_id
+            track_id = next_dets.objects[row].hypothesis.track_id
             class_id = detection_2d_msg.objects[col].hypothesis.class_id
             self.track_identities[track_id][class_id] += 1
 
         # Label 3D objects based on the highest count
-        for obj_3d in self.latest_3d_detections.objects:
+        for obj_3d in next_dets.objects:
             track_counts = self.track_identities[obj_3d.hypothesis.track_id]
             if track_counts:
                 most_common_class, count = track_counts.most_common(1)[0]
@@ -185,8 +187,8 @@ class DetectedObject3DLabelingNode(Node):
     def get_bbox_from_2d_detection(self, detection: DetectedObject2D) -> box:
         x = detection.centre_x
         y = detection.centre_y
-        width = detection.bbox_width
-        height = detection.bbox_height
+        width = detection.bbox_width * self.bbox_inflate_factor
+        height = detection.bbox_height * self.bbox_inflate_factor
         return box(x, y, x + width, y + height)
 
     def get_bbox_from_2d_points(self, points: List[Tuple[float, float]]) -> box:
@@ -219,6 +221,7 @@ class DetectedObject3DLabelingNode(Node):
                 rclpy.time.Time(),
                 Duration(seconds=0.1)
             )
+            # self.get_logger().info(f"Transform lookup success: {transform} {camera_info.header.frame_id} {obj_3d.hypothesis.kinematics.header.frame_id}")
 
             # Create a PoseStamped object for transformation
             pose_stamped = PoseStamped()
