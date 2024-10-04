@@ -10,6 +10,7 @@
 #include <bb_perception_msgs/msg/detected_object3_d.hpp>
 #include <bb_perception_msgs/msg/detected_object3_d_array.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/pose.hpp>
 #include <builtin_interfaces/msg/duration.hpp>
 #include <unordered_map>
 #include <Eigen/Dense>

@@ -184,6 +184,21 @@ def generate_launch_description():
             Node(
                 package="bb_filters",
                 executable="detected_object_3d_array_vis.py",
+                name="gate_det_vis",
+                parameters=[
+                    {
+                        "input_detections_topics": [
+                            "/asv4/vision/gate_detections",
+                        ],
+                        "output_markers_topic": "/asv4/vision/gate_detections/marker",
+                        "objects_config": "robotx.yaml",
+                        "publish_tf": False,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_array_vis.py",
                 name="labelled_dets_vis",
                 parameters=[
                     {
@@ -292,6 +307,21 @@ def generate_launch_description():
                         "output_markers_topic": "/asv4/vision/detections_2d/projected/filtered/marker",
                         "objects_config": "robotx.yaml",
                         "publish_tf": False,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_array_vis.py",
+                name="detected_objects_lidar_segmentation_3d",
+                parameters=[
+                    {
+                        "input_detections_topics": [
+                            "/asv4/tasks/scan_dock_deliver/placard/detections_3d",
+                        ],
+                        "output_markers_topic": "/asv4/tasks/scan_dock_deliver/placard/detections_3d/marker",
+                        "objects_config": "robotx.yaml",
+                        "publish_tf": True,
                     }
                 ],
             ),
