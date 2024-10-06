@@ -16,7 +16,6 @@ from pathlib import Path
 import numpy as np
 from sklearn.cluster import DBSCAN
 import rclpy
-from rclpy.time import Time
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
     DetectedObject2DArray,
@@ -39,7 +38,6 @@ from transforms3d.euler import euler2quat
 class LightTowerDetection(Node):
     def __init__(self):
         super().__init__("light_tower_detection")
-        self.buoys = {}
         self.bridge = CvBridge()
         self.image = None
         self.declare_parameter("debug", True)
@@ -75,6 +73,10 @@ class LightTowerDetection(Node):
         self.red_panel_id = self.name_to_id["light_tower_panel_red"]
         self.black_panel_id = self.name_to_id["light_tower_panel_black"]
         self.light_tower_id = self.name_to_id["light_tower"]
+
+        self.time_colour_map = np.zeros(
+            (5, 4)
+        )  # rows: 0 1 2 3 4, cols: black red blue green
 
         # Begin: Light tower pose estimation variables
         self.light_tower_known_height = 2  # meters
@@ -122,6 +124,8 @@ class LightTowerDetection(Node):
         )  # scale transition matrix by factor
         self.latest_colors = deque(maxlen=self.degree)
         self.best_sequence = None
+        self.best_sequence_count = 0
+        self.best_sequence_threshold = 3
 
         self.debug_pub = self.create_publisher(
             Image, "/asv4/robotx/light_tower/debug", 10
@@ -198,28 +202,27 @@ class LightTowerDetection(Node):
                 )
             ):
                 return False
-            if (
-                c1 == c11
-                and c2 == c21
-                and c3 == c31
-                and c1 != c2
-                and c1 != c3
-                and c2 != c3
-            ):
-                self.best_sequence = LightSequence(
+            if c1 == c11 and c2 == c21 and c3 == c31 and c1 != c2 and c2 != c3:
+                new_sequence = LightSequence(
                     first=self.colors_enums[c1],
                     second=self.colors_enums[c2],
                     third=self.colors_enums[c3],
                 )
+                if new_sequence == self.best_sequence:
+                    self.best_sequence_count += 1
+                else:
+                    self.best_sequence_count = 1
+                self.best_sequence = new_sequence
                 return True
             else:
                 self.get_logger().warn(f"{c1} {c2} {c3} != {c11} {c21} {c31}, waiting")
+                self.best_sequence_count = 0
                 return False
 
     def publish_sequence(self):
         if self.debug and self.transition_matrix.max() > 0:
             self.debug_img[1:5, 1:5, :] = np.repeat(
-                self.transition_matrix.reshape(4, 4, 1)
+                self.transition_matrix.reshape((4, 4, 1))
                 / self.transition_matrix.max()
                 * 255,
                 3,
@@ -228,22 +231,28 @@ class LightTowerDetection(Node):
             self.debug_img = self.debug_img.astype(np.uint8)
             debug_img = self.bridge.cv2_to_imgmsg(self.debug_img, encoding="bgr8")
             self.debug_pub.publish(debug_img)
+
+        if (
+            self.best_sequence_count < self.best_sequence_threshold
+            and self.check_condition()
+        ):
+            return
         # store best sequence and don't recompute subsequently (no point since probably reported alr)
-        if self.best_sequence is not None:
+        if self.best_sequence_count >= self.best_sequence_threshold:
+            self.get_logger().info(
+                f"Best sequence: {self.best_sequence} detected {self.best_sequence_count} times"
+            )
             self.light_sequence_pub.publish(self.best_sequence)
+            self.debug_img[5, 1] = self.color_enum_to_color[self.best_sequence.first]
+            self.debug_img[5, 2] = self.color_enum_to_color[self.best_sequence.second]
+            self.debug_img[5, 3] = self.color_enum_to_color[self.best_sequence.third]
             return
         # compute best sequence
-        if not self.check_condition():
-            return
-
-        self.debug_img[5, 1] = self.color_enum_to_color[self.best_sequence.first]
-        self.debug_img[5, 2] = self.color_enum_to_color[self.best_sequence.second]
-        self.debug_img[5, 3] = self.color_enum_to_color[self.best_sequence.third]
-        self.light_sequence_pub.publish(self.best_sequence)
 
     def detected_objects_2d_callback(self, msg):
         if len(msg.objects) == 0:
-            return
+            placard_dets = []
+            # return
         # look for placards in objects list
         placard_dets = [
             det
@@ -256,18 +265,21 @@ class LightTowerDetection(Node):
                 self.black_panel_id,
             ]
         ]
-        if len(placard_dets) != 0:
+        if len(placard_dets) == 0:
+            color = 0
+        else:
             best_placard = max(placard_dets, key=lambda det: det.hypothesis.probability)
             color = self.id_to_color[best_placard.hypothesis.class_id]
-            if len(self.latest_colors) >= self.degree:
-                for i, prev_color in enumerate(self.latest_colors):
-                    if prev_color != color:
-                        print(f"transition {prev_color} -> {color}")
-                        self.transition_matrix[prev_color][color] += (
-                            i + 1
-                        ) / self.scaling_factor
-            self.latest_colors.append(color)
-            # self.get_logger().info(f"{self.transition_matrix}")
+        if len(self.latest_colors) >= self.degree:
+            for i, prev_color in enumerate(self.latest_colors):
+                if prev_color != color:
+                    print(f"transition {prev_color} -> {color}")
+                    self.transition_matrix[prev_color][color] += (
+                        i + 1
+                    ) / self.scaling_factor
+        self.latest_colors.append(color)
+        self.time_colour_map[msg.header.stamp.sec % 5, color] += 1
+        self.get_logger().info(f"{self.time_colour_map}")
 
     def detected_objects_3d_callback(self, msg):
         towers = [
@@ -339,41 +351,6 @@ class LightTowerDetection(Node):
 
     def odom_callback(self, msg):
         self.vehicle_position = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-
-    # def calculate_placard_pose(self, cluster):
-    #     # cluster the cluster into 2 clusters based on the x,y positions of the buoys
-    #     if len(cluster) < 2:
-    #         return None, None, None
-    #     km = KMeans(n_clusters=2)
-    #     positions = np.array([[t[1][0], t[1][1]] for t in cluster])
-    #     green_red_clusters = km.fit_predict(positions)
-    #     cluster_centers = km.cluster_centers_
-    #     green_identities = [0, 0]  # green_red_cluster_0, green_red_cluster_1
-    #     for i, c in enumerate(green_red_clusters):
-    #         probabilities = cluster[i][1][2]
-    #         if c == 0:
-    #             green_identities[0] += probabilities[1] - probabilities[0]
-    #         else:
-    #             green_identities[1] += probabilities[1] - probabilities[0]
-    #     if green_identities[0] > green_identities[1]:
-    #         green_buoy_cluster = 0
-    #     else:
-    #         green_buoy_cluster = 1
-    #     green_buoy_pose = cluster_centers[green_buoy_cluster]
-    #     red_buoy_pose = cluster_centers[1 - green_buoy_cluster]
-    #     gate_position = [
-    #         (green_buoy_pose[0] + red_buoy_pose[0]) / 2,
-    #         (green_buoy_pose[1] + red_buoy_pose[1]) / 2,
-    #     ]
-    #     gate_orientation = np.arctan2(
-    #         green_buoy_pose[1] - red_buoy_pose[1], green_buoy_pose[0] - red_buoy_pose[0]
-    #     )
-    #     gate_width = np.linalg.norm(np.array(green_buoy_pose) - np.array(red_buoy_pose))
-    #     if self.is_ned:
-    #         gate_orientation -= np.pi / 2
-    #     else:
-    #         gate_orientation += np.pi / 2
-    #     return gate_position, gate_orientation, gate_width
 
 
 def main(args=None):
