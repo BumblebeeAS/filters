@@ -281,8 +281,8 @@ class LightTowerDetection(Node):
                         i + 1
                     ) / self.scaling_factor
         self.latest_colors.append(color)
-        self.time_colour_map[msg.header.stamp.sec % 5, color] += 1
-        self.get_logger().info(f"{self.time_colour_map}")
+        # self.time_colour_map[msg.header.stamp.sec % 5, color] += 1
+        # self.get_logger().info(f"{self.time_colour_map}")
 
     def detected_objects_3d_callback(self, msg):
         towers = [

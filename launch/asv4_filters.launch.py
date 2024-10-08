@@ -132,6 +132,22 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
+                executable="detected_object_3d_vis",
+                name="bev_labelled_dets_vis",
+                parameters=[
+                    {
+                        "input_detections_topics": [
+                            "/asv4/tasks/scan_dock_deliver/placard/detections_3d",
+                        ],
+                        "output_markers_topic": "/asv4/tasks/scan_dock_deliver/placard/detections_3d/marker",
+                        "objects_config": "robotx.yaml",
+                        "publish_tf": True,
+                        "publish_tf_unique": True,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
                 executable="detected_object_3d_labelling.py",
                 name="det_3d_labeller",
                 parameters=[
@@ -338,6 +354,21 @@ def generate_launch_description():
                         "output_markers_topic": "/asv4/tasks/scan_dock_deliver/placard/detections_3d/marker",
                         "objects_config": "robotx.yaml",
                         "publish_tf": False,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_array_vis.py",
+                name="robotx_detections_vis",
+                parameters=[
+                    {
+                        "input_detections_topics": [
+                            "/robotx/filtered_detections",
+                        ],
+                        "output_markers_topic": "/robotx/filtered_detections/marker",
+                        "objects_config": "robotx.yaml",
+                        "publish_tf": True,
                     }
                 ],
             ),

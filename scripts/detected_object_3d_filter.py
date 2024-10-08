@@ -29,7 +29,7 @@ class TrackerFilter(Node):
             "filtered_topic", "/asv4/vision/lidar_small_objects/dets_3d/filtered"
         )
         self.declare_parameter(
-            "max_lost", 30
+            "max_lost", 5
         )
         self.declare_parameter(
             "dist_threshold", 1.5
