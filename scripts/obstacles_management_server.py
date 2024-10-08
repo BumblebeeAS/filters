@@ -167,7 +167,8 @@ class ObstaclesManagementServer(Node):
         # Subscribers and Publishers
         self.detections_sub = self.create_subscription(
             DetectedObject3DArray,
-            "/asv4/vision/detections_2d/projected",
+            # "/asv4/vision/detections_2d/projected",
+            "/asv4/vision/lidar_small_objects/dets_3d/labelled",
             self.detections_callback,
             10,
         )

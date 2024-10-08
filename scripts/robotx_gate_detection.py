@@ -148,7 +148,6 @@ class GateDetection(Node):
         return rgb
 
     def detected_objects_callback(self, msg):
-        self.buoys = {}
         if len(msg.objects) != 0:
             self.is_ned = msg.objects[0].hypothesis.kinematics.header.frame_id.endswith(
                 "ned"
@@ -209,6 +208,7 @@ class GateDetection(Node):
     def calculate_gate_poses(self, cluster) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], float]]:
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
         if len(cluster) < 3:
+            # self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}")
             return None
         recluster = AgglomerativeClustering(
             n_clusters=None, distance_threshold=6, linkage="ward"
@@ -431,6 +431,7 @@ class GateDetection(Node):
 
     def publish_gate_transform(self, gate_detections: DetectedObject3DArray):
         # Extract position and direction for entrance gate
+        self.get_logger().info("Publishing gate transforms", throttle_duration_sec=2.0)
         frame_ids = [
             "gate_left" + ("_ned" if self.is_ned else ""),
             "gate_middle" + ("_ned" if self.is_ned else ""),
@@ -448,8 +449,11 @@ class GateDetection(Node):
             self.tf_broadcaster.sendTransform(gate_transform)
 
     def show_buoys(self):
-        if not self.buoys:
+        if len(self.buoys) == 0:
+            self.get_logger().info("No buoys detected", throttle_duration_sec=2.0)
             return
+        else:
+            self.get_logger().info(f"{len(self.buoys)} buoys detected", throttle_duration_sec=2.0)
 
         # Extract buoy positions for clustering
         positions = (
@@ -459,10 +463,11 @@ class GateDetection(Node):
 
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
-            distance_threshold=10,  # Similar to 'eps', defines max distance for clusters
+            distance_threshold=15,  # Similar to 'eps', defines max distance for clusters, larger than estimate distance0
             linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
+            self.get_logger().info("Only one buoy detected", throttle_duration_sec=2.0)
             return
         else:
             cluster_labels = hierarchical_clusterer.fit_predict(positions)
@@ -494,6 +499,7 @@ class GateDetection(Node):
             # logic for calculating gate pose given cluster of buoy poses
             cluster_tids = [list(self.buoys.keys())[i] for i in cluster]
             cluster_details = [(tid, self.buoys[tid]) for tid in cluster_tids]
+            self.get_logger().info(f"Cluster {cluster} with tids {cluster_tids}: {len(cluster_details)}", throttle_duration_sec=2.0)
             poses = self.calculate_gate_poses(cluster_details)
             if poses is None:
                 continue
