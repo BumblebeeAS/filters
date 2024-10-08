@@ -102,6 +102,7 @@ install(PROGRAMS
   scripts/lidar_bbox_extractor.py
   scripts/robotx_placard_detection.py
   scripts/robotx_prequali_gate_detection.py
+  scripts/robotx_red_green_gate_detection.py
   scripts/robotx_gate_detection.py
   scripts/robotx_light_tower_detection.py
   scripts/detected_object_2d_array_vis.py
@@ -110,6 +111,7 @@ install(PROGRAMS
   scripts/detected_object_2d_filter_projection.py
   scripts/lidar_bbox_extractor.py
   scripts/detect_red_buoy.py
+  scripts/obstacles_management_server.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

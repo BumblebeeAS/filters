@@ -125,8 +125,8 @@ def generate_launch_description():
                         ],
                         "output_markers_topic": "/asv4/bev_detections/filtered/marker",
                         "objects_config": "robotx.yaml",
-                        "publish_tf": True,
-                        "publish_tf_unique": True,
+                        "publish_tf": False,
+                        "publish_tf_unique": False,
                     }
                 ],
             ),
@@ -184,13 +184,14 @@ def generate_launch_description():
             Node(
                 package="bb_filters",
                 executable="detected_object_3d_array_vis.py",
-                name="gate_det_vis",
+                name="red_green_gate_det_vis",
                 parameters=[
                     {
                         "input_detections_topics": [
-                            "/asv4/vision/gate_detections",
+                            # "/asv4/vision/gate_detections",
+                            "/asv4/vision/red_green_gate_detections"
                         ],
-                        "output_markers_topic": "/asv4/vision/gate_detections/marker",
+                        "output_markers_topic": "/asv4/vision/red_green_gate_detections/marker",
                         "objects_config": "robotx.yaml",
                         "publish_tf": False,
                     }
@@ -270,25 +271,25 @@ def generate_launch_description():
                         ],
                         "output_markers_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled/marker",
                         "objects_config": "robotx.yaml",
-                        "publish_tf": True,
+                        "publish_tf": False,
                     }
                 ],
             ),
-            Node(
-                package="bb_filters",
-                executable="detected_object_3d_filter.py",
-                # executable="detected_object_3d_composite_filter.py",
-                name="det_2d_proj_filter",
-                parameters=[
-                    {
-                        "dets_3d_topic": "/asv4/vision/detections_2d/projected",
-                        "filtered_topic": "/asv4/vision/detections_2d/projected/filtered",
-                        "objects_config": "robotx.yaml",
-                        "max_lost": 10,
-                        "dist_threshold": 5.0,
-                    }
-                ],
-            ),
+            # Node(
+            #     package="bb_filters",
+            #     executable="detected_object_3d_filter.py",
+            #     # executable="detected_object_3d_composite_filter.py",
+            #     name="det_2d_proj_filter",
+            #     parameters=[
+            #         {
+            #             "dets_3d_topic": "/asv4/vision/detections_2d/projected",
+            #             "filtered_topic": "/asv4/vision/detections_2d/projected/filtered",
+            #             "objects_config": "robotx.yaml",
+            #             "max_lost": 10,
+            #             "dist_threshold": 5.0,
+            #         }
+            #     ],
+            # ),
             Node(
                 package="bb_filters",
                 executable="detected_object_2d_filter_projection.py",
@@ -302,11 +303,26 @@ def generate_launch_description():
                 parameters=[
                     {
                         "input_detections_topics": [
-                            "/asv4/vision/detections_2d/projected/filtered",
+                            "/asv4/vision/detections_2d/projected",
                         ],
-                        "output_markers_topic": "/asv4/vision/detections_2d/projected/filtered/marker",
+                        "output_markers_topic": "/asv4/vision/detections_2d/projected/marker",
                         "objects_config": "robotx.yaml",
                         "publish_tf": False,
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
+                executable="detected_object_3d_array_vis.py",
+                name="filtered_detections",
+                parameters=[
+                    {
+                        "input_detections_topics": [
+                            "/asv4/robotx/filtered_detections",
+                        ],
+                        "output_markers_topic": "/asv4/robotx/filtered_detections/marker",
+                        "objects_config": "robotx.yaml",
+                        "publish_tf": True,
                     }
                 ],
             ),
@@ -321,7 +337,7 @@ def generate_launch_description():
                         ],
                         "output_markers_topic": "/asv4/tasks/scan_dock_deliver/placard/detections_3d/marker",
                         "objects_config": "robotx.yaml",
-                        "publish_tf": True,
+                        "publish_tf": False,
                     }
                 ],
             ),

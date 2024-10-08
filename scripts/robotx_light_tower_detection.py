@@ -74,6 +74,9 @@ class LightTowerDetection(Node):
         self.black_panel_id = self.name_to_id["light_tower_panel_black"]
         self.light_tower_id = self.name_to_id["light_tower"]
 
+        self.latest_colour = -1
+        self.latest_colour_count = 0
+
         self.time_colour_map = np.zeros(
             (5, 4)
         )  # rows: 0 1 2 3 4, cols: black red blue green
@@ -88,7 +91,7 @@ class LightTowerDetection(Node):
         # End: Light tower pose estimation variables
         self.vehicle_position = (0, 0)
 
-        self.degree = 3  # only update transition up to degree time steps in the past.
+        self.degree = 1  # only update transition up to degree time steps in the past.
         # e.g. if degree is 2, increments state n-1 -> n by 2 and state n-2 -> n by 1
         self.colors = {
             "black": 0,
@@ -252,7 +255,7 @@ class LightTowerDetection(Node):
     def detected_objects_2d_callback(self, msg):
         if len(msg.objects) == 0:
             placard_dets = []
-            # return
+            return
         # look for placards in objects list
         placard_dets = [
             det
@@ -266,14 +269,14 @@ class LightTowerDetection(Node):
             ]
         ]
         if len(placard_dets) == 0:
-            color = 0
+            return
         else:
             best_placard = max(placard_dets, key=lambda det: det.hypothesis.probability)
             color = self.id_to_color[best_placard.hypothesis.class_id]
         if len(self.latest_colors) >= self.degree:
             for i, prev_color in enumerate(self.latest_colors):
                 if prev_color != color:
-                    print(f"transition {prev_color} -> {color}")
+                    self.get_logger().info(f"transition {prev_color} -> {color}")
                     self.transition_matrix[prev_color][color] += (
                         i + 1
                     ) / self.scaling_factor
@@ -321,7 +324,7 @@ class LightTowerDetection(Node):
             del label_counts[-1]  # Remove outliers from the count
 
         if not label_counts:
-            print("No clusters found. Unable to compute centroid.")
+            self.get_logger().info("No clusters found. Unable to compute centroid.")
             return None  # Return or handle the case of no valid positions
 
         # Find the label of the largest cluster
@@ -335,7 +338,7 @@ class LightTowerDetection(Node):
         centroid = np.mean(largest_cluster_positions, axis=0)
 
         # Update the pose estimate
-        print(f"Updated pose estimate (centroid of largest cluster): {centroid}")
+        self.get_logger().info(f"Updated pose estimate (centroid of largest cluster): {centroid}")
 
         # If needed, store or use the centroid for further processing
         # For example, you might want to store it in an instance variable

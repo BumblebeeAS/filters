@@ -123,7 +123,8 @@ class GateDetection(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
         self.subscription = self.create_subscription(
             DetectedObject3DArray,
-            "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            "/asv4/robotx/filtered_detections",
             self.detected_objects_callback,
             10,
         )
@@ -171,17 +172,27 @@ class GateDetection(Node):
                 ]
             self.buoys[det.hypothesis.track_id][0] = pose.position.x
             self.buoys[det.hypothesis.track_id][1] = pose.position.y
-            for class_ in det.hypothesis.classes:
-                if class_.class_id == self.red_buoy_id:  # red
-                    self.buoys[det.hypothesis.track_id][2][0] += class_.score
-                elif class_.class_id == self.green_buoy_id:  # green
-                    self.buoys[det.hypothesis.track_id][2][1] += class_.score
-                elif class_.class_id == self.white_buoy_id:  # white
-                    self.buoys[det.hypothesis.track_id][2][2] += class_.score
-                elif class_.class_id == self.unknown_id:
-                    self.buoys[det.hypothesis.track_id][2][0] += class_.score / 3
-                    self.buoys[det.hypothesis.track_id][2][1] += class_.score / 3
-                    self.buoys[det.hypothesis.track_id][2][2] += class_.score / 3
+            if det.hypothesis.class_id == self.red_buoy_id:
+                self.buoys[det.hypothesis.track_id][2][0] += det.hypothesis.probability
+            elif det.hypothesis.class_id == self.green_buoy_id:
+                self.buoys[det.hypothesis.track_id][2][1] += det.hypothesis.probability
+            elif det.hypothesis.class_id == self.white_buoy_id:
+                self.buoys[det.hypothesis.track_id][2][2] += det.hypothesis.probability
+            elif det.hypothesis.class_id == self.unknown_id:
+                self.buoys[det.hypothesis.track_id][2][0] += det.hypothesis.probability / 3
+                self.buoys[det.hypothesis.track_id][2][1] += det.hypothesis.probability / 3
+                self.buoys[det.hypothesis.track_id][2][2] += det.hypothesis.probability / 3
+            # for class_ in det.hypothesis.classes:
+            #     if class_.class_id == self.red_buoy_id:  # red
+            #         self.buoys[det.hypothesis.track_id][2][0] += class_.score
+            #     elif class_.class_id == self.green_buoy_id:  # green
+            #         self.buoys[det.hypothesis.track_id][2][1] += class_.score
+            #     elif class_.class_id == self.white_buoy_id:  # white
+            #         self.buoys[det.hypothesis.track_id][2][2] += class_.score
+            #     elif class_.class_id == self.unknown_id:
+            #         self.buoys[det.hypothesis.track_id][2][0] += class_.score / 3
+            #         self.buoys[det.hypothesis.track_id][2][1] += class_.score / 3
+            #         self.buoys[det.hypothesis.track_id][2][2] += class_.score / 3
 
     def inject_missing_pose_between(self, poses):
         assert len(poses) == 3

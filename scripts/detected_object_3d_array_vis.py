@@ -117,9 +117,6 @@ class DetectedObject3DArrayVisNode(Node):
                     marker.type = Marker.SPHERE
                 marker.action = Marker.ADD
                 marker.pose = deepcopy(detection.hypothesis.kinematics.pose_with_covariance.pose)
-                # if self.input_detections_topics[0] == "/asv4/vision/lidar_small_objects/dets_3d/labelled":
-                #     self.get_logger().info(f"frame: {marker.header.frame_id} z: {marker.pose.position.z} {detection.hypothesis.shape.dimensions.z}")
-
                 marker.pose.position.z += detection.hypothesis.shape.dimensions.z / 2
                 marker.scale = deepcopy(detection.hypothesis.shape.dimensions)
                 marker.scale.x = max(0.5, marker.scale.x)
@@ -132,26 +129,26 @@ class DetectedObject3DArrayVisNode(Node):
                 else:
                     marker.color = self.get_color(tid)
 
-                if "red" in class_name:
-                    marker.color.r = 1.0
-                    marker.color.g = 0.0
-                    marker.color.b = 0.0
-                elif "green" in class_name:
-                    marker.color.r = 0.0
-                    marker.color.g = 1.0
-                    marker.color.b = 0.0
-                elif "blue" in class_name:
-                    marker.color.r = 0.0
-                    marker.color.g = 0.0
-                    marker.color.b = 1.0
-                elif "black" in class_name:
-                    marker.color.r = marker.color.g = marker.color.b = 0.0
-                elif "light_tower" in class_name:
-                    marker.color.r = marker.color.g = marker.color.b = 0.2
+                # Create an arrow Marker for the yaw direction
+                arrow_marker = Marker()
+                arrow_marker.header.frame_id = marker.header.frame_id
+                arrow_marker.header.stamp = marker.header.stamp
+                arrow_marker.ns = f"{class_name}_arrow"
+                arrow_marker.id = i + 2000  # Ensure unique ID
+                arrow_marker.type = Marker.ARROW
+                arrow_marker.action = Marker.ADD
+                arrow_marker.pose = deepcopy(marker.pose)  # Use the same pose as the object
+                arrow_marker.scale.x = 1.0  # Length of the arrow (forward)
+                arrow_marker.scale.y = 0.1  # Width of the arrow shaft
+                arrow_marker.scale.z = 0.1  # Height of the arrow shaft
+                arrow_marker.color.r = 1.0  # Red arrow for yaw
+                arrow_marker.color.g = 0.0
+                arrow_marker.color.b = 0.0
+                arrow_marker.color.a = 1.0  # Make the arrow fully visible
+                markers.markers.append(arrow_marker)
 
-                marker.lifetime = Duration(sec=1)
+                # Add the object and text marker as before
                 markers.markers.append(marker)
-                # Create a text Marker for visualization
                 text_marker = Marker()
                 text_marker.header.frame_id = marker.header.frame_id
                 text_marker.header.stamp = marker.header.stamp

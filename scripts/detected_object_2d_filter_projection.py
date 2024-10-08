@@ -50,6 +50,14 @@ class DetectedObject2DProjection(Node):
             .get_parameter_value()
             .string_array_value
         )
+        self.declare_parameter("inflate_height", 0.2)
+        self.inflate_height = (
+            self.get_parameter("inflate_height").get_parameter_value().double_value
+        )
+        self.declare_parameter("ground_z", -0.2)
+        self.ground_z = (
+            self.get_parameter("ground_z").get_parameter_value().double_value
+        )
         self.camera_info_topics = (
             self.get_parameter("camera_info_topics")
             .get_parameter_value()
@@ -131,6 +139,8 @@ class DetectedObject2DProjection(Node):
                 detected_object_3d.hypothesis.probability = (
                     detection.hypothesis.probability
                 )
+                detected_object_3d.hypothesis.track_id = detection.hypothesis.track_id
+                detected_object_3d.hypothesis.mode = detection.hypothesis.mode
 
                 camera_info = self.camera_info_dict.get(detection_msg.sensor.frame_id)
                 if not camera_info:
@@ -145,7 +155,7 @@ class DetectedObject2DProjection(Node):
                     detection.centre_x,
                     detection.centre_y,
                     detection.bbox_width,
-                    detection.bbox_height,
+                    detection.bbox_height * (1.0 + self.inflate_height),
                     detection_msg.sensor_pose,
                 )
 
@@ -176,7 +186,7 @@ class DetectedObject2DProjection(Node):
                     detection_msg.header.frame_id
                 )
                 detected_object_3d.hypothesis.kinematics.header.stamp = (
-                    detection.hypothesis.kinematics.header.stamp
+                    self.get_clock().now().to_msg()
                 )
                 detected_objects_3d_array.objects.append(detected_object_3d)
 
@@ -223,7 +233,7 @@ class DetectedObject2DProjection(Node):
             ray_dir_world = rotation_matrix @ ray_dir_camera
 
             # Calculate the intersection with the ground plane (z = 0)
-            t = -sensor_pose.position.z / ray_dir_world[2]
+            t = -(sensor_pose.position.z + self.ground_z) / ray_dir_world[2]
             ts.append(t)
             if len(ts) > 1:
                 t = ts[i - 2]
