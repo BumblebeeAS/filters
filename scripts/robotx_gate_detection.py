@@ -123,8 +123,8 @@ class GateDetection(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
         self.subscription = self.create_subscription(
             DetectedObject3DArray,
-            # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
-            "/asv4/robotx/filtered_detections",
+            "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            # "/asv4/robotx/filtered_detections",
             self.detected_objects_callback,
             10,
         )
