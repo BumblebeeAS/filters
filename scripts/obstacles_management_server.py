@@ -16,6 +16,7 @@ class HypothesisManager:
         self.name = name
         self.max_distance = max_distance
         self.max_num_hypothesis = max_num_hypothesis
+        self.tid_buffer_size = 5
 
         # Dictionary of hypotheses, where each key is a unique hypothesis ID and each value is:
         # (centroid_position, identities_dict, latest_position)
@@ -24,22 +25,24 @@ class HypothesisManager:
         # A queue to keep track of the latest `n` updated hypotheses
         self.latest_hypotheses = deque()
 
-    def update_hypothesis(self, new_position, new_identity, det):
+    def update_hypothesis(self, new_position, new_identity, det, tid):
         """Update the existing hypotheses or create a new one."""
 
         closest_hypothesis = None
         closest_distance = float("inf")
 
         # Search for the closest hypothesis within the allowed distance range
-        for hyp_id, (centroid, identities, latest_pos, _) in self.hypotheses.items():
+        for hyp_id, (centroid, identities, latest_pos, _, tids) in self.hypotheses.items():
             distance = np.linalg.norm(latest_pos - new_position)
+            if tid in tids:
+                distance = 0
             if distance <= self.max_distance and distance < closest_distance:
                 closest_hypothesis = hyp_id
                 closest_distance = distance
 
         if closest_hypothesis is not None:
             # Update the existing hypothesis
-            centroid, identities, _, det = self.hypotheses[closest_hypothesis]
+            centroid, identities, _, det, tids = self.hypotheses[closest_hypothesis]
 
             # Update centroid (simple average of old centroid and new position)
             updated_centroid = np.array(centroid) * 0.3 + np.array(new_position) * 0.7
@@ -47,8 +50,11 @@ class HypothesisManager:
             # Update identities count
             identities[new_identity] = identities.get(new_identity, 0) + 1
 
+            if tid not in tids:
+                tids.append(tid)
+
             # Update the hypothesis with new centroid, identities, and latest position
-            self.hypotheses[closest_hypothesis] = (updated_centroid, identities, new_position, det)
+            self.hypotheses[closest_hypothesis] = (updated_centroid, identities, new_position, det, tids)
 
             # Move the updated hypothesis to the front of the queue
             self._mark_as_latest(closest_hypothesis)
@@ -57,7 +63,8 @@ class HypothesisManager:
             # Create a new hypothesis
             new_hypothesis_id = len(self.hypotheses)
             identities = {new_identity: 1}
-            self.hypotheses[new_hypothesis_id] = (new_position, identities, new_position, det)
+            tids = deque([tid], maxlen=self.tid_buffer_size)
+            self.hypotheses[new_hypothesis_id] = (new_position, identities, new_position, det, tids)
 
             # Add the new hypothesis to the latest queue
             self._mark_as_latest(new_hypothesis_id)
@@ -124,7 +131,7 @@ class ObstaclesManagementServer(Node):
             },
             "buoy": {
                 "count": 6,
-                "max_distance": 3.0,
+                "max_distance": 5.0,
                 "sub_identities": [
                     "white_cylinder",
                     "red_cylinder",
@@ -192,12 +199,15 @@ class ObstaclesManagementServer(Node):
                 ])
                 identity = obstacle_name
                 # Update the hypothesis manager
-                self.hypothesis_managers[self.obstacles_full_map[identity]].update_hypothesis(pos, identity, detection)
+                self.hypothesis_managers[self.obstacles_full_map[identity]].update_hypothesis(
+                    pos, identity, detection,
+                    detection.hypothesis.track_id
+                )
 
         # Publish filtered detections based on current hypotheses
         filtered_msg = DetectedObject3DArray()
         for obstacle_name, hypothesis_manager in self.hypothesis_managers.items():
-            for hyp_id, (centroid, identities, _, det) in hypothesis_manager.get_all_hypotheses().items():
+            for hyp_id, (centroid, identities, _, det, _) in hypothesis_manager.get_all_hypotheses().items():
                 # Create a DetectedObject3D for each hypothesis
                 detection = self.create_detection_msg(centroid, identities, det)
                 filtered_msg.objects.append(detection)
