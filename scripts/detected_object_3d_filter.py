@@ -105,7 +105,6 @@ class TrackerFilter(Node):
 
             pose = det.hypothesis.kinematics.pose_with_covariance.pose
             if self.sensor_pose is not None:
-                self.get_logger().info(f"{self.sensor_pose}, {pose}")
                 distance = np.sqrt(
                     (pose.position.x - self.sensor_pose.position.x) ** 2
                     + (pose.position.y - self.sensor_pose.position.y) ** 2

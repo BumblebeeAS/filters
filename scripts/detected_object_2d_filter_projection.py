@@ -6,7 +6,6 @@ from typing import Dict, List
 from operator import attrgetter
 import numpy as np
 import rclpy
-from builtin_interfaces.msg import Duration
 import tf2_ros
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
@@ -50,13 +49,17 @@ class DetectedObject2DProjection(Node):
             .get_parameter_value()
             .string_array_value
         )
-        self.declare_parameter("inflate_height", 0.2)
+        self.declare_parameter("inflate_height", 0.0)
         self.inflate_height = (
             self.get_parameter("inflate_height").get_parameter_value().double_value
         )
         self.declare_parameter("ground_z", -0.2)
         self.ground_z = (
             self.get_parameter("ground_z").get_parameter_value().double_value
+        )
+        self.declare_parameter("dist_limit", 60.0)
+        self.dist_limit = (
+            self.get_parameter("dist_limit").get_parameter_value().double_value
         )
         self.camera_info_topics = (
             self.get_parameter("camera_info_topics")
@@ -95,6 +98,18 @@ class DetectedObject2DProjection(Node):
         self.id_to_name = {
             obj["label"]: obj["name"] for obj in self.objects_config["objects"]
         }
+        self.estimated_object_bottom = {
+            obj["label"]: obj.get("z", 0.0) for obj in self.objects_config["objects"]
+        }
+        self.estimated_sizes = {}
+        for obj in self.objects_config["objects"]:
+            if "shape" in obj and "dimensions" in obj["shape"]:
+                self.estimated_sizes[obj["label"]] = (
+                    max(
+                        obj["shape"]["dimensions"]["x"], obj["shape"]["dimensions"]["y"]
+                    ),
+                    obj["shape"]["dimensions"]["z"],
+                )
 
         qos = QoSProfile(
             depth=10,
@@ -129,6 +144,7 @@ class DetectedObject2DProjection(Node):
     def callback(self, *detection_msgs):
         detected_objects_3d_array = DetectedObject3DArray()
         detected_objects_3d_array.header.stamp = self.get_clock().now().to_msg()
+        detected_objects_3d_array.header.frame_id = detection_msgs[0].header.frame_id
 
         for detection_msg in detection_msgs:
             objects: List[DetectedObject2D] = detection_msg.objects
@@ -150,6 +166,24 @@ class DetectedObject2DProjection(Node):
                     continue
 
                 # Compute the ray end points based on camera intrinsics and detection center
+                object_bottom_z = self.estimated_object_bottom.get(
+                    detection.hypothesis.class_id, 0.0
+                )
+
+                estimated_size = self.estimated_sizes.get(
+                    detection.hypothesis.class_id, (0.0, 0.0)
+                )
+                # get max estimate dist if dimensions provided
+                estimated_dists_from_dimension = []
+                if estimated_size[0] > 0:
+                    estimated_dists_from_dimension.append(
+                        estimated_size[0] * 2 / detection.bbox_width * camera_info.p[0]
+                    )
+                if estimated_size[1] > 0:
+                    estimated_dists_from_dimension.append(
+                        estimated_size[1] * 2 / detection.bbox_height * camera_info.p[5]
+                    )
+
                 ray_ends = self.calculate_rays(
                     camera_info,
                     detection.centre_x,
@@ -157,7 +191,11 @@ class DetectedObject2DProjection(Node):
                     detection.bbox_width,
                     detection.bbox_height * (1.0 + self.inflate_height),
                     detection_msg.sensor_pose,
+                    object_bottom_z,
+                    np.mean(estimated_dists_from_dimension)
                 )
+                if len(ray_ends) == 0:
+                    continue
 
                 # Populate the DetectedObject3D with the calculated rays
                 detected_object_3d.hypothesis.shape.dimensions.x = np.linalg.norm(
@@ -172,13 +210,13 @@ class DetectedObject2DProjection(Node):
                     detected_object_3d.hypothesis.shape.dimensions.x
                 )
                 estimated_pose = Pose()
-                for i in range(4):
+                for i in range(2):
                     estimated_pose.position.x += ray_ends[i].x
                     estimated_pose.position.y += ray_ends[i].y
                     estimated_pose.position.z += ray_ends[i].z
-                estimated_pose.position.x /= 4
-                estimated_pose.position.y /= 4
-                estimated_pose.position.z /= 4
+                estimated_pose.position.x /= 2
+                estimated_pose.position.y /= 2
+                estimated_pose.position.z /= 2
                 detected_object_3d.hypothesis.kinematics.pose_with_covariance.pose = (
                     estimated_pose
                 )
@@ -189,7 +227,6 @@ class DetectedObject2DProjection(Node):
                     self.get_clock().now().to_msg()
                 )
                 detected_objects_3d_array.objects.append(detected_object_3d)
-
         self.publisher.publish(detected_objects_3d_array)
 
     def calculate_rays(
@@ -200,6 +237,8 @@ class DetectedObject2DProjection(Node):
         w: int,
         h: int,
         sensor_pose,
+        object_bottom_z,
+        max_estimate_dist
     ):
         # Extract the camera intrinsics
         fx = camera_info.p[0]
@@ -233,10 +272,14 @@ class DetectedObject2DProjection(Node):
             ray_dir_world = rotation_matrix @ ray_dir_camera
 
             # Calculate the intersection with the ground plane (z = 0)
-            t = -(sensor_pose.position.z + self.ground_z) / ray_dir_world[2]
-            ts.append(t)
             if len(ts) > 1:
                 t = ts[i - 2]
+            else:
+                t = (
+                    (object_bottom_z - self.ground_z) - sensor_pose.position.z
+                ) / ray_dir_world[2]
+                # t = min(t, max_estimate_dist) # doesn't work well
+            ts.append(t)
             ray_end = Point(
                 x=sensor_pose.position.x + ray_dir_world[0] * t,
                 y=sensor_pose.position.y + ray_dir_world[1] * t,
@@ -246,6 +289,10 @@ class DetectedObject2DProjection(Node):
 
             rays_end_points.append(ray_end)
 
+        if min(ts) < 0:
+            return []
+        if max(ts) > self.dist_limit:
+            return []
         return rays_end_points
 
 

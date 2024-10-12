@@ -129,7 +129,7 @@ private:
       marker.lifetime = rclcpp::Duration(1, 0);
       std::string fixed_frame = detection_msg->header.frame_id;
       std::string frame_v1 = "asv4/" + detection_msg->sensor.frame_id + "_optical";
-      std::string frame = ""; // camera frame either xx or asv4/xx_optical
+      std::string frame = "";   // camera frame either xx or asv4/xx_optical
       bool found_cam_info = false;
       if (cam_info_map_.find(detection_msg->sensor.frame_id) != cam_info_map_.end())
       {
@@ -138,7 +138,8 @@ private:
         //     detection_msg->sensor.frame_id.c_str());   // Modify logging as needed
         found_cam_info = true;
         frame = detection_msg->sensor.frame_id;
-      } else if (cam_info_map_.find(frame_v1) != cam_info_map_.end())
+      }
+      else if (cam_info_map_.find(frame_v1) != cam_info_map_.end())
       {
         // RCLCPP_WARN(
         //     this->get_logger(), "No CameraInfo found for frame %s",
@@ -149,12 +150,11 @@ private:
       if (!found_cam_info)
       {
         RCLCPP_WARN(
-          this->get_logger(), "No CameraInfo found for frame %s",
-          detection_msg->sensor.frame_id.c_str());   // Modify logging as needed
+            this->get_logger(), "No CameraInfo found for frame %s",
+            detection_msg->sensor.frame_id.c_str());   // Modify logging as needed
         continue;
       }
-      auto camera_info =
-          cam_info_map_[frame];  // Assuming sensor frame id as z value
+      auto camera_info = cam_info_map_[frame];   // Assuming sensor frame id as z value
 
       geometry_msgs::msg::Point ray_start;
       ray_start.x = detection_msg->sensor_pose.position.x;
@@ -189,21 +189,43 @@ private:
       marker.scale.y = 0.01;
       marker.scale.z = 0.01;
       marker.color = get_color(detection.hypothesis.class_id);
-      if (class_name.find("red") != std::string::npos) {
-          marker.color.r = 1.0;
-          marker.color.g = 0.0;
-          marker.color.b = 0.0;
-      } else if (class_name.find("green") != std::string::npos) {
-          marker.color.r = 0.0;
-          marker.color.g = 1.0;
-          marker.color.b = 0.0;
-      } else if (class_name.find("blue") != std::string::npos) {
-          marker.color.r = 0.0;
-          marker.color.g = 0.0;
-          marker.color.b = 1.0;
+      if (class_name.find("red") != std::string::npos)
+      {
+        marker.color.r = 1.0;
+        marker.color.g = 0.0;
+        marker.color.b = 0.0;
+      }
+      else if (class_name.find("green") != std::string::npos)
+      {
+        marker.color.r = 0.0;
+        marker.color.g = 1.0;
+        marker.color.b = 0.0;
+      }
+      else if (class_name.find("blue") != std::string::npos)
+      {
+        marker.color.r = 0.0;
+        marker.color.g = 0.0;
+        marker.color.b = 1.0;
       }
       marker.ns = frame + "/" + class_name;
       markers.markers.push_back(marker);
+
+      visualization_msgs::msg::Marker text_marker;
+      text_marker.header.frame_id = detection_msg->header.frame_id;
+      text_marker.header.stamp = detection.hypothesis.kinematics.header.stamp;
+      text_marker.ns = class_name + "/text";
+      text_marker.id = i;
+      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text_marker.text = class_name;
+      if (detection.hypothesis.track_id > 0)
+      {
+        text_marker.text += "(" + std::to_string(detection.hypothesis.track_id) + ")";
+      }
+      text_marker.pose.position = ray_ends[2];
+      text_marker.scale.z = 0.2;
+      text_marker.color = marker.color;
+      text_marker.lifetime = rclcpp::Duration(1, 0);
+      markers.markers.push_back(text_marker);
     }
 
     publisher_->publish(markers);
@@ -249,7 +271,14 @@ private:
 
       // Calculate ground plane intersection (z = 0)
       double t = -sensor_pose.position.z / ray_dir_world.z();
+      if (t < 0)
+      {
+        // RCLCPP_WARN(this->get_logger(), "Ray does not intersect ground plane");
+        t = -t;
+      }
+      t = std::min(t, 50.0);
       ts.push_back(t);
+
 
       if (i > 1)
       {
