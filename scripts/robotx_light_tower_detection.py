@@ -12,33 +12,79 @@ The node performs the following tasks:
 Dependencies:
 - rclpy for ROS2 node functionality.
 """
+from collections import Counter, deque
 from pathlib import Path
-import rclpy
+
 import numpy as np
+import rclpy
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
     DetectedObject2DArray,
     DetectedObject3DArray,
     DetectorSource,
 )
-from std_msgs.msg import Bool
 from bb_robotx_msgs.msg import LightSequence
 from cv_bridge import CvBridge
+from geometry_msgs.msg import TransformStamped
 from ml_detector.schema_validator import get_config, load_schema
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import Image
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TransformStamped
-from collections import deque
+from shapely.geometry import Point, Polygon
+from sklearn.cluster import DBSCAN
+from std_msgs.msg import Bool
 from tf2_ros import TransformBroadcaster
 from transforms3d.euler import euler2quat
-from shapely.geometry import Point, Polygon
+from bb_robotx_msgs.srv import ConfigureLightSequenceTask
 
 
 class LightTowerDetection(Node):
+    COLORS_LIST = ["black", "red", "blue", "green"]
+    colors = {colour: i for i, colour in enumerate(COLORS_LIST)}
+    objects_schema_path = (
+        Path(get_package_share_directory("ml_detector"))
+        / "configs"
+        / "objects_schema.json"
+    )
+    objects_schema = load_schema(objects_schema_path)
+    objects_config = get_config(
+        Path(get_package_share_directory("ml_detector"))
+        / "configs"
+        / "objects"
+        / "robotx.yaml",
+        objects_schema,
+    )
+    ID_TO_NAME = {obj["label"]: obj["name"] for obj in objects_config["objects"]}
+    NAME_TO_ID = {v: k for k, v in ID_TO_NAME.items()}
+    BLUE_PANEL_ID = NAME_TO_ID["light_tower_panel_blue"]
+    GREEN_PANEL_ID = NAME_TO_ID["light_tower_panel_green"]
+    RED_PANEL_ID = NAME_TO_ID["light_tower_panel_red"]
+    BLACK_PANEL_ID = NAME_TO_ID["light_tower_panel_black"]
+    LIGHT_TOWER_ID = NAME_TO_ID["light_tower"]
+
+    ID_TO_COLOR = {
+        BLACK_PANEL_ID: 0,
+        RED_PANEL_ID: 1,
+        BLUE_PANEL_ID: 2,
+        GREEN_PANEL_ID: 3,
+    }
+    COLOR_ENUMS = [
+        LightSequence.UNKNOWN,
+        LightSequence.RED,
+        LightSequence.BLUE,
+        LightSequence.GREEN,
+    ]
+    COLOR_ENUM_TO_COLOR = {
+        LightSequence.UNKNOWN: (0, 0, 0),
+        LightSequence.RED: (0, 0, 255),
+        LightSequence.BLUE: (255, 0, 0),
+        LightSequence.GREEN: (0, 255, 0),
+    }
+
     def __init__(self):
         super().__init__("light_tower_detection")
+        self.running = False
         self.bridge = CvBridge()
         self.image = None
         self.declare_parameter("debug", True)
@@ -56,45 +102,11 @@ class LightTowerDetection(Node):
         )
         self.time_colour_map_granularity = 8  # 0.25 seconds
         self.debug = self.get_parameter("debug").get_parameter_value().bool_value
-        self.is_ned = False
-        self.header = None
         self.detector_source = DetectorSource(
             sensor_name="light_tower_detector",
             frame_id=f"{self.namespace}/base_link",
             category=DetectorSource.LIDAR,
         )
-
-        objects_schema_path = (
-            Path(get_package_share_directory("ml_detector"))
-            / "configs"
-            / "objects_schema.json"
-        )
-        self.objects_schema = load_schema(objects_schema_path)
-        self.declare_parameter("objects_config", "robotx.yaml")
-        self.objects_config = get_config(
-            Path(get_package_share_directory("ml_detector"))
-            / "configs"
-            / "objects"
-            / self.get_parameter("objects_config").get_parameter_value().string_value,
-            self.objects_schema,
-        )
-        self.id_to_name = {
-            obj["label"]: obj["name"] for obj in self.objects_config["objects"]
-        }
-        self.name_to_id = {v: k for k, v in self.id_to_name.items()}
-        self.blue_panel_id = self.name_to_id["light_tower_panel_blue"]
-        self.green_panel_id = self.name_to_id["light_tower_panel_green"]
-        self.red_panel_id = self.name_to_id["light_tower_panel_red"]
-        self.black_panel_id = self.name_to_id["light_tower_panel_black"]
-        self.light_tower_id = self.name_to_id["light_tower"]
-
-        self.latest_colour = -1
-        self.latest_colour_count = 0
-
-        self.time_colour_map = np.zeros(
-            (5 * self.time_colour_map_granularity, 4)
-        )  # rows: 0 1 2 3 4, cols: black red blue green
-        self.tcm_fixed = None
 
         # Begin: Light tower pose estimation variables
         self.light_tower_known_height = 2  # meters
@@ -108,50 +120,13 @@ class LightTowerDetection(Node):
 
         self.degree = 1  # only update transition up to degree time steps in the past.
         # e.g. if degree is 2, increments state n-1 -> n by 2 and state n-2 -> n by 1
-        self.colors = {
-            "black": 0,
-            "red": 1,
-            "blue": 2,
-            "green": 3,
-        }
-        self.colors_list = ["black", "red", "blue", "green"]
-        self.id_to_color = {
-            self.black_panel_id: 0,
-            self.red_panel_id: 1,
-            self.blue_panel_id: 2,
-            self.green_panel_id: 3,
-        }
-        self.colors_enums = [
-            LightSequence.UNKNOWN,
-            LightSequence.RED,
-            LightSequence.BLUE,
-            LightSequence.GREEN,
-        ]
-        self.color_enum_to_color = {
-            LightSequence.UNKNOWN: (0, 0, 0),
-            LightSequence.RED: (0, 0, 255),
-            LightSequence.BLUE: (255, 0, 0),
-            LightSequence.GREEN: (0, 255, 0),
-        }
-        self.transition_matrix = np.zeros((4, 4))
-        self.debug_img = np.zeros((6, 5, 3)).astype(np.uint8)
-        self.debug_img[0, 2] = self.debug_img[2, 0] = np.array([0, 0, 255])
-        self.debug_img[0, 3] = self.debug_img[3, 0] = np.array([255, 0, 0])
-        self.debug_img[0, 4] = self.debug_img[4, 0] = np.array([0, 255, 0])
-        self.tcm_debug_img = np.zeros((7, 4, 3)).astype(np.uint8)
-        self.tcm_debug_img[0, 1] = np.array([0, 0, 255])
-        self.tcm_debug_img[0, 2] = np.array([255, 0, 0])
-        self.tcm_debug_img[0, 3] = np.array([0, 255, 0])
+        self.latest_colors = deque(maxlen=self.degree)
         self.scaling_factor = (
             self.degree * (self.degree + 1) / 2
         )  # scale transition matrix by factor
-        self.latest_colors = deque(maxlen=self.degree)
-        self.best_sequence = None
-        self.best_sequence_count = 0
         self.best_sequence_threshold = 3
-        self.best_sequence_tcm = None
-        self.best_sequence_count_tcm = 0
-        self.best_sequence_count_tcm_last_increment = 0
+
+        self.reset()
 
         self.debug_pub = self.create_publisher(
             Image, f"/{self.namespace}/robotx/light_tower/debug", 10
@@ -160,28 +135,25 @@ class LightTowerDetection(Node):
             Image, f"/{self.namespace}/robotx/light_tower/tcm_debug", 10
         )  # 4x4 image
         self.light_sequence_pub = self.create_publisher(
-            LightSequence, "/robotx24/light_sequence", 1
+            LightSequence, "/robotx24/light_sequence_raw", 1
         )
         self.light_tower_valid_pose_pub = self.create_publisher(
             Bool, "/robotx24/light_tower/valid_pose", 1
         )  # publish if light tower pose is valid
-        if self.namespace == "asv4":
-            self.subscription_2d = self.create_subscription(
-                DetectedObject2DArray,
-                f"/{self.namespace}/vision/detections_2d/fixed",
-                self.detected_objects_2d_callback,
-                10,
-            )
-        else:
-            self.subscription_2d = self.create_subscription(
-                DetectedObject2DArray,
-                f"/{self.namespace}/vision/detections_2d",
-                self.detected_objects_2d_callback,
-                10,
-            )
+        self.subscription_2d = self.create_subscription(
+            DetectedObject2DArray,
+            (
+                f"/{self.namespace}/vision/detections_2d/fixed"
+                if self.namespace == "asv4"
+                else f"/{self.namespace}/vision/detections_2d"
+            ),
+            self.detected_objects_2d_callback,
+            10,
+        )
         self.subscription_3d = self.create_subscription(
             DetectedObject3DArray,
-            f"/{self.namespace}/vision/detections_2d/projected/filtered",
+            # f"/{self.namespace}/vision/detections_2d/projected/filtered",
+            f"/{self.namespace}/robotx/filtered_detections",
             self.detected_objects_3d_callback,
             10,
         )
@@ -190,6 +162,64 @@ class LightTowerDetection(Node):
         )
         self.create_timer(1, self.publish_sequence)
         self.update_timer = self.create_timer(0.5, self.update_pose_estimate)
+        self.config_service = self.create_service(
+            ConfigureLightSequenceTask, "/robotx24/configure_light_sequence_task", self.configure_task
+        )
+
+    def initialize_debug_img(self):
+        img = np.zeros((6, 5, 3)).astype(np.uint8)
+        img[0, 2] = img[2, 0] = np.array([0, 0, 255])
+        img[0, 3] = img[3, 0] = np.array([255, 0, 0])
+        img[0, 4] = img[4, 0] = np.array([0, 255, 0])
+        return img
+
+    def initialize_tcm_debug_img(self):
+        img = np.zeros((7, 4, 3)).astype(np.uint8)
+        img[0, 1] = np.array([0, 0, 255])
+        img[0, 2] = np.array([255, 0, 0])
+        img[0, 3] = np.array([0, 255, 0])
+        return img
+
+    def reset(self):
+        self.transition_matrix = np.zeros((4, 4))
+        self.debug_img = self.initialize_debug_img()
+        self.tcm_debug_img = self.initialize_tcm_debug_img()
+        self.latest_colors.clear()
+        self.best_sequence = None
+        self.best_sequence_count = 0
+        self.best_sequence_tcm = None
+        self.best_sequence_count_tcm = 0
+        self.best_sequence_count_tcm_last_increment = 0
+        self.time_colour_map = np.zeros(
+            (5 * self.time_colour_map_granularity, 4)
+        )  # rows: 0 1 2 3 4, cols: black red blue green
+        self.tcm_fixed = None
+        self.light_tower_positions.clear()
+
+    def configure_task(self,
+                       request: ConfigureLightSequenceTask.Request,
+                       response: ConfigureLightSequenceTask.Response):
+        if not request.active:
+            self.get_logger().info("configure_task inactive")
+            self.running = False
+            response.success = True
+            return response
+        if self.running:
+            # self.get_logger().info("configure_task already running, ignoring")
+            response.success = True
+            return response
+        if not self.running:
+            self.get_logger().info("configure_task starting, resetting")
+            self.use_time_colour_map = request.use_tcm
+            self.time_colour_map_granularity = request.tcm_granularity
+            self.panel_in_tower_check = request.filter_panel_in_tower
+            self.best_sequence_threshold = request.best_sequence_threshold
+            self.light_tower_known_height = request.light_tower_known_height
+
+            self.reset()
+            self.running = True
+        response.success = True
+        return response
 
     def publish_tf_transform(self, centroid):
         """Publish the latest estimated object pose as a TF transform."""
@@ -197,6 +227,7 @@ class LightTowerDetection(Node):
         # Fill in header information
         new_stamp = self.get_clock().now()
         if new_stamp <= self.latest_stamp:
+            self.get_logger().warn("New stamp is not greater than latest stamp")
             return
         self.latest_stamp = new_stamp
         t.header.stamp = new_stamp.to_msg()
@@ -264,9 +295,9 @@ class LightTowerDetection(Node):
         ):
             return
         return LightSequence(
-            first=self.colors_enums[new_best_colours[0]],
-            second=self.colors_enums[new_best_colours[1]],
-            third=self.colors_enums[new_best_colours[2]],
+            first=self.COLOR_ENUMS[new_best_colours[0]],
+            second=self.COLOR_ENUMS[new_best_colours[1]],
+            third=self.COLOR_ENUMS[new_best_colours[2]],
         )
 
     def check_condition_tcm(self):
@@ -315,9 +346,9 @@ class LightTowerDetection(Node):
                 return False
             if c1 != c2 != c3:
                 new_sequence = LightSequence(
-                    first=self.colors_enums[c1],
-                    second=self.colors_enums[c2],
-                    third=self.colors_enums[c3],
+                    first=self.COLOR_ENUMS[c1],
+                    second=self.COLOR_ENUMS[c2],
+                    third=self.COLOR_ENUMS[c3],
                 )
                 if new_sequence == self.best_sequence:
                     self.best_sequence_count += 1
@@ -328,9 +359,9 @@ class LightTowerDetection(Node):
             if c1 != c2:
                 # This checks for a sequence where first and third color are the same
                 new_sequence = LightSequence(
-                    first=self.colors_enums[c1],
-                    second=self.colors_enums[c2],
-                    third=self.colors_enums[c1],
+                    first=self.COLOR_ENUMS[c1],
+                    second=self.COLOR_ENUMS[c2],
+                    third=self.COLOR_ENUMS[c1],
                 )
                 if new_sequence == self.best_sequence:
                     self.best_sequence_count += 1
@@ -343,9 +374,9 @@ class LightTowerDetection(Node):
             # if c1 == c2 and c1 != c3:
             #     # This checks for a sequence where first and second are the same
             #     new_sequence = LightSequence(
-            #         first=self.colors_enums[c1],  # Green (or any color that c1 maps to)
-            #         second=self.colors_enums[c2], # Green (same as first)
-            #         third=self.colors_enums[c3],  # Red (or any color that c3 maps to)
+            #         first=self.COLOR_ENUMS[c1],  # Green (or any color that c1 maps to)
+            #         second=self.COLOR_ENUMS[c2], # Green (same as first)
+            #         third=self.COLOR_ENUMS[c3],  # Red (or any color that c3 maps to)
             #     )
             #     if new_sequence == self.best_sequence:
             #         self.best_sequence_count += 1
@@ -356,9 +387,9 @@ class LightTowerDetection(Node):
             # elif c1 == c11 and c2 == c21 and c3 == c11 and c1 != c2:
             #     # This checks for a sequence where first and third color are the same
             #     new_sequence = LightSequence(
-            #         first=self.colors_enums[c1],
-            #         second=self.colors_enums[c2],
-            #         third=self.colors_enums[c1],
+            #         first=self.COLOR_ENUMS[c1],
+            #         second=self.COLOR_ENUMS[c2],
+            #         third=self.COLOR_ENUMS[c1],
             #     )
             #     if new_sequence == self.best_sequence:
             #         self.best_sequence_count += 1
@@ -368,6 +399,8 @@ class LightTowerDetection(Node):
             #     return True
 
     def publish_sequence(self):
+        if not self.running:
+            return
         if self.debug and self.transition_matrix.max() > 0:
             self.debug_img[1:5, 1:5, :] = np.repeat(
                 self.transition_matrix.reshape((4, 4, 1))
@@ -402,33 +435,35 @@ class LightTowerDetection(Node):
             )
             if not self.use_time_colour_map:
                 self.light_sequence_pub.publish(self.best_sequence)
-            self.debug_img[5, 1] = self.color_enum_to_color[self.best_sequence.first]
-            self.debug_img[5, 2] = self.color_enum_to_color[self.best_sequence.second]
-            self.debug_img[5, 3] = self.color_enum_to_color[self.best_sequence.third]
+            self.debug_img[5, 1] = self.COLOR_ENUM_TO_COLOR[self.best_sequence.first]
+            self.debug_img[5, 2] = self.COLOR_ENUM_TO_COLOR[self.best_sequence.second]
+            self.debug_img[5, 3] = self.COLOR_ENUM_TO_COLOR[self.best_sequence.third]
         if self.best_sequence_count_tcm >= self.best_sequence_threshold:
             self.get_logger().info(
                 f"Best sequence from time colour map: {self.best_sequence_tcm}"
             )
             if self.use_time_colour_map:
                 self.light_sequence_pub.publish(self.best_sequence_tcm)
-            self.tcm_debug_img[6, 1] = self.color_enum_to_color[
+            self.tcm_debug_img[6, 1] = self.COLOR_ENUM_TO_COLOR[
                 self.best_sequence_tcm.first
             ]
-            self.tcm_debug_img[6, 2] = self.color_enum_to_color[
+            self.tcm_debug_img[6, 2] = self.COLOR_ENUM_TO_COLOR[
                 self.best_sequence_tcm.second
             ]
-            self.tcm_debug_img[6, 3] = self.color_enum_to_color[
+            self.tcm_debug_img[6, 3] = self.COLOR_ENUM_TO_COLOR[
                 self.best_sequence_tcm.third
             ]
         return
         # compute best sequence
 
     def detected_objects_2d_callback(self, msg):
+        if not self.running:
+            return
         if len(msg.objects) == 0:
             return
 
         tower_dets = [
-            det for det in msg.objects if det.hypothesis.class_id == self.light_tower_id
+            det for det in msg.objects if det.hypothesis.class_id == self.LIGHT_TOWER_ID
         ]
         # look for placards in objects list
         panel_dets = [
@@ -436,23 +471,27 @@ class LightTowerDetection(Node):
             for det in msg.objects
             if det.hypothesis.class_id
             in [
-                self.blue_panel_id,
-                self.green_panel_id,
-                self.red_panel_id,
-                self.black_panel_id,
+                self.BLUE_PANEL_ID,
+                self.GREEN_PANEL_ID,
+                self.RED_PANEL_ID,
+                self.BLACK_PANEL_ID,
             ]
         ]
 
         if self.panel_in_tower_check:
-            light_tower_polys = [Polygon(np.array(det.contour).reshape(-1, 2)) for det in tower_dets]
+            light_tower_polys = [
+                Polygon(np.array(det.contour).reshape(-1, 2)) for det in tower_dets
+            ]
             panel_dets = [
                 det
                 for det in panel_dets
                 if any(
-                    poly.contains(Point(
-                        det.centre_x,
-                        det.centre_y,
-                    ))
+                    poly.contains(
+                        Point(
+                            det.centre_x,
+                            det.centre_y,
+                        )
+                    )
                     for poly in light_tower_polys
                 )
             ]
@@ -461,7 +500,7 @@ class LightTowerDetection(Node):
             return
         else:
             best_placard = max(panel_dets, key=lambda det: det.hypothesis.probability)
-            color = self.id_to_color[best_placard.hypothesis.class_id]
+            color = self.ID_TO_COLOR[best_placard.hypothesis.class_id]
         if len(self.latest_colors) >= self.degree:
             for i, prev_color in enumerate(self.latest_colors):
                 if prev_color != color:
@@ -484,17 +523,23 @@ class LightTowerDetection(Node):
         ] += best_placard.hypothesis.probability
 
     def detected_objects_3d_callback(self, msg):
+        if not self.running:
+            self.get_logger().info("light tower detector Not running", throttle_duration_sec=2)
+            return
+        else:
+            self.get_logger().info("light tower detector running", throttle_duration_sec=2)
         towers = [
-            det for det in msg.objects if det.hypothesis.class_id == self.light_tower_id
+            det for det in msg.objects if det.hypothesis.class_id == self.LIGHT_TOWER_ID
         ]
         if len(towers) == 0:
+            self.get_logger().info("No light tower detected.")
             return
         best_tower = max(towers, key=lambda det: det.hypothesis.probability)
         self.light_tower_positions.append(
             (
                 best_tower.hypothesis.kinematics.pose_with_covariance.pose.position.x,
                 best_tower.hypothesis.kinematics.pose_with_covariance.pose.position.y,
-            )
+            ),
         )
         return
 
@@ -505,11 +550,17 @@ class LightTowerDetection(Node):
         Parameters:
         - msg: Message containing light tower positions (assumed to be a list of [x, y, z] coordinates).
         """
+        if not self.running:
+            self.get_logger().info("light tower detector Not running", throttle_duration_sec=2)
+            return
         # Extract light tower positions from the msg
         light_tower_positions = np.array(
             self.light_tower_positions
         )  # Ensure this extracts correctly
-        if len(light_tower_positions) < 3:
+        if len(self.light_tower_positions) < 3:
+            self.get_logger().info(
+                f"Insufficient light tower positions to compute centroid. {self.light_tower_positions}"
+            )
             return
         # Apply DBSCAN clustering
         dbscan = DBSCAN(eps=0.5, min_samples=2)  # Adjust eps and min_samples as needed

@@ -170,7 +170,7 @@ class GateDetection(Node):
             self.gate_poses = {}
             self.gate_estimate_valid = False
             res.success = True
-            return
+            return res
         self.use_heading = req.use_heading
         self.initial_pose_estimate = req.estimated_pose
         if self.use_heading:
@@ -183,7 +183,7 @@ class GateDetection(Node):
             self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, 60, 60)
         self.get_logger().info(f"Setting geofence to {self.gate_geofence}")
         self.clustering_T = self.R @ np.array([[2, 0], [0, 1]]) @ self.R.T
-        self.forward_direction = self.R @ np.array([1, 0])  
+        self.forward_direction = self.R @ np.array([1, 0])
         self.running = True
         res.success = True
         return res
@@ -298,7 +298,7 @@ class GateDetection(Node):
     ) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], float]]:
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
         if len(cluster) < 3:
-            # self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}")
+            self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}", throttle_duration_sec=2.0)
             return None
         recluster = AgglomerativeClustering(
             n_clusters=None, distance_threshold=10, linkage="ward"
@@ -306,6 +306,7 @@ class GateDetection(Node):
         cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
         num_children = recluster.n_clusters_
         if num_children < 3 or num_children > 4:
+            self.get_logger().info(f"Invalid number of clusters {num_children}", throttle_duration_sec=2.0)
             return None
         cluster_centroids = np.zeros((num_children, 2))
         for i in range(num_children):
