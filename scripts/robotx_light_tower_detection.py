@@ -146,6 +146,9 @@ class LightTowerDetection(Node):
         self.best_sequence_count = 0
         self.best_sequence_threshold = 3
         self.best_sequence_tcm = None
+        self.best_sequence_count_tcm = 0
+        self.best_sequence_count_tcm_last_increment = 0
+
 
         self.debug_pub = self.create_publisher(
             Image, f"/{self.namespace}/robotx/light_tower/debug", 10
@@ -154,7 +157,9 @@ class LightTowerDetection(Node):
             Image, f"/{self.namespace}/robotx/light_tower/tcm_debug", 10
         )  # 4x4 image
         self.light_sequence_pub = self.create_publisher(
-            LightSequence, "/robotx24/light_sequence", 1
+            LightSequence,
+            "/robotx24/light_sequence",
+            1
         )
         self.light_tower_valid_pose_pub = self.create_publisher(
             Bool, "/robotx24/light_tower/valid_pose", 1
@@ -219,6 +224,7 @@ class LightTowerDetection(Node):
     def get_seq_from_time_colour_map(self):
         best_colours = np.argmax(self.time_colour_map, axis=1)
         if np.all(best_colours == 0):
+            self.get_logger().info("get_seq_from_time_colour_map all black")
             return
 
         # check that there are 2 best colours that are 0 and their indices are adjacent or at the start and end
@@ -234,21 +240,55 @@ class LightTowerDetection(Node):
         self.tcm_fixed = sorted_colours
         new_best_colours = np.argmax(sorted_colours, axis=1)
         if any(np.sum(sorted_colours, axis=1) == 0):
+            self.get_logger().info("get_seq_from_time_colour_map some empty")
             return
         if any(col == 0 for col in new_best_colours[:3]):
+            self.get_logger().info(f"get_seq_from_time_colour_map some colour black")
             return
         if any(col != 0 for col in new_best_colours[3:]):
+            self.get_logger().info(f"get_seq_from_time_colour_map last 2 not black")
             return
-        self.get_logger().info(f"get_seq_from_time_colour_map {sorted_colours}")
+        if (
+            new_best_colours[0] == new_best_colours[1]
+            or new_best_colours[1] == new_best_colours[2]
+        ):
+            self.get_logger().info(
+                "get_seq_from_time_colour_map consecutive same colour invalid"
+            )
+            return
+        # check that best colours are at least 0.5 of everything
+        if np.any(
+            np.sort(sorted_colours, axis=1)[:, -1] / np.sum(sorted_colours, axis=1)
+            < 0.5
+        ):
+            return
         return LightSequence(
             first=self.colors_enums[new_best_colours[0]],
             second=self.colors_enums[new_best_colours[1]],
             third=self.colors_enums[new_best_colours[2]],
         )
 
+    def check_condition_tcm(self):
+        new_sequence = self.get_seq_from_time_colour_map()
+        if new_sequence is None:
+            self.best_sequence_count_tcm = 0
+            return False
+        if new_sequence == self.best_sequence_tcm:
+            current_time = Time.from_msg(self.get_clock().now().to_msg())
+            if current_time.nanoseconds - self.best_sequence_count_tcm_last_increment >= 5e9:
+                self.get_logger().info("check_condition_tcm incrementing")
+                self.best_sequence_count_tcm_last_increment = current_time.nanoseconds
+                self.best_sequence_count_tcm += 1
+            self.best_sequence_count_tcm += 1
+        else:
+            self.best_sequence_count_tcm = 1
+            self.best_sequence_count_tcm_last_increment = Time.from_msg(
+                self.get_clock().now().to_msg()
+            ).nanoseconds
+        self.best_sequence_tcm = new_sequence
+        return True
+
     def check_condition(self):
-        if self.use_time_colour_map:
-            self.best_sequence_tcm = self.get_seq_from_time_colour_map()
         if np.sum(self.transition_matrix >= 2) >= 3:
             c1 = np.argmax(self.transition_matrix[0, 1:]) + 1
             c2 = np.argmax(self.transition_matrix[c1, 1:]) + 1
@@ -286,7 +326,7 @@ class LightTowerDetection(Node):
                 new_sequence = LightSequence(
                     first=self.colors_enums[c1],
                     second=self.colors_enums[c2],
-                    third=self.colors_enums[c1],  
+                    third=self.colors_enums[c1],
                 )
                 if new_sequence == self.best_sequence:
                     self.best_sequence_count += 1
@@ -294,7 +334,7 @@ class LightTowerDetection(Node):
                     self.best_sequence_count = 1
                 self.best_sequence = new_sequence
                 return True
-            
+
             # no consecutive same colour
             # if c1 == c2 and c1 != c3:
             #     # This checks for a sequence where first and second are the same
@@ -314,7 +354,7 @@ class LightTowerDetection(Node):
             #     new_sequence = LightSequence(
             #         first=self.colors_enums[c1],
             #         second=self.colors_enums[c2],
-            #         third=self.colors_enums[c1],  
+            #         third=self.colors_enums[c1],
             #     )
             #     if new_sequence == self.best_sequence:
             #         self.best_sequence_count += 1
@@ -347,25 +387,26 @@ class LightTowerDetection(Node):
                 self.tcm_debug_img, encoding="bgr8"
             )
             self.tcm_debug_pub.publish(tcm_debug_img_msg)
-        if (
-            self.best_sequence_count < self.best_sequence_threshold
-            and self.check_condition()
-        ):
-            return
+        # if self.best_sequence_count < self.best_sequence_threshold:
+        self.check_condition()
+        # if self.best_sequence_count_tcm < self.best_sequence_threshold:
+        self.check_condition_tcm()
         # store best sequence and don't recompute subsequently (no point since probably reported alr)
         if self.best_sequence_count >= self.best_sequence_threshold:
             self.get_logger().info(
                 f"Best sequence: {self.best_sequence} detected {self.best_sequence_count} times"
             )
-            self.light_sequence_pub.publish(self.best_sequence)
+            if not self.use_time_colour_map:
+                self.light_sequence_pub.publish(self.best_sequence)
             self.debug_img[5, 1] = self.color_enum_to_color[self.best_sequence.first]
             self.debug_img[5, 2] = self.color_enum_to_color[self.best_sequence.second]
             self.debug_img[5, 3] = self.color_enum_to_color[self.best_sequence.third]
-        if self.best_sequence_tcm is not None:
+        if self.best_sequence_count_tcm >= self.best_sequence_threshold:
             self.get_logger().info(
                 f"Best sequence from time colour map: {self.best_sequence_tcm}"
             )
-            self.light_sequence_pub.publish(self.best_sequence_tcm)
+            if self.use_time_colour_map:
+                self.light_sequence_pub.publish(self.best_sequence_tcm)
             self.tcm_debug_img[6, 1] = self.color_enum_to_color[
                 self.best_sequence_tcm.first
             ]
@@ -402,9 +443,6 @@ class LightTowerDetection(Node):
         if len(self.latest_colors) >= self.degree:
             for i, prev_color in enumerate(self.latest_colors):
                 if prev_color != color:
-                    self.get_logger().info(
-                        f"transition {self.colors_list[prev_color]} -> {self.colors_list[color]}"
-                    )
                     self.transition_matrix[prev_color][color] += (
                         (i + 1)
                         / self.scaling_factor
