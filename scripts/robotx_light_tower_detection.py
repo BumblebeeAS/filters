@@ -13,9 +13,8 @@ Dependencies:
 - rclpy for ROS2 node functionality.
 """
 from pathlib import Path
-import numpy as np
-from sklearn.cluster import DBSCAN
 import rclpy
+import numpy as np
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
     DetectedObject2DArray,
@@ -31,9 +30,10 @@ from rclpy.time import Time
 from sensor_msgs.msg import Image
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
-from collections import Counter, deque
+from collections import deque
 from tf2_ros import TransformBroadcaster
 from transforms3d.euler import euler2quat
+from shapely.geometry import Point, Polygon
 
 
 class LightTowerDetection(Node):
@@ -49,6 +49,10 @@ class LightTowerDetection(Node):
         self.declare_parameter("use_time_colour_map", True)
         self.use_time_colour_map = (
             self.get_parameter("use_time_colour_map").get_parameter_value().bool_value
+        )
+        self.declare_parameter("panel_in_tower_check", True)
+        self.panel_in_tower_check = (
+            self.get_parameter("panel_in_tower_check").get_parameter_value().bool_value
         )
         self.time_colour_map_granularity = 8  # 0.25 seconds
         self.debug = self.get_parameter("debug").get_parameter_value().bool_value
@@ -149,7 +153,6 @@ class LightTowerDetection(Node):
         self.best_sequence_count_tcm = 0
         self.best_sequence_count_tcm_last_increment = 0
 
-
         self.debug_pub = self.create_publisher(
             Image, f"/{self.namespace}/robotx/light_tower/debug", 10
         )  # 5x4 image
@@ -157,9 +160,7 @@ class LightTowerDetection(Node):
             Image, f"/{self.namespace}/robotx/light_tower/tcm_debug", 10
         )  # 4x4 image
         self.light_sequence_pub = self.create_publisher(
-            LightSequence,
-            "/robotx24/light_sequence",
-            1
+            LightSequence, "/robotx24/light_sequence", 1
         )
         self.light_tower_valid_pose_pub = self.create_publisher(
             Bool, "/robotx24/light_tower/valid_pose", 1
@@ -275,7 +276,10 @@ class LightTowerDetection(Node):
             return False
         if new_sequence == self.best_sequence_tcm:
             current_time = Time.from_msg(self.get_clock().now().to_msg())
-            if current_time.nanoseconds - self.best_sequence_count_tcm_last_increment >= 5e9:
+            if (
+                current_time.nanoseconds - self.best_sequence_count_tcm_last_increment
+                >= 5e9
+            ):
                 self.get_logger().info("check_condition_tcm incrementing")
                 self.best_sequence_count_tcm_last_increment = current_time.nanoseconds
                 self.best_sequence_count_tcm += 1
@@ -421,10 +425,13 @@ class LightTowerDetection(Node):
 
     def detected_objects_2d_callback(self, msg):
         if len(msg.objects) == 0:
-            placard_dets = []
             return
+
+        tower_dets = [
+            det for det in msg.objects if det.hypothesis.class_id == self.light_tower_id
+        ]
         # look for placards in objects list
-        placard_dets = [
+        panel_dets = [
             det
             for det in msg.objects
             if det.hypothesis.class_id
@@ -435,10 +442,25 @@ class LightTowerDetection(Node):
                 self.black_panel_id,
             ]
         ]
-        if len(placard_dets) == 0:
+
+        if self.panel_in_tower_check:
+            light_tower_polys = [Polygon(np.array(det.contour).reshape(-1, 2)) for det in tower_dets]
+            panel_dets = [
+                det
+                for det in panel_dets
+                if any(
+                    poly.contains(Point(
+                        det.centre_x,
+                        det.centre_y,
+                    ))
+                    for poly in light_tower_polys
+                )
+            ]
+
+        if len(panel_dets) == 0:
             return
         else:
-            best_placard = max(placard_dets, key=lambda det: det.hypothesis.probability)
+            best_placard = max(panel_dets, key=lambda det: det.hypothesis.probability)
             color = self.id_to_color[best_placard.hypothesis.class_id]
         if len(self.latest_colors) >= self.degree:
             for i, prev_color in enumerate(self.latest_colors):
