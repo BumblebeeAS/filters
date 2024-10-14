@@ -143,7 +143,7 @@ class DetectedObject2DProjection(Node):
 
     def callback(self, *detection_msgs):
         detected_objects_3d_array = DetectedObject3DArray()
-        detected_objects_3d_array.header.stamp = self.get_clock().now().to_msg()
+        detected_objects_3d_array.header.stamp = detection_msgs[0].header.stamp
         detected_objects_3d_array.header.frame_id = detection_msgs[0].header.frame_id
 
         for detection_msg in detection_msgs:
