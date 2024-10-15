@@ -224,7 +224,7 @@ class DetectedObject2DProjection(Node):
                     detection_msg.header.frame_id
                 )
                 detected_object_3d.hypothesis.kinematics.header.stamp = (
-                    self.get_clock().now().to_msg()
+                    detection_msg.header.stamp
                 )
                 detected_objects_3d_array.objects.append(detected_object_3d)
         self.publisher.publish(detected_objects_3d_array)

@@ -51,6 +51,7 @@ def generate_launch_description():
                             "output_markers_topic": f"{topic}/marker",
                             "objects_config": "robotx.yaml",
                             "publish_tf": True,
+                            "use_sim_time": True,
                         }
                     ],
                 ) for topic in detected_object_3d_vis_tf
