@@ -12,14 +12,13 @@ from ml_detector.schema_validator import get_config, load_schema
 from bb_filters.log import RclLogHandler
 import logging
 from operator import attrgetter
-from transforms3d.euler import quat2euler
+from transforms3d.euler import quat2euler, euler2quat
 
-from pykalman import KalmanFilter
 import numpy as np
 from collections import deque
 import logging
 from copy import deepcopy
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Quaternion
 
 np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 LOGGER = logging.getLogger("obstacles_management")
@@ -218,9 +217,14 @@ class ObstaclesManagementServer(Node):
                 "max_distance": 5.0,
                 "sub_identities": [],
             },
+            "gate": {
+                "count": 15,
+                "max_distance": 5.0,
+                "sub_identities": [],
+            },
             "buoy": {
-                "count": 6,
-                "max_distance": 3.5,
+                "count": 30,
+                "max_distance": 4,
                 "sub_identities": [
                     "white_cylinder",
                     "red_cylinder",
@@ -273,6 +277,7 @@ class ObstaclesManagementServer(Node):
             )
             for topic in [
                 "/asv4/vision/detections_2d/projected",
+                "/asv4/vision/red_green_gate_detections",
                 "/asv4/vision/gate_detections",
                 "/asv4/vision/lidar_small_objects/dets_3d/labelled",
             ]
@@ -342,7 +347,11 @@ class ObstaclesManagementServer(Node):
                 detected_object.hypothesis.track_id = tids[-1]
                 # Set orientation based on the median yaw
                 # Set the orientation quaternion based on the yaw
-                # Use a utility function to convert yaw to quaternion if needed
+                quat = euler2quat(0, 0, median_yaw)
+                detected_object.hypothesis.kinematics.pose_with_covariance.pose.orientation = Quaternion(
+                    w=quat[0], x=quat[1], y=quat[2], z=quat[3]
+                )
+                
 
                 filtered_detections.objects.append(deepcopy(detected_object))
 

@@ -95,6 +95,8 @@ private:
       markers.markers.push_back(marker);
       auto text_marker = create_text_marker(detection, class_name, i++);
       markers.markers.push_back(text_marker);
+      auto arrow_marker = create_arrow_marker(detection, class_name, i++);
+      markers.markers.push_back(arrow_marker);
 
       // Optionally publish TF
       if (publish_tf_)
@@ -160,6 +162,47 @@ private:
     marker.color = get_color(detection.hypothesis.track_id);
     marker.lifetime = rclcpp::Duration(1, 0);
     return marker;
+  }
+
+  // Create a marker for visualization (arrow representing direction)
+  visualization_msgs::msg::Marker create_arrow_marker(
+      const bb_perception_msgs::msg::DetectedObject3D& detection,
+      const std::string& class_name, int id)
+  {
+      visualization_msgs::msg::Marker marker;
+      marker.header.frame_id = detection.hypothesis.kinematics.header.frame_id;
+      marker.header.stamp = detection.hypothesis.kinematics.header.stamp;
+      marker.ns = class_name + "/direction";
+      marker.id = id;
+      marker.type = visualization_msgs::msg::Marker::ARROW;
+
+      // Set start point (object's position) and end point (position + direction vector)
+      marker.points.resize(2);
+      marker.points[0] = detection.hypothesis.kinematics.pose_with_covariance.pose.position;  // Arrow start
+
+      // Compute direction vector from the orientation (quaternion)
+      Eigen::Quaterniond q(
+          detection.hypothesis.kinematics.pose_with_covariance.pose.orientation.w,
+          detection.hypothesis.kinematics.pose_with_covariance.pose.orientation.x,
+          detection.hypothesis.kinematics.pose_with_covariance.pose.orientation.y,
+          detection.hypothesis.kinematics.pose_with_covariance.pose.orientation.z);
+
+      Eigen::Vector3d direction = q * Eigen::Vector3d(1, 0, 0);  // Forward direction in the object's local frame
+
+      // Scale the direction vector to control arrow length
+      double arrow_length = 1.0;
+      marker.points[1].x = marker.points[0].x + arrow_length * direction.x();
+      marker.points[1].y = marker.points[0].y + arrow_length * direction.y();
+      marker.points[1].z = marker.points[0].z + arrow_length * direction.z();
+
+      // Set arrow scale and color
+      marker.scale.x = 0.1;  // Arrow shaft diameter
+      marker.scale.y = 0.2;  // Arrow head diameter
+      marker.scale.z = 0.2;  // Arrow head length
+      marker.color = get_color(detection.hypothesis.track_id);
+
+      marker.lifetime = rclcpp::Duration(1, 0);
+      return marker;
   }
 
   // Get class name from object ID
