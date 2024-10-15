@@ -109,7 +109,6 @@ class RedGreenGateDetection(Node):
         self.inv_clustering_T = np.linalg.inv(self.clustering_T)
         self.forward_direction = R @ np.array([1, 0])
         self.vehicle_forward_direction = np.array([1, 0])
-
         self.buoy_id_to_gate_id = {}
         self.latest_gate_id = -1
         self.gate_poses = {}
@@ -280,7 +279,7 @@ class RedGreenGateDetection(Node):
     def calculate_gate_pose(self, cluster):
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
         if len(cluster) < 2:
-            return None, None, None
+            return None, None, None, None
         # print("Kmeans")
         km = KMeans(n_clusters=2)
         positions = np.array([[t[1][0], t[1][1]] for t in cluster])
@@ -289,15 +288,56 @@ class RedGreenGateDetection(Node):
         if (
             np.linalg.norm(cluster_centers[0] - cluster_centers[1]) < 6
         ):  # keep buoys at least 6m apart
-            return None, None, None
+            return None, None, None, None
         green_identities = [0, 0]  # green_red_cluster_0, green_red_cluster_1
+        red_identities = [0, 0]  # red_green_cluster_0, red_green_cluster_1
         for i, cluster_number in enumerate(green_red_clusters):
             probabilities = cluster[i][1][2]
-            green_identities[cluster_number] += probabilities[1] - probabilities[0]
-        if green_identities[0] > green_identities[1]:
+            green_identities[cluster_number] += probabilities[1]
+            red_identities[cluster_number] += probabilities[0]
+
+        # if (
+        #     (
+        #         green_identities[0] == 0
+        #         and red_identities[0] > 0
+        #         and red_identities[1] > 0
+        #     )
+        #     or (
+        #         green_identities[1] == 0
+        #         and red_identities[0] > 0
+        #         and red_identities[1] > 0
+        #     )
+        #     or (
+        #         red_identities[0] == 0
+        #         and green_identities[0] > 0
+        #         and green_identities[1] > 0
+        #     )
+        #     or (
+        #         red_identities[1] == 0
+        #         and green_identities[0] > 0
+        #         and green_identities[1] > 0
+        #     )
+        # ):
+        if (sum(green_identities) == 0 or sum(red_identities) == 0):
+            return (
+                None,
+                None,
+                None,
+                None,
+            )  # missing any colour on both sides
+        if (
+            green_identities[0] - red_identities[0]
+            > green_identities[1] - red_identities[1]
+        ):
             green_buoy_cluster = 0
-        else:
+        elif (
+            green_identities[0] - red_identities[0]
+            < green_identities[1] - red_identities[1]
+        ):
             green_buoy_cluster = 1
+        else:
+            return None, None, None, None  # undetermined
+
         green_buoy_pose = cluster_centers[green_buoy_cluster]
         red_buoy_pose = cluster_centers[1 - green_buoy_cluster]
         gate_position = [
@@ -308,12 +348,20 @@ class RedGreenGateDetection(Node):
             green_buoy_pose[1] - red_buoy_pose[1], green_buoy_pose[0] - red_buoy_pose[0]
         )
         gate_width = np.linalg.norm(np.array(green_buoy_pose) - np.array(red_buoy_pose))
-        # print(gate_position, gate_orientation, gate_width)
+        # the probability of gate being a gate depends on the difference in identities of the buoys in each cluster.
+        probability = abs(
+            (
+                green_identities[0]
+                - green_identities[1]
+                + red_identities[1]
+                - red_identities[0]
+            )
+        ) / sum(green_identities + red_identities)
         if self.is_ned:
             gate_orientation += -np.pi / 2
         else:
             gate_orientation += np.pi / 2
-        return gate_position, gate_orientation, gate_width
+        return gate_position, gate_orientation, gate_width, probability
 
     @staticmethod
     def distance_point_to_vector(v1, v2):
@@ -363,7 +411,9 @@ class RedGreenGateDetection(Node):
         output_gates = []
         for pair in best_pairs:
             gates = vectors[pair[0][0]], vectors[pair[0][1]]
-            gates = sorted(gates, key=lambda x: np.dot(x[:2], self.forward_direction))
+            gates = sorted(
+                gates, key=lambda x: np.dot(x[:2], self.vehicle_forward_direction)
+            )
             for gate in gates:
                 if np.dot(gate[2:], self.forward_direction) < 0:
                     gate[2:] = -gate[2:]
@@ -413,7 +463,7 @@ class RedGreenGateDetection(Node):
 
         # Create a TransformStamped message for entrance gate
         entrance_transform = TransformStamped()
-        entrance_transform.header.stamp = self.get_clock().now().to_msg()
+        entrance_transform.header.stamp = self.header.stamp
         entrance_transform.header.frame_id = "map" + ("_ned" if self.is_ned else "")
         entrance_transform.child_frame_id = "entrance_gate" + (
             "_ned" if self.is_ned else ""
@@ -443,6 +493,18 @@ class RedGreenGateDetection(Node):
         self.tf_broadcaster.sendTransform(entrance_transform)
         self.tf_broadcaster.sendTransform(exit_transform)
 
+
+    def get_relative_position(self, gate):
+        """Calculate the relative position of the gate to the vehicle."""
+        return np.array([
+            gate.hypothesis.kinematics.pose_with_covariance.pose.position.x - self.odom_msg.pose.pose.position.x,
+            gate.hypothesis.kinematics.pose_with_covariance.pose.position.y - self.odom_msg.pose.pose.position.y
+        ])
+
+    def dot_with_forward_direction(self, relative_position):
+        """Compute the dot product of the relative position with the vehicle's forward direction."""
+        return np.dot(relative_position, self.vehicle_forward_direction)
+
     def show_buoys(self):
         if not self.buoys:
             return
@@ -461,7 +523,7 @@ class RedGreenGateDetection(Node):
             n_clusters=None,  # Set to None to allow distance-based threshold
             # distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
             # linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
-            distance_threshold=15,  # Similar to 'eps', defines max distance for clusters
+            distance_threshold=20,  # Similar to 'eps', defines max distance for clusters
             linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
@@ -497,7 +559,9 @@ class RedGreenGateDetection(Node):
             # logic for calculating gate pose given cluster of buoy poses
             cluster_tids = [list(self.buoys.keys())[i] for i in cluster]
             cluster_details = [(tid, self.buoys[tid]) for tid in cluster_tids]
-            gate_position, yaw, width = self.calculate_gate_pose(cluster_details)
+            gate_position, yaw, width, probability = self.calculate_gate_pose(
+                cluster_details
+            )
             if gate_position is None:
                 continue
             gate_detection = DetectedObject3D()
@@ -522,7 +586,7 @@ class RedGreenGateDetection(Node):
             gate_detection.hypothesis.shape.dimensions.x = 0.5
             gate_detection.hypothesis.shape.dimensions.y = width
             gate_detection.hypothesis.shape.dimensions.z = 1.0
-
+            gate_detection.hypothesis.probability = probability
             gate_detections.objects.append(gate_detection)
 
         # closest gate
@@ -549,10 +613,10 @@ class RedGreenGateDetection(Node):
         closest_gate_infront = None
         if len(gate_detections.objects) > 0:
             closest_gate = gate_detections.objects[0]
-            print(f"closest gate: {closest_gate}")
+            # print(f"closest gate: {closest_gate}")
         if len(gate_detections.objects) > 1:
             second_closest_gate = gate_detections.objects[1]
-            print(f"second closest gate: {second_closest_gate}")
+            # print(f"second closest gate: {second_closest_gate}")
         gates_infront = [
             gate
             for gate in gate_detections.objects
@@ -567,7 +631,24 @@ class RedGreenGateDetection(Node):
             )
             > 0
         ]
-        # sort by deviation from forward direction
+        # # remove gates > 40m to left or right of vehicle
+        # gates_infront = [
+        #     gate
+        #     for gate in gates_infront
+        #     if np.abs(
+        #         np.dot(
+        #             [
+        #                 gate.hypothesis.kinematics.pose_with_covariance.pose.position.x
+        #                 - self.odom_msg.pose.pose.position.x,
+        #                 gate.hypothesis.kinematics.pose_with_covariance.pose.position.y
+        #                 - self.odom_msg.pose.pose.position.y,
+        #             ],
+        #             self.vehicle_forward_direction,
+        #         )
+        #     )
+        #     < 40
+        # ]
+        # sort by distance from vehicle forward direction
         gates_infront = sorted(
             gates_infront,
             key=lambda x: np.abs(
@@ -586,7 +667,7 @@ class RedGreenGateDetection(Node):
         )
         if len(gates_infront) > 0:
             closest_gate_infront = gates_infront[0]
-            print(f"closest gate infront: {gates_infront[0]}")
+            # print(f"closest gate infront: {gates_infront[0]}")
 
         self.gate_detections_pub.publish(gate_detections)
         gate_pairs = self.calculate_gate_entrance_exit_pairs(gate_detections)
