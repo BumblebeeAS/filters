@@ -113,6 +113,7 @@ install(PROGRAMS
   scripts/lidar_bbox_extractor.py
   scripts/detect_red_buoy.py
   scripts/obstacles_management_server.py
+  scripts/detected_object_2d_filter_projection_bottom_facing.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
