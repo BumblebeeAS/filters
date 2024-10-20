@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from sklearn.cluster import HDBSCAN
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped
 from bb_perception_msgs.msg import (
     DetectedObject3DArray,
 )
@@ -77,7 +77,7 @@ class ClusterDetectedObject3D(Node):
         # Create dict for a queue of every class
         self.class_queues = defaultdict(lambda: deque(maxlen=queue_size))
         self.hdb = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
-        self.cluster_timer_callback = self.create_timer(
+        self.cluster_timer = self.create_timer(
             cluster_interval, self.cluster_timer_callback
         )
 
@@ -97,7 +97,6 @@ class ClusterDetectedObject3D(Node):
             self.get_logger().info(
                 f"Enqueue detection for {self.id_to_name[obj.hypothesis.class_id]} with {position}"
             )
-            self.class_queues[obj.hypothesis.class_id].append(position)
             # Add publisher for each class
             if obj.hypothesis.class_id not in self.cluster_pose_publishers:
                 self.cluster_pose_publishers[obj.hypothesis.class_id] = (
@@ -107,6 +106,7 @@ class ClusterDetectedObject3D(Node):
                         10,
                     )
                 )
+            self.class_queues[obj.hypothesis.class_id].append(position)
 
     def merge_cluster(self, positions) -> PoseStamped:
         """Average out the positions in the cluster"""
@@ -121,12 +121,6 @@ class ClusterDetectedObject3D(Node):
         average_pose.pose.position.x = average_position[0] / len(positions)
         average_pose.pose.position.y = average_position[1] / len(positions)
         average_pose.pose.position.z = average_position[2] / len(positions)
-        lie_flat = Quaternion()
-        lie_flat.w = 1.0
-        lie_flat.x = 0.0
-        lie_flat.y = 0.0
-        lie_flat.z = 0.0
-        average_pose.pose.orientation = lie_flat
         return average_pose
 
     def cluster_timer_callback(self):
@@ -138,18 +132,13 @@ class ClusterDetectedObject3D(Node):
                 )
                 continue
             # if only one detection, no need for clustering
-            if len(position_queue) <= 1:
+            if len(position_queue) == 1:
                 single_pose = PoseStamped()
                 single_pose.header.frame_id = self.pose_frame
                 single_pose.header.stamp = self.get_clock().now().to_msg()
                 single_pose.pose.position.x = position_queue[0][0]
                 single_pose.pose.position.y = position_queue[0][1]
                 single_pose.pose.position.z = position_queue[0][2]
-                lie_flat = Quaternion()
-                lie_flat.w = 1.0
-                lie_flat.x = 0.0
-                lie_flat.y = 0.0
-                lie_flat.z = 0.0
                 self.cluster_pose_publishers[class_id].publish(single_pose)
                 continue
 
