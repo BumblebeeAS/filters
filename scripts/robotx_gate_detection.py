@@ -15,7 +15,7 @@ TODO: expose the setting of direction as service.
 
 Parameters:
 - `objects_config` (str): Path to the configuration file for object schemas.
-
+-  `ros2 param set /gate_detection objects_config new_config.yaml` to change config at runtime
 Publications:
 - `/asv4/robotx/gates/debug` (sensor_msgs/Image): Debug image showing buoy positions and gates.
 - `/asv4/vision/gate_detections` (bb_perception_msgs/DetectedObject3DArray): Detected gates.
@@ -69,12 +69,13 @@ class GateDetection(Node):
         self.image = None
         self.declare_parameter("debug", True)
         self.debug = self.get_parameter("debug").get_parameter_value().bool_value
-        self.past_buoy_ids = set()
-        self.is_ned = False
+        self.past_buoy_ids = set() # ID of buoys that has been processed, set to avoid duplicates 
+        self.is_ned = False #using enu 
         self.header = None
         self.initial_pose_estimate = None
-        self.R = np.eye(3)
-        self.detector_source = DetectorSource(
+        self.R = np.eye(3) # initialise rotation matrix to a 3x3 identity matrix (no transformation)
+        # detector source metadata to encapsulates information about the sensorZZ
+        self.detector_source = DetectorSource( 
             sensor_name="gate_detector",
             frame_id="asv4/base_link",
             category=DetectorSource.LIDAR,
@@ -86,6 +87,7 @@ class GateDetection(Node):
             / "objects_schema.json"
         )
         self.objects_schema = load_schema(objects_schema_path)
+    
         self.declare_parameter("objects_config", "robotx.yaml")
         self.objects_config = get_config(
             Path(get_package_share_directory("ml_detector"))
@@ -101,6 +103,8 @@ class GateDetection(Node):
         self.id_to_name = {
             obj["label"]: obj["name"] for obj in self.objects_config["objects"]
         }
+        if self.debug :
+            print(self.id_to_name)
         self.gate_geofence = None
         self.name_to_id = {v: k for k, v in self.id_to_name.items()}
         self.green_buoy_id = self.name_to_id["green_cylinder"]
@@ -108,18 +112,23 @@ class GateDetection(Node):
         self.white_buoy_id = self.name_to_id["white_cylinder"]
         self.unknown_id = self.name_to_id["unknown"]
         self.gate_id = self.name_to_id["gate"]
+        self.gate_left_id =  self.name_to_id["gate_left"]
+        self.gate_middle_id = self.name_to_id["gate_middle"]
+        self.gate_right_id = self.name_to_id["gate_right"]
+        
         self.vehicle_position = None
 
         self.latest_poses = None
 
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
         self.use_heading = True
-        # TODO: expose this as service or parameter
+        self.declare_parameter("heading_direction", 180.0) # degrees enu for nbpark # point west
+        self.declare_parameter("heading_direction", -30.0) # degrees enu for rsyc
         self.heading_direction = np.deg2rad(
-            180
-        )  # degrees enu # for nbpark # point west
-        # self.heading_direction = np.deg2rad(-30) # degrees enu for rsyc
-
+            self.get_parameter("heading_direction").get_parameter_value().double_value
+        ) 
+        
+        
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([(c, -s), (s, c)])
