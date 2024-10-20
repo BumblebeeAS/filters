@@ -95,7 +95,7 @@ class ClusterDetectedObject3D(Node):
                 ]
             )
             self.get_logger().info(
-                f"Enqueue detection for {obj.hypothesis.class_id} with {position}"
+                f"Enqueue detection for {self.id_to_name[obj.hypothesis.class_id]} with {position}"
             )
             self.class_queues[obj.hypothesis.class_id].append(position)
             # Add publisher for each class
@@ -133,9 +133,11 @@ class ClusterDetectedObject3D(Node):
         """Cluster detections for each object in queue"""
         for class_id, position_queue in self.class_queues.items():
             if not position_queue:
-                self.get_logger().warn(f"No detections to cluster for class {class_id}")
+                self.get_logger().warn(
+                    f"No detections to cluster for class {self.id_to_name[class_id]}"
+                )
                 continue
-            #if only one detection, no need for clustering
+            # if only one detection, no need for clustering
             if len(position_queue) <= 1:
                 single_pose = PoseStamped()
                 single_pose.header.frame_id = self.pose_frame
@@ -171,7 +173,7 @@ class ClusterDetectedObject3D(Node):
             largest_cluster_positions = clusters[largest_cluster_label]
             clustered_average_pose = self.merge_cluster(largest_cluster_positions)
             self.get_logger().info(
-                f"Publishing clustered pose with {class_id} with {clustered_average_pose.pose.position}"
+                f"Publishing clustered pose with {self.id_to_name[class_id]} with {clustered_average_pose.pose.position}"
             )
             self.cluster_pose_publishers[class_id].publish(clustered_average_pose)
 

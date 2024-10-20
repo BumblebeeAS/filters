@@ -54,7 +54,6 @@ def generate_launch_description():
                         "height_offset_topic": "/uav2/height_offset",
                         "output_detections_topic": "/uav2/bottom_cam/projected_3d",
                         "objects_config": "drone.yaml",
-                        "inflate_height": 0.1,
                     }
                 ],
             ),

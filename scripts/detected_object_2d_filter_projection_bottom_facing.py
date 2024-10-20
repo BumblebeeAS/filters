@@ -44,10 +44,6 @@ class DetectedObject2DProjection(Node):
             .get_parameter_value()
             .string_array_value
         )
-        self.declare_parameter("inflate_height", 0.0)
-        self.inflate_height = (
-            self.get_parameter("inflate_height").get_parameter_value().double_value
-        )
         self.declare_parameter("dist_limit", 60.0)
         self.dist_limit = (
             self.get_parameter("dist_limit").get_parameter_value().double_value
@@ -200,7 +196,7 @@ class DetectedObject2DProjection(Node):
                     detection.centre_x,
                     detection.centre_y,
                     detection.bbox_width,
-                    detection.bbox_height * (1.0 + self.inflate_height),
+                    detection.bbox_height,
                     detection_msg.sensor_pose,
                 )
                 if len(ray_ends) == 0:
