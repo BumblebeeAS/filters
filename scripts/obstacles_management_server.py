@@ -211,16 +211,19 @@ class HypothesisManager:
 
     def _prune_hypotheses(self):
         """Remove old hypotheses if the number exceeds `max_num_hypothesis`."""
+        _to_remove = set()
+        _to_remove |= self.to_remove
+        self.to_remove.clear()
         while len(self.latest_hypotheses) > self.max_num_hypothesis:
             oldest_hypothesis = self.latest_hypotheses.pop()
-            LOGGER.info("obstacle %s removed", oldest_hypothesis)
-            del self.hypotheses[oldest_hypothesis]
-        if len(self.to_remove) > 0:
-            for hyp_id in self.to_remove:
-                LOGGER.info("obstacle %s removed", hyp_id)
+            LOGGER.info("obstacle %s removed, %s %s", oldest_hypothesis, self.max_num_hypothesis,
+                        self.latest_hypotheses)
+            # del self.hypotheses[oldest_hypothesis]
+            _to_remove.add(oldest_hypothesis)
+        if len(_to_remove) > 0:
+            for hyp_id in _to_remove:
+                LOGGER.info("obstacle %s removed %s", hyp_id, _to_remove)
                 del self.hypotheses[hyp_id]
-                self.latest_hypotheses.remove(hyp_id)
-            self.to_remove.clear()
 
     def get_all_hypotheses(self):
         """Get all current hypotheses for output purposes."""
@@ -461,7 +464,10 @@ class ObstaclesManagementServer(Node):
         return True
 
     def detections_callback(self, msg):
-        self.latest_stamp = Time.from_msg(msg.header.stamp)
+        if self.latest_stamp is None:
+            self.latest_stamp = Time.from_msg(msg.header.stamp)
+        else:
+            self.latest_stamp = max(Time.from_msg(msg.header.stamp), self.latest_stamp)
         debug_str = "-----------------------------------"
         # Process each detected object
         for detection in msg.objects:
@@ -494,6 +500,7 @@ class ObstaclesManagementServer(Node):
         # Gather all hypotheses
         filtered_detections = DetectedObject3DArray()
         filtered_detections.header = msg.header
+        filtered_detections.header.stamp = self.get_clock().now().to_msg()
         filtered_detections.objects = []
         for manager in self.hypothesis_managers.values():
             debug_str += f"\n{manager.name}: {len(manager.hypotheses)}/{manager.max_num_hypothesis}\n"
@@ -540,7 +547,7 @@ class ObstaclesManagementServer(Node):
                 elif (
                     not _in_perceptive_range
                     and _last_updated.nanoseconds / 1e9 > self.max_disappear_time * 3
-                    and sum(identities.get_counter().values()) < 10
+                    and sum(identities.get_counter().values()) < 0.5 * manager.max_num_hypothesis
                 ):
                     # remove the detection if it is not in perceptive range and has not been updated for a long time and few detections
                     to_remove.add(hyp_id)
@@ -550,7 +557,7 @@ class ObstaclesManagementServer(Node):
                     for k, v in identities.get_counter().items()
                     if v > 0
                 }
-                debug_str += f"{hyp_id}: {median_position} {best_identity} {tids} {identity_str} {_last_updated.nanoseconds/1e9} {_in_perceptive_range}\n"
+                debug_str += f"{hyp_id}: {median_position} {best_identity} {tids} {identity_str} {_last_updated.nanoseconds/1e9} {self.latest_stamp} {_in_perceptive_range}\n"
             for hyp_id in to_remove:
                 manager.to_remove.add(hyp_id)
         THROTTLE_LOG_INFO(debug_str)

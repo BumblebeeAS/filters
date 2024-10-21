@@ -165,6 +165,8 @@ class DetectedObject2DProjection(Node):
                     )
                     continue
 
+                if detection.bbox_width == 0 or detection.bbox_height == 0:
+                    continue
                 # Compute the ray end points based on camera intrinsics and detection center
                 object_bottom_z = self.estimated_object_bottom.get(
                     detection.hypothesis.class_id, 0.0
