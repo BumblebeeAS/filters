@@ -23,6 +23,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo
 from transforms3d.quaternions import quat2mat
+from nav_msgs.msg import Odometry
 
 
 class DetectedObject2DProjection(Node):
@@ -139,6 +140,7 @@ class DetectedObject2DProjection(Node):
         )
         self.height_offset_subscriber.registerCallback(self.height_offset_callback)
         self.height_offset = 0.0
+        self.odom_sub = Subscriber(self, Odometry, "/uav2/odom_frd", qos_profile=qos)
         self.time_sync = TimeSynchronizer([*self.detection_subscribers], 10)
         self.time_sync.registerCallback(self.callback)
 
@@ -201,6 +203,7 @@ class DetectedObject2DProjection(Node):
                 )
                 if len(ray_ends) == 0:
                     continue
+                # self.get_logger().info(f"{ray_ends}")
 
                 # Populate the DetectedObject3D with the calculated rays
                 detected_object_3d.hypothesis.shape.dimensions.x = np.linalg.norm(
@@ -219,9 +222,12 @@ class DetectedObject2DProjection(Node):
                 estimated_pose.position.z += ray_ends[4].z
 
                 estimated_pose_stamped = PoseStamped()
+                estimated_pose_stamped.header.stamp.nanosec = detection_msg.header.stamp.nanosec
+                estimated_pose_stamped.header.stamp.sec = detection_msg.header.stamp.sec
                 estimated_pose_stamped.pose = estimated_pose
                 estimated_pose_stamped.header.frame_id = self.detection_frame
                 self.detection_pose_publisher.publish(estimated_pose_stamped)
+                # self.get_logger().info(f"position: X: {estimated_pose.position.x} Y: {estimated_pose.position.y} Z: {estimated_pose.position.z}")
                 # for i in range(4):
                 #     estimated_pose.position.x += ray_ends[i].x
                 #     estimated_pose.position.y += ray_ends[i].y
@@ -275,15 +281,15 @@ class DetectedObject2DProjection(Node):
 
             # Assuming the ray is projected out of the camera at a distance of 1 unit in the z direction
             ray_dir_camera = np.array([x_norm, y_norm, 1.0])
-            # self.logger.warning(f"ray_dir_camera {ray_dir_camera}")
             # Rotate the ray direction to align with the sensor_pose
             # Assuming sensor_pose is a Pose message
-            q = sensor_pose.orientation
-            rotation_matrix = quat2mat(attrgetter("w", "x", "y", "z")(q))
-            ray_dir_world = rotation_matrix @ ray_dir_camera
+            # q = sensor_pose.orientation
+            # rotation_matrix = quat2mat(attrgetter("w", "x", "y", "z")(q))
+            ray_dir_world = ray_dir_camera
 
-            t = abs(sensor_pose.position.z)
-            # self.logger.warning(f"t value {t}")
+            # t = abs(sensor_pose.position.z)
+            t = 10.0
+            self.logger.warning(f"t value {t}")
 
             ray_end = Point(
                 x=sensor_pose.position.x + ray_dir_world[0] * t,
@@ -292,6 +298,7 @@ class DetectedObject2DProjection(Node):
             )
 
             rays_end_points.append(ray_end)
+            self.logger.warning(f"ray_dir_camera {ray_dir_camera}\nray_end_points{rays_end_points}")
         return rays_end_points
 
 

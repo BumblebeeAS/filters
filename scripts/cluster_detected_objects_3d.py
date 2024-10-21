@@ -160,6 +160,11 @@ class ClusterDetectedObject3D(Node):
                     largest_cluster_size = len(cluster)
                     largest_cluster_label = label
             largest_cluster_positions = clusters[largest_cluster_label]
+            if len(largest_cluster_positions) == 0:
+                self.get_logger().info(
+                    f"Cluster has no positions"
+                )
+                continue
             clustered_average_pose = self.merge_cluster(largest_cluster_positions)
             self.get_logger().info(
                 f"Publishing clustered pose with {self.id_to_name[class_id]} with {clustered_average_pose.pose.position}"
