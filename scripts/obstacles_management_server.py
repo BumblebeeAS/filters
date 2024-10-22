@@ -201,7 +201,14 @@ class HypothesisManager:
                 self._mark_as_latest(new_hypothesis_id)
 
             # Ensure we don't exceed the max number of hypotheses
-            self._prune_hypotheses()
+            _to_remove = set()
+            while len(self.latest_hypotheses) > self.max_num_hypothesis:
+                oldest_hypothesis = self.latest_hypotheses.pop()
+                LOGGER.info("obstacle %s removed, %s %s", oldest_hypothesis, self.max_num_hypothesis,
+                            self.latest_hypotheses)
+                # del self.hypotheses[oldest_hypothesis]
+                _to_remove.add(oldest_hypothesis)
+            self._prune_hypotheses(_to_remove)
 
     def _mark_as_latest(self, hypothesis_id):
         """Mark a hypothesis as recently updated, keeping the queue size within limits."""
@@ -209,21 +216,13 @@ class HypothesisManager:
             self.latest_hypotheses.remove(hypothesis_id)
         self.latest_hypotheses.appendleft(hypothesis_id)
 
-    def _prune_hypotheses(self):
+    def _prune_hypotheses(self, _to_remove=()):
         """Remove old hypotheses if the number exceeds `max_num_hypothesis`."""
-        _to_remove = set()
-        _to_remove |= self.to_remove
-        self.to_remove.clear()
-        while len(self.latest_hypotheses) > self.max_num_hypothesis:
-            oldest_hypothesis = self.latest_hypotheses.pop()
-            LOGGER.info("obstacle %s removed, %s %s", oldest_hypothesis, self.max_num_hypothesis,
-                        self.latest_hypotheses)
-            # del self.hypotheses[oldest_hypothesis]
-            _to_remove.add(oldest_hypothesis)
+
         if len(_to_remove) > 0:
             for hyp_id in _to_remove:
                 LOGGER.info("obstacle %s removed %s", hyp_id, _to_remove)
-                del self.hypotheses[hyp_id]
+                self.remove_hypothesis(hyp_id)
 
     def get_all_hypotheses(self):
         """Get all current hypotheses for output purposes."""
@@ -231,9 +230,8 @@ class HypothesisManager:
 
     def remove_hypothesis(self, hypothesis_id):
         """Remove a hypothesis from the manager."""
-        item = self.hypotheses.pop(hypothesis_id)
-        if item is None:
-            return
+        if hypothesis_id in self.hypotheses:
+            self.hypotheses.pop(hypothesis_id)
         if hypothesis_id in self.latest_hypotheses:
             self.latest_hypotheses.remove(hypothesis_id)
 
@@ -441,6 +439,9 @@ class ObstaclesManagementServer(Node):
             Point32(x=x, y=y, z=0.0) for x, y, z in self.perceptive_range_map
         ]
         self.perceptive_range_pub.publish(ps)
+        for manager in self.hypothesis_managers.values():
+            manager._prune_hypotheses(manager.to_remove)
+            manager.to_remove.clear()
 
     def det_in_perceptive_range(self, det):
         if self.vehicle_bl is None:
@@ -558,8 +559,7 @@ class ObstaclesManagementServer(Node):
                     if v > 0
                 }
                 debug_str += f"{hyp_id}: {median_position} {best_identity} {tids} {identity_str} {_last_updated.nanoseconds/1e9} {self.latest_stamp} {_in_perceptive_range}\n"
-            for hyp_id in to_remove:
-                manager.to_remove.add(hyp_id)
+            manager.to_remove |= to_remove
         THROTTLE_LOG_INFO(debug_str)
         self.detections_pub.publish(filtered_detections)
 

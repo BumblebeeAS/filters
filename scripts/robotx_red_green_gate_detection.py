@@ -100,8 +100,6 @@ class RedGreenGateDetection(Node):
         self.heading_direction = np.deg2rad(
             180
         )  # degrees enu # for nbpark # point west
-        # self.heading_direction = np.deg2rad(240)  # degrees enu for rsyc
-        # self.heading_direction = np.deg2rad(-30)  # degrees enu for rsyc
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([(c, -s), (s, c)])
@@ -134,51 +132,49 @@ class RedGreenGateDetection(Node):
             Odometry, "/asv4/nav/world", self.odom_callback, 10
         )
         self.create_timer(0.1, self.show_buoys)
-
+        
     def merge_close_detections(self, buoys, threshold=2.0):
-        # Convert the buoys dict to a list for easier manipulation
-        buoy_list = list(buoys.items())
-        if len(buoy_list) < 2:
+        if len(buoys) < 2:
             return buoys
-        positions = np.array(
-            [buoy[1][:2] for buoy in buoy_list]
-        )  # Extract buoy positions (x, y)
 
-        # Calculate pairwise distances
-        distances = squareform(pdist(positions))
+        buoy_list = list(buoys.items())
+        positions = np.array([buoy[1][:2] for buoy in buoy_list])  # Extract (x, y) positions
+        distances = squareform(pdist(positions))  # Pairwise distances
 
         merged_buoys = {}
         merged_ids = set()
 
-        for i in range(len(buoy_list)):
-            if buoy_list[i][0] in merged_ids:
+        for i, (buoy_id, buoy_data) in enumerate(buoy_list):
+            if buoy_id in merged_ids:
                 continue
-            merged_buoy = buoy_list[i][1]
+
+            # Initialize merged buoy data and count
+            merged_buoy = np.array(buoy_data, dtype=object)
             merged_count = 1
 
-            # Check all other buoys to see if they are within the threshold distance
+            # Find buoys within the threshold
             for j in range(i + 1, len(buoy_list)):
-                if buoy_list[j][0] in merged_ids:
+                other_buoy_id, other_buoy_data = buoy_list[j]
+                if other_buoy_id in merged_ids or distances[i, j] >= threshold:
                     continue
-                if distances[i, j] < threshold:
-                    # Merge positions (average the coordinates) and add class probabilities
-                    merged_buoy[:2] = [
-                        (merged_buoy[0] * merged_count + buoy_list[j][1][0])
-                        / (merged_count + 1),
-                        (merged_buoy[1] * merged_count + buoy_list[j][1][1])
-                        / (merged_count + 1),
-                    ]
-                    merged_buoy[2] = [
-                        merged_buoy[2][0] + buoy_list[j][1][2][0],
-                        merged_buoy[2][1] + buoy_list[j][1][2][1],
-                    ]
-                    merged_ids.add(buoy_list[j][0])
-                    merged_count += 1
 
-            # Add the merged buoy to the result
-            merged_buoys[buoy_list[i][0]] = merged_buoy
+                # Update position (average coordinates)
+                merged_buoy[:2] = (merged_buoy[:2] * merged_count + other_buoy_data[:2]) / (merged_count + 1)
+
+                # Add class probabilities
+                merged_buoy[2] = [
+                    merged_buoy[2][0] + other_buoy_data[2][0],
+                    merged_buoy[2][1] + other_buoy_data[2][1],
+                ]
+
+                merged_ids.add(other_buoy_id)
+                merged_count += 1
+
+            # Save the merged buoy
+            merged_buoys[buoy_id] = merged_buoy.tolist()
 
         return merged_buoys
+
 
     def get_new_gate_id(self):
         self.latest_gate_id += 1
@@ -496,6 +492,8 @@ class RedGreenGateDetection(Node):
 
     def get_relative_position(self, gate):
         """Calculate the relative position of the gate to the vehicle."""
+        if self.odom_msg is None:
+            return
         return np.array([
             gate.hypothesis.kinematics.pose_with_covariance.pose.position.x - self.odom_msg.pose.pose.position.x,
             gate.hypothesis.kinematics.pose_with_covariance.pose.position.y - self.odom_msg.pose.pose.position.y
@@ -507,6 +505,9 @@ class RedGreenGateDetection(Node):
 
     def show_buoys(self):
         if not self.buoys:
+            return
+    
+        if self.odom_msg is None:
             return
 
         # Extract buoy positions for clustering
@@ -543,6 +544,7 @@ class RedGreenGateDetection(Node):
 
         gate_detections = DetectedObject3DArray()
         gate_detections.header = self.header
+        gate_detections.header.stamp = self.get_clock().now().to_msg()
         gate_detections.name = "red_green_gate_detector"
         gate_detections.source = self.detector_source
 
