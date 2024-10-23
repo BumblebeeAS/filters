@@ -1,7 +1,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
-
+#TODO clean up launch file
 detected_object_3d_vis = ["/uav2/bottom_cam/projected_3d"]
 detected_object_2d_vis = ["/rn"]
 

@@ -149,9 +149,6 @@ class DetectedObject2DProjection(Node):
         self.height_offset = 0.0
 
     def callback(self, *detection_msgs):
-        self.logger.warning(
-            f"Callback started"
-        )
         detected_objects_3d_array = DetectedObject3DArray()
         detected_objects_3d_array.header.stamp = detection_msgs[0].header.stamp
         detected_objects_3d_array.header.frame_id = detection_msgs[0].header.frame_id
@@ -271,7 +268,7 @@ class DetectedObject2DProjection(Node):
             (u + w // 2, v - h // 2),  # Top-right corner
             (u, v),  # Center
         ]
-        self.logger.warning(f"Bounding Box corners {bbox_corners}")
+        # self.logger.warning(f"Bounding Box corners {bbox_corners}")
 
         rays_end_points = []
 
@@ -284,12 +281,12 @@ class DetectedObject2DProjection(Node):
             ray_dir_camera = np.array([x_norm, y_norm, 1.0])
             # Rotate the ray direction to align with the sensor_pose
             # Assuming sensor_pose is a Pose message
-            # q = sensor_pose.orientation
-            # rotation_matrix = quat2mat(attrgetter("w", "x", "y", "z")(q))
-            ray_dir_world = ray_dir_camera
+            q = sensor_pose.orientation
+            rotation_matrix = quat2mat(attrgetter("w", "x", "y", "z")(q))
+            ray_dir_world = rotation_matrix @ ray_dir_camera
 
-            # t = abs(sensor_pose.position.z)
-            t = 10.0
+            t = abs(sensor_pose.position.z)
+            # t = 10.0
             self.logger.warning(f"t value {t}")
 
             ray_end = Point(
@@ -299,7 +296,8 @@ class DetectedObject2DProjection(Node):
             )
 
             rays_end_points.append(ray_end)
-            self.logger.warning(f"ray_dir_camera {ray_dir_camera}\nray_end_points{rays_end_points}")
+            # self.logger.warning(f"ray_dir_camera {ray_dir_camera}\nray_end_points{rays_end_points}")
+            # self.logger.info(f"weeeeeee {sensor_pose}")
         return rays_end_points
 
 
