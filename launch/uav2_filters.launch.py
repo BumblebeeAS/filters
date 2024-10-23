@@ -3,7 +3,7 @@ from launch_ros.actions import Node
 
 
 detected_object_3d_vis = ["/uav2/bottom_cam/projected_3d"]
-detected_object_2d_vis = ["/uav2/bottom_cam/detections_2d"]
+detected_object_2d_vis = ["/rn"]
 
 
 def generate_launch_description():
@@ -48,8 +48,9 @@ def generate_launch_description():
                 parameters=[
                     {
                         "input_detections_topics": [
-                            "/uav2/bottom_cam/detections_2d",
+                            "/rn",
                         ],
+                        "camera_info_topics": ["/wide/left/camera_info"],
                         "detection_frame": "odom_ned",
                         "height_offset_topic": "/uav2/height_offset",
                         "output_detections_topic": "/uav2/bottom_cam/projected_3d",

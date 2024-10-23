@@ -23,7 +23,6 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo
 from transforms3d.quaternions import quat2mat
-from nav_msgs.msg import Odometry
 
 
 class DetectedObject2DProjection(Node):
@@ -140,7 +139,6 @@ class DetectedObject2DProjection(Node):
         )
         self.height_offset_subscriber.registerCallback(self.height_offset_callback)
         self.height_offset = 0.0
-        self.odom_sub = Subscriber(self, Odometry, "/uav2/odom_frd", qos_profile=qos)
         self.time_sync = TimeSynchronizer([*self.detection_subscribers], 10)
         self.time_sync.registerCallback(self.callback)
 
@@ -151,6 +149,9 @@ class DetectedObject2DProjection(Node):
         self.height_offset = 0.0
 
     def callback(self, *detection_msgs):
+        self.logger.warning(
+            f"Callback started"
+        )
         detected_objects_3d_array = DetectedObject3DArray()
         detected_objects_3d_array.header.stamp = detection_msgs[0].header.stamp
         detected_objects_3d_array.header.frame_id = detection_msgs[0].header.frame_id
@@ -203,7 +204,7 @@ class DetectedObject2DProjection(Node):
                 )
                 if len(ray_ends) == 0:
                     continue
-                # self.get_logger().info(f"{ray_ends}")
+                self.get_logger().info(f"{ray_ends}")
 
                 # Populate the DetectedObject3D with the calculated rays
                 detected_object_3d.hypothesis.shape.dimensions.x = np.linalg.norm(
@@ -270,7 +271,7 @@ class DetectedObject2DProjection(Node):
             (u + w // 2, v - h // 2),  # Top-right corner
             (u, v),  # Center
         ]
-        # self.logger.warning(f"Bounding Box corners {bbox_corners}")
+        self.logger.warning(f"Bounding Box corners {bbox_corners}")
 
         rays_end_points = []
 
