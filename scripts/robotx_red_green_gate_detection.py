@@ -184,6 +184,7 @@ class RedGreenGateDetection(Node):
             self.clustering_T = np.eye(2)
             self.inv_clustering_T = np.eye(2)
             self.forward_direction = None
+        self.gate_statuses.task_complete = False
 
     def configure_path_task_cb(self, request, response):
         self.configs = RedGreenGateConfig(
@@ -348,6 +349,11 @@ class RedGreenGateDetection(Node):
                 gate_info.passed = True
                 self.gate_statuses.passed_gates.append(gate_info)
                 self.get_logger().info(f"Passed gate {gate_info.track_id}")
+        if len(self.gate_statuses.passed_gates) >= self.configs.num_gates:
+            self.get_logger().info("All gates passed")
+            self.gate_statuses.task_complete = True
+        else:
+            self.gate_statuses.task_complete = False
 
     def detected_objects_callback(self, msg):
         self.buoys = {}
@@ -461,6 +467,8 @@ class RedGreenGateDetection(Node):
         )
 
     def calculate_gate_entrance_exit_pairs(self, gate_detections):
+        if gate_detections is None:
+            return
         def det_to_xyv(detection):
             p = detection.hypothesis.kinematics.pose_with_covariance.pose
             x, y = p.position.x, p.position.y
@@ -549,6 +557,26 @@ class RedGreenGateDetection(Node):
         tf.transform.rotation.y = quat[2]
         tf.transform.rotation.z = quat[3]
         return tf
+
+    def publish_next_closest_gate(self):
+        if self.gate_statuses is None:
+            return
+        if len(self.gate_statuses.closest_gate) == 0:
+            return
+        gate = self.gate_statuses.closest_gate[0]
+        next_closest_gate_transform = self.create_tf_stamped(
+            self.get_clock().now().to_msg(),
+            "next_closest_gate",
+            gate.gate_center.pose.position.x,
+            gate.gate_center.pose.position.y,
+            [
+                gate.gate_center.pose.orientation.w,
+                gate.gate_center.pose.orientation.x,
+                gate.gate_center.pose.orientation.y,
+                gate.gate_center.pose.orientation.z,
+            ]
+        )
+        self.tf_broadcaster.sendTransform(next_closest_gate_transform)
 
     def publish_gate_transform(self, entrance_gate, exit_gate):
         # Extract position and direction for entrance gate
@@ -719,13 +747,14 @@ class RedGreenGateDetection(Node):
         )
 
         self.gate_detections_pub.publish(gate_detections)
-        gate_pairs = self.calculate_gate_entrance_exit_pairs(gate_detections)
-        if len(gate_pairs) == 0:
-            best_pair = None
-        else:
-            best_pair = self.get_best_entrance_exit(gate_pairs)
-        if best_pair is not None:
-            self.publish_gate_transform(*best_pair)
+        if self.configs.prequali:
+            gate_pairs = self.calculate_gate_entrance_exit_pairs(self.latest_filtered_detections)
+            if len(gate_pairs) == 0:
+                best_pair = None
+            else:
+                best_pair = self.get_best_entrance_exit(gate_pairs)
+            if best_pair is not None:
+                self.publish_gate_transform(*best_pair)
         if self.debug:
             self.debug_visualization(
                 cluster_labels,
@@ -755,22 +784,17 @@ class RedGreenGateDetection(Node):
             # else:
             #     gate_info.passed = True
             #     self.gate_statuses.passed_gates.append(gate_info)
-        # sort by distance from vehicle forward direction
+        # sort by distance from latest vehicle position
         self.gate_statuses.detected_gates = sorted(
             self.gate_statuses.detected_gates,
-            key=lambda x: np.abs(
-                np.dot(
-                    np.array(
-                        [
-                            x.gate_center.pose.position.x
-                            - self.odom_msg.pose.pose.position.x,
-                            x.gate_center.pose.position.y
-                            - self.odom_msg.pose.pose.position.y,
-                        ]
-                    ),
-                    self.vehicle_forward_direction,
-                )
-            ),
+            key=lambda x: np.linalg.norm(
+                [
+                    x.gate_center.pose.position.x
+                    - self.odom_msg.pose.pose.position.x,
+                    x.gate_center.pose.position.y
+                    - self.odom_msg.pose.pose.position.y,
+                ]
+            )
         )
         if len(self.gate_statuses.detected_gates) > 0:
             self.gate_statuses.closest_gate = [self.gate_statuses.detected_gates[0]]
@@ -783,6 +807,7 @@ class RedGreenGateDetection(Node):
         else:
             self.gate_statuses.second_closest_gate = []
         self.gate_statuses_pub.publish(self.gate_statuses)
+        self.publish_next_closest_gate()
 
     def debug_visualization(self, cluster_labels, gate_detections, gate_statuses):
         if self.odom_msg is None:
