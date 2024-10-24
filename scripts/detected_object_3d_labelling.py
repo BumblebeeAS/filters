@@ -178,10 +178,10 @@ class DetectedObject3DLabelingNode(Node):
                     if len(track_counts) > 1
                     else 0
                 )
-                if count > 3 and count > 1.5 * second_most_common:
+                if count > 3 and count > 1.2 * second_most_common:
                     obj.hypothesis.class_id = most_common_class
                 else:
-                    # self.get_logger().info(f"top label not good enough {count > 4} {count} {second_most_common}")
+                    self.get_logger().info(f"top label not good enough {count > 3} {count} {second_most_common}")
                     obj.hypothesis.class_id = 0
 
                 total_counts = sum(track_counts.values())

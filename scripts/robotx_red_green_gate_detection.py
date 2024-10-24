@@ -70,6 +70,7 @@ class RedGreenGateConfig:
     scale_heading: bool = False
     min_gate_width: float = 6.0
     max_gate_width: float = 20.0
+    passed_threshold = 4.0  # threshold to mark gate as passed.
 
 
 class RedGreenGateDetection(Node):
@@ -326,7 +327,7 @@ class RedGreenGateDetection(Node):
         gate_info.track_id = det.hypothesis.track_id
         passed = det.hypothesis.track_id in self.gate_statuses.passed_gates
         for passed_gate in self.gate_statuses.passed_gates:
-            if self.distance_between_gates(gate_info, passed_gate) < 4.0:
+            if self.distance_between_gates(gate_info, passed_gate) < self.configs.passed_threshold:
                 passed = True
                 break
         gate_info.passed = passed
@@ -772,11 +773,15 @@ class RedGreenGateDetection(Node):
             ),
         )
         if len(self.gate_statuses.detected_gates) > 0:
-            self.gate_statuses.closest_gate.append(self.gate_statuses.detected_gates[0])
+            self.gate_statuses.closest_gate = [self.gate_statuses.detected_gates[0]]
+        else:
+            self.gate_statuses.closest_gate = []
         if len(self.gate_statuses.detected_gates) > 1:
-            self.gate_statuses.second_closest_gate.append(
+            self.gate_statuses.second_closest_gate = [
                 self.gate_statuses.detected_gates[1]
-            )
+            ]
+        else:
+            self.gate_statuses.second_closest_gate = []
         self.gate_statuses_pub.publish(self.gate_statuses)
 
     def debug_visualization(self, cluster_labels, gate_detections, gate_statuses):
@@ -869,7 +874,6 @@ class RedGreenGateDetection(Node):
         arrow_length = 20  # Adjust the arrow length as needed
         end_x = int(odom_x_scaled + arrow_length * np.cos(yaw))
         end_y = int(odom_y_scaled + arrow_length * np.sin(yaw))
-        print(f"Odom: {odom_x_scaled}, {odom_y_scaled}, {end_x}, {end_y}")
         # Draw an arrow for the vehicle's current odometry direction
         cv2.arrowedLine(
             image,
