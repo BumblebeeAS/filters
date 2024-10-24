@@ -23,6 +23,7 @@ from geometry_msgs.msg import Point, Point32, Quaternion, PolygonStamped
 from nav_msgs.msg import Odometry
 import time
 from threading import Lock
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 np.set_printoptions(formatter={"float": "{:0.3f}".format})
 LOGGER = logging.getLogger("obstacles_management")
@@ -376,6 +377,8 @@ class ObstaclesManagementServer(Node):
             for obstacle_name, config in self.obstacle_types.items()
         }
 
+        self.detections_sub_cb_group = MutuallyExclusiveCallbackGroup()
+
         # Subscribers and Publishers
         self.detection_subs = [
             self.create_subscription(
@@ -383,6 +386,7 @@ class ObstaclesManagementServer(Node):
                 topic,
                 self.detections_callback,
                 10,
+                callback_group=self.detections_sub_cb_group,
             )
             for topic in [
                 # "/asv4/vision/detections_2d/projected",

@@ -43,6 +43,9 @@ from bb_perception_msgs.msg import (
     DetectorSource,
     ObjectHypothesis,
 )
+
+from bb_robotx_msgs.msg import GateStatuses, GateInfo
+from bb_robotx_msgs.srv import ConfigurePathTask
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Pose, Quaternion, TransformStamped
 from nav_msgs.msg import Odometry
@@ -53,11 +56,27 @@ from sklearn.cluster import AgglomerativeClustering, KMeans
 from transforms3d.euler import euler2quat, quat2euler, quat2mat
 from tf2_ros.transform_broadcaster import TransformBroadcaster
 from scipy.spatial.distance import pdist, squareform
+from dataclasses import dataclass
+
+
+@dataclass
+class RedGreenGateConfig:
+    active: bool = False
+    reverse: bool = False
+    num_gates: int = 2
+    gate_heading: float = 180
+    specified_heading: bool = False
+    prequali: bool = False
+    scale_heading: bool = False
+    min_gate_width: float = 6.0
+    max_gate_width: float = 20.0
 
 
 class RedGreenGateDetection(Node):
     def __init__(self):
         super().__init__("red_green_gate_detection")
+        self.num_gates = 2
+
         self.buoys = {}
         self.bridge = CvBridge()
         self.image = None
@@ -95,27 +114,24 @@ class RedGreenGateDetection(Node):
         self.unknown_id = self.name_to_id["unknown"]
         self.gate_id = self.name_to_id["gate"]
 
-        # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
-        self.use_heading = True
-        self.heading_direction = np.deg2rad(
-            180
-        )  # degrees enu # for nbpark # point west
-        # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
-        c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
-        R = np.array([(c, -s), (s, c)])
-        self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
-        self.inv_clustering_T = np.linalg.inv(self.clustering_T)
-        self.forward_direction = R @ np.array([1, 0])
-        self.vehicle_forward_direction = np.array([1, 0])
-        self.buoy_id_to_gate_id = {}
+        self.configs = RedGreenGateConfig()
+
         self.latest_gate_id = -1
-        self.gate_poses = {}
+        self.vehicle_forward_direction = np.array([1, 0])
+
+        self.latest_filtered_detections = None
+        self.gate_statuses = None
+        self.reset()
+
         self.debug_image_scale = 10
         self.debug_pub = self.create_publisher(
             Image, "/asv4/robotx/red_green_gates/debug", 10
         )
         self.gate_detections_pub = self.create_publisher(
             DetectedObject3DArray, "/asv4/vision/red_green_gate_detections", 10
+        )
+        self.gate_statuses_pub = self.create_publisher(
+            GateStatuses, "/asv4/robotx/red_green_gate_statuses", 10
         )
 
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -128,17 +144,71 @@ class RedGreenGateDetection(Node):
             10,
         )
         self.odom_msg = None
+        self.configure_path_task_service = self.create_service(
+            ConfigurePathTask,
+            "/asv4/robotx/configure_path_task",
+            self.configure_path_task_cb,
+        )
+        self.filtered_detections_sub = self.create_subscription(
+            DetectedObject3DArray,
+            "/asv4/robotx/filtered_detections",
+            self.compute_gate_statuses,
+            10,
+        )
         self.odom_subscription = self.create_subscription(
             Odometry, "/asv4/nav/world", self.odom_callback, 10
         )
         self.create_timer(0.1, self.show_buoys)
-        
+
+    def reset(self):
+        self.buoys = {}
+        self.past_buoy_ids = set()
+        self.buoy_id_to_gate_id = {}
+        self.gate_poses = {}
+        self.gate_statuses = GateStatuses()
+
+        self.heading_direction = np.deg2rad(
+            180
+        )  # degrees enu # for nbpark # point west
+        # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
+        if self.configs.scale_heading:
+            c, s = np.cos(np.deg2rad(self.configs.gate_heading)), np.sin(
+                np.deg2rad(self.configs.gate_heading)
+            )
+            R = np.array([(c, -s), (s, c)])
+            self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
+            self.inv_clustering_T = np.linalg.inv(self.clustering_T)
+            self.forward_direction = R @ np.array([1, 0])
+        else:
+            self.clustering_T = np.eye(2)
+            self.inv_clustering_T = np.eye(2)
+            self.forward_direction = None
+
+    def configure_path_task_cb(self, request, response):
+        self.configs = RedGreenGateConfig(
+            active=request.active,
+            reverse=request.reverse,
+            num_gates=request.num_gates,
+            gate_heading=request.gate_heading,
+            specified_heading=request.specified_heading,
+            prequali=request.prequali,
+            scale_heading=request.scale_heading,
+            min_gate_width=request.min_gate_width,
+            max_gate_width=request.max_gate_width,
+        )
+        self.reset()
+        self.get_logger().info(f"Configured path task: {request}")
+        response.success = True
+        return response
+
     def merge_close_detections(self, buoys, threshold=2.0):
         if len(buoys) < 2:
             return buoys
 
         buoy_list = list(buoys.items())
-        positions = np.array([buoy[1][:2] for buoy in buoy_list])  # Extract (x, y) positions
+        positions = np.array(
+            [buoy[1][:2] for buoy in buoy_list]
+        )  # Extract (x, y) positions
         distances = squareform(pdist(positions))  # Pairwise distances
 
         merged_buoys = {}
@@ -159,7 +229,9 @@ class RedGreenGateDetection(Node):
                     continue
 
                 # Update position (average coordinates)
-                merged_buoy[:2] = (merged_buoy[:2] * merged_count + other_buoy_data[:2]) / (merged_count + 1)
+                merged_buoy[:2] = (
+                    merged_buoy[:2] * merged_count + other_buoy_data[:2]
+                ) / (merged_count + 1)
 
                 # Add class probabilities
                 merged_buoy[2] = [
@@ -174,7 +246,6 @@ class RedGreenGateDetection(Node):
             merged_buoys[buoy_id] = merged_buoy.tolist()
 
         return merged_buoys
-
 
     def get_new_gate_id(self):
         self.latest_gate_id += 1
@@ -226,6 +297,57 @@ class RedGreenGateDetection(Node):
             ]
         )
 
+        self.update_passed_gates()
+
+    def convert_det_to_gate_info(self, det):
+        gate_info = GateInfo()
+        gate_info.gate_width = det.hypothesis.shape.dimensions.y
+        gate_info.probability = det.hypothesis.probability
+        gate_info.track_age = det.hypothesis.classification_age
+        gate_info.gate_center.pose = (
+            det.hypothesis.kinematics.pose_with_covariance.pose
+        )
+        gate_info.gate_center.header = det.hypothesis.kinematics.header
+        if (
+            np.dot(
+                [
+                    det.hypothesis.kinematics.pose_with_covariance.pose.position.x
+                    - self.odom_msg.pose.pose.position.x,
+                    det.hypothesis.kinematics.pose_with_covariance.pose.position.y
+                    - self.odom_msg.pose.pose.position.y,
+                ],
+                self.vehicle_forward_direction,
+            )
+            > 0
+        ):
+            gate_info.is_in_front_vehicle = True
+        else:
+            gate_info.is_in_front_vehicle = False
+        gate_info.track_id = det.hypothesis.track_id
+        passed = det.hypothesis.track_id in self.gate_statuses.passed_gates
+        for passed_gate in self.gate_statuses.passed_gates:
+            if self.distance_between_gates(gate_info, passed_gate) < 4.0:
+                passed = True
+                break
+        gate_info.passed = passed
+        return gate_info
+
+    def update_passed_gates(self):
+        if not self.configs.active:
+            return
+
+        if self.odom_msg is None or self.latest_filtered_detections is None:
+            return
+
+        for gate_info in self.gate_statuses.detected_gates:
+            if gate_info.passed:
+                continue
+            distance = np.linalg.norm(self.get_relative_position(gate_info))
+            if distance < 2.0:
+                gate_info.passed = True
+                self.gate_statuses.passed_gates.append(gate_info)
+                self.get_logger().info(f"Passed gate {gate_info.track_id}")
+
     def detected_objects_callback(self, msg):
         self.buoys = {}
         if len(msg.objects) != 0:
@@ -258,17 +380,6 @@ class RedGreenGateDetection(Node):
                     det.hypothesis.probability / 2
                 )
 
-            # unsupported API by ML
-            # for class_ in det.hypothesis.classes:
-            #     self.get_logger().info(f"Class: {class_.class_id}, Score: {class_.score}")
-            #     if class_.class_id == self.red_buoy_id:  # red
-            #         self.buoys[det.hypothesis.track_id][2][0] += class_.score
-            #     elif class_.class_id == self.green_buoy_id:  # green
-            #         self.buoys[det.hypothesis.track_id][2][1] += class_.score
-            #     elif class_.class_id == self.unknown_id:
-            #         self.buoys[det.hypothesis.track_id][2][0] += class_.score / 2
-            #         self.buoys[det.hypothesis.track_id][2][1] += class_.score / 2
-
         # Merge close detections within 2 meters
         self.buoys = self.merge_close_detections(self.buoys, threshold=2.0)
 
@@ -282,7 +393,8 @@ class RedGreenGateDetection(Node):
         green_red_clusters = km.fit_predict(positions)
         cluster_centers = km.cluster_centers_
         if (
-            np.linalg.norm(cluster_centers[0] - cluster_centers[1]) < 6
+            np.linalg.norm(cluster_centers[0] - cluster_centers[1])
+            < self.configs.min_gate_width
         ):  # keep buoys at least 6m apart
             return None, None, None, None
         green_identities = [0, 0]  # green_red_cluster_0, green_red_cluster_1
@@ -292,29 +404,7 @@ class RedGreenGateDetection(Node):
             green_identities[cluster_number] += probabilities[1]
             red_identities[cluster_number] += probabilities[0]
 
-        # if (
-        #     (
-        #         green_identities[0] == 0
-        #         and red_identities[0] > 0
-        #         and red_identities[1] > 0
-        #     )
-        #     or (
-        #         green_identities[1] == 0
-        #         and red_identities[0] > 0
-        #         and red_identities[1] > 0
-        #     )
-        #     or (
-        #         red_identities[0] == 0
-        #         and green_identities[0] > 0
-        #         and green_identities[1] > 0
-        #     )
-        #     or (
-        #         red_identities[1] == 0
-        #         and green_identities[0] > 0
-        #         and green_identities[1] > 0
-        #     )
-        # ):
-        if (sum(green_identities) == 0 or sum(red_identities) == 0):
+        if sum(green_identities) == 0 or sum(red_identities) == 0:
             return (
                 None,
                 None,
@@ -410,9 +500,10 @@ class RedGreenGateDetection(Node):
             gates = sorted(
                 gates, key=lambda x: np.dot(x[:2], self.vehicle_forward_direction)
             )
-            for gate in gates:
-                if np.dot(gate[2:], self.forward_direction) < 0:
-                    gate[2:] = -gate[2:]
+            if self.forward_direction is not None:
+                for gate in gates:
+                    if np.dot(gate[2:], self.forward_direction) < 0:
+                        gate[2:] = -gate[2:]
             output_gates.append(gates)
         return output_gates
 
@@ -444,6 +535,20 @@ class RedGreenGateDetection(Node):
 
         return min(pairs, key=lambda x: dist(self.odom_msg, x[0]))
 
+    def create_tf_stamped(self, stamp, child_frame, x, y, quat):
+        tf = TransformStamped()
+        tf.header.stamp = stamp
+        tf.header.frame_id = "map" + ("_ned" if self.is_ned else "")
+        tf.child_frame_id = child_frame + ("_ned" if self.is_ned else "")
+        tf.transform.translation.x = x
+        tf.transform.translation.y = y
+        tf.transform.translation.z = 0.0
+        tf.transform.rotation.w = quat[0]
+        tf.transform.rotation.x = quat[1]
+        tf.transform.rotation.y = quat[2]
+        tf.transform.rotation.z = quat[3]
+        return tf
+
     def publish_gate_transform(self, entrance_gate, exit_gate):
         # Extract position and direction for entrance gate
         x_e, y_e, vx_e, vy_e = entrance_gate
@@ -458,46 +563,49 @@ class RedGreenGateDetection(Node):
         quat_ex = euler2quat(0, 0, yaw_ex)
 
         # Create a TransformStamped message for entrance gate
-        entrance_transform = TransformStamped()
-        entrance_transform.header.stamp = self.header.stamp
-        entrance_transform.header.frame_id = "map" + ("_ned" if self.is_ned else "")
-        entrance_transform.child_frame_id = "entrance_gate" + (
-            "_ned" if self.is_ned else ""
+        entrance_transform = self.create_tf_stamped(
+            self.get_clock().now().to_msg(), "entrance_gate", x_e, y_e, quat_e
         )
-        entrance_transform.transform.translation.x = x_e
-        entrance_transform.transform.translation.y = y_e
-        entrance_transform.transform.translation.z = 0.0
-        entrance_transform.transform.rotation.w = quat_e[0]
-        entrance_transform.transform.rotation.x = quat_e[1]
-        entrance_transform.transform.rotation.y = quat_e[2]
-        entrance_transform.transform.rotation.z = quat_e[3]
-
-        # Create a TransformStamped message for exit gate
-        exit_transform = TransformStamped()
-        exit_transform.header.stamp = self.get_clock().now().to_msg()
-        exit_transform.header.frame_id = "map" + ("_ned" if self.is_ned else "")
-        exit_transform.child_frame_id = "exit_gate" + ("_ned" if self.is_ned else "")
-        exit_transform.transform.translation.x = x_ex
-        exit_transform.transform.translation.y = y_ex
-        exit_transform.transform.translation.z = 0.0
-        exit_transform.transform.rotation.w = quat_ex[0]
-        exit_transform.transform.rotation.x = quat_ex[1]
-        exit_transform.transform.rotation.y = quat_ex[2]
-        exit_transform.transform.rotation.z = quat_ex[3]
+        exit_transform = self.create_tf_stamped(
+            self.get_clock().now().to_msg(), "exit_gate", x_ex, y_ex, quat_ex
+        )
 
         # Broadcast the transforms
         self.tf_broadcaster.sendTransform(entrance_transform)
         self.tf_broadcaster.sendTransform(exit_transform)
 
-
     def get_relative_position(self, gate):
         """Calculate the relative position of the gate to the vehicle."""
         if self.odom_msg is None:
             return
-        return np.array([
-            gate.hypothesis.kinematics.pose_with_covariance.pose.position.x - self.odom_msg.pose.pose.position.x,
-            gate.hypothesis.kinematics.pose_with_covariance.pose.position.y - self.odom_msg.pose.pose.position.y
-        ])
+        if isinstance(gate, GateInfo):
+            return np.array(
+                [
+                    gate.gate_center.pose.position.x - self.odom_msg.pose.pose.position.x,
+                    gate.gate_center.pose.position.y - self.odom_msg.pose.pose.position.y,
+                ]
+            )
+        return np.array(
+            [
+                gate.hypothesis.kinematics.pose_with_covariance.pose.position.x
+                - self.odom_msg.pose.pose.position.x,
+                gate.hypothesis.kinematics.pose_with_covariance.pose.position.y
+                - self.odom_msg.pose.pose.position.y,
+            ]
+        )
+
+    def distance_between_gates(self, gate1: GateInfo, gate2: GateInfo):
+        """Calculate the distance between two gates."""
+        return np.linalg.norm(
+            np.array(
+                [
+                    gate1.gate_center.pose.position.x
+                    - gate2.gate_center.pose.position.x,
+                    gate1.gate_center.pose.position.y
+                    - gate2.gate_center.pose.position.y,
+                ]
+            )
+        )
 
     def dot_with_forward_direction(self, relative_position):
         """Compute the dot product of the relative position with the vehicle's forward direction."""
@@ -506,14 +614,13 @@ class RedGreenGateDetection(Node):
     def show_buoys(self):
         if not self.buoys:
             return
-    
+
         if self.odom_msg is None:
             return
 
         # Extract buoy positions for clustering
         positions = np.array([[buoy[0], buoy[1]] for buoy in self.buoys.values()])
-        if self.use_heading:
-            positions = positions @ self.clustering_T.T
+        positions = positions @ self.clustering_T.T
 
         # # Apply DBSCAN clustering
         # dbscan = DBSCAN(
@@ -524,7 +631,7 @@ class RedGreenGateDetection(Node):
             n_clusters=None,  # Set to None to allow distance-based threshold
             # distance_threshold=12,  # Similar to 'eps', defines max distance for clusters
             # linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
-            distance_threshold=20,  # Similar to 'eps', defines max distance for clusters
+            distance_threshold=self.configs.max_gate_width,  # Similar to 'eps', defines max distance for clusters
             linkage="ward",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
         if len(positions) == 1:
@@ -610,67 +717,6 @@ class RedGreenGateDetection(Node):
             ),
         )
 
-        closest_gate = None
-        second_closest_gate = None
-        closest_gate_infront = None
-        if len(gate_detections.objects) > 0:
-            closest_gate = gate_detections.objects[0]
-            # print(f"closest gate: {closest_gate}")
-        if len(gate_detections.objects) > 1:
-            second_closest_gate = gate_detections.objects[1]
-            # print(f"second closest gate: {second_closest_gate}")
-        gates_infront = [
-            gate
-            for gate in gate_detections.objects
-            if np.dot(
-                [
-                    gate.hypothesis.kinematics.pose_with_covariance.pose.position.x
-                    - self.odom_msg.pose.pose.position.x,
-                    gate.hypothesis.kinematics.pose_with_covariance.pose.position.y
-                    - self.odom_msg.pose.pose.position.y,
-                ],
-                self.vehicle_forward_direction,
-            )
-            > 0
-        ]
-        # # remove gates > 40m to left or right of vehicle
-        # gates_infront = [
-        #     gate
-        #     for gate in gates_infront
-        #     if np.abs(
-        #         np.dot(
-        #             [
-        #                 gate.hypothesis.kinematics.pose_with_covariance.pose.position.x
-        #                 - self.odom_msg.pose.pose.position.x,
-        #                 gate.hypothesis.kinematics.pose_with_covariance.pose.position.y
-        #                 - self.odom_msg.pose.pose.position.y,
-        #             ],
-        #             self.vehicle_forward_direction,
-        #         )
-        #     )
-        #     < 40
-        # ]
-        # sort by distance from vehicle forward direction
-        gates_infront = sorted(
-            gates_infront,
-            key=lambda x: np.abs(
-                np.dot(
-                    np.array(
-                        [
-                            x.hypothesis.kinematics.pose_with_covariance.pose.position.x
-                            - self.odom_msg.pose.pose.position.x,
-                            x.hypothesis.kinematics.pose_with_covariance.pose.position.y
-                            - self.odom_msg.pose.pose.position.y,
-                        ]
-                    ),
-                    self.vehicle_forward_direction,
-                )
-            ),
-        )
-        if len(gates_infront) > 0:
-            closest_gate_infront = gates_infront[0]
-            # print(f"closest gate infront: {gates_infront[0]}")
-
         self.gate_detections_pub.publish(gate_detections)
         gate_pairs = self.calculate_gate_entrance_exit_pairs(gate_detections)
         if len(gate_pairs) == 0:
@@ -679,148 +725,234 @@ class RedGreenGateDetection(Node):
             best_pair = self.get_best_entrance_exit(gate_pairs)
         if best_pair is not None:
             self.publish_gate_transform(*best_pair)
-
         if self.debug:
-            if self.odom_msg is None:
-                return
-            odom_x = self.odom_msg.pose.pose.position.x
-            odom_y = self.odom_msg.pose.pose.position.y
-            min_x = min(buoy[0] for buoy in self.buoys.values())
-            max_x = max(buoy[0] for buoy in self.buoys.values())
-            min_y = min(buoy[1] for buoy in self.buoys.values())
-            max_y = max(buoy[1] for buoy in self.buoys.values())
-            min_x = min(odom_x, min_x)
-            max_x = max(odom_x, max_x)
-            min_y = min(odom_y, min_y)
-            max_y = max(odom_y, max_y)
-
-            extension = max(0, 50 - max_x + min_x, 50 - max_y + min_y)
-            min_x -= int(extension / 2)
-            max_x += int(extension / 2)
-            min_y -= int(extension / 2)
-            max_y += int(extension / 2)
-
-            min_x *= self.debug_image_scale
-            max_x *= self.debug_image_scale
-            min_y *= self.debug_image_scale
-            max_y *= self.debug_image_scale
-            if max_y - min_y > 2000 or max_x - min_x > 2000:
-                print("Image too large, not publishing")
-                return
-
-            image = 255 * np.ones(
-                (
-                    int(max_y - min_y + 1),
-                    int(max_x - min_x + 1),
-                    3,
-                ),
-                np.uint8,
+            self.debug_visualization(
+                cluster_labels,
+                gate_detections,
+                self.gate_statuses
             )
 
-            for i, (track_id, buoy) in enumerate(self.buoys.items()):
-                x, y, [red, green] = buoy
-                x_scaled = int(x * self.debug_image_scale - min_x)
-                y_scaled = int(y * self.debug_image_scale - min_y)
+    def compute_gate_statuses(self, gate_detections):
+        if not self.configs.active:
+            return
+        if self.odom_msg is None:
+            self.get_logger().warn("No odometry message received")
+            return
+        gate_detections.objects = [
+            gate
+            for gate in gate_detections.objects
+            if gate.hypothesis.class_id == self.gate_id
+        ]
+        self.latest_filtered_detections = gate_detections
+        self.gate_statuses.header = gate_detections.header
+        self.gate_statuses.detected_gates = []
 
-                # Assign color based on cluster label
-                cluster_label = cluster_labels[i]
-                color = self.get_color(cluster_label)
-
-                # Draw a triangle for green buoys and a circle for red buoys
-                if green > red:
-                    # Draw triangle for green buoy
-                    points = np.array(
+        for gate in self.latest_filtered_detections.objects:
+            gate_info = self.convert_det_to_gate_info(gate)
+            if not gate_info.passed:
+                self.gate_statuses.detected_gates.append(gate_info)
+            # else:
+            #     gate_info.passed = True
+            #     self.gate_statuses.passed_gates.append(gate_info)
+        # sort by distance from vehicle forward direction
+        self.gate_statuses.detected_gates = sorted(
+            self.gate_statuses.detected_gates,
+            key=lambda x: np.abs(
+                np.dot(
+                    np.array(
                         [
-                            [x_scaled, y_scaled - 15],
-                            [x_scaled - 15, y_scaled + 15],
-                            [x_scaled + 15, y_scaled + 15],
-                        ],
-                        np.int32,
-                    )
-                    cv2.polylines(
-                        image, [points], isClosed=True, color=color, thickness=2
-                    )
-                else:
-                    # Draw circle for red buoy
-                    cv2.circle(image, (x_scaled, y_scaled), 10, color, -1)
-
-                # Display track_id and probabilities as text
-                cv2.putText(
-                    image,
-                    f"{track_id}",
-                    (x_scaled, y_scaled - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    1,
-                )
-
-            # draw arrow where vehicle is
-            # Plot the vehicle's current odometry
-            odom_x_scaled = int(odom_x * self.debug_image_scale - min_x)
-            odom_y_scaled = int(odom_y * self.debug_image_scale - min_y)
-            # Draw a star for the vehicle's current position
-            cv2.drawMarker(
-                image,
-                (odom_x_scaled, odom_y_scaled),
-                (0, 0, 0),
-                markerType=cv2.MARKER_STAR,
-                markerSize=20,
-                thickness=2,
-            )
-
-            # for each gate detection, draw arrow, direction based on yaw
-            for gate_detection in gate_detections.objects:
-                gate_pose = (
-                    gate_detection.hypothesis.kinematics.pose_with_covariance.pose
-                )
-                x = int((gate_pose.position.x) * self.debug_image_scale - min_x)
-                y = int((gate_pose.position.y) * self.debug_image_scale - min_y)
-                yaw = quat2euler(attrgetter("w", "x", "y", "z")(gate_pose.orientation))[
-                    2
-                ]
-                cv2.line(
-                    image,
-                    (x, y),
-                    (
-                        int(x + 50 * np.cos(yaw)),
-                        int(y + 50 * np.sin(yaw)),
+                            x.gate_center.pose.position.x
+                            - self.odom_msg.pose.pose.position.x,
+                            x.gate_center.pose.position.y
+                            - self.odom_msg.pose.pose.position.y,
+                        ]
                     ),
-                    (0, 100, 0),
-                    5,
+                    self.vehicle_forward_direction,
                 )
-            # add stamp as text at bottom corner
+            ),
+        )
+        if len(self.gate_statuses.detected_gates) > 0:
+            self.gate_statuses.closest_gate.append(self.gate_statuses.detected_gates[0])
+        if len(self.gate_statuses.detected_gates) > 1:
+            self.gate_statuses.second_closest_gate.append(
+                self.gate_statuses.detected_gates[1]
+            )
+        self.gate_statuses_pub.publish(self.gate_statuses)
+
+    def debug_visualization(self, cluster_labels, gate_detections, gate_statuses):
+        if self.odom_msg is None:
+            return
+
+        odom_x = self.odom_msg.pose.pose.position.x
+        odom_y = self.odom_msg.pose.pose.position.y
+        yaw = self.quaternion_to_yaw(
+            [
+                self.odom_msg.pose.pose.orientation.w,
+                self.odom_msg.pose.pose.orientation.x,
+                self.odom_msg.pose.pose.orientation.y,
+                self.odom_msg.pose.pose.orientation.z,
+            ]
+        )
+        min_x = min(buoy[0] for buoy in self.buoys.values())
+        max_x = max(buoy[0] for buoy in self.buoys.values())
+        min_y = min(buoy[1] for buoy in self.buoys.values())
+        max_y = max(buoy[1] for buoy in self.buoys.values())
+        min_x = min(odom_x, min_x)
+        max_x = max(odom_x, max_x)
+        min_y = min(odom_y, min_y)
+        max_y = max(odom_y, max_y)
+
+        extension = max(0, 50 - max_x + min_x, 50 - max_y + min_y)
+        min_x -= int(extension / 2)
+        max_x += int(extension / 2)
+        min_y -= int(extension / 2)
+        max_y += int(extension / 2)
+
+        min_x *= self.debug_image_scale
+        max_x *= self.debug_image_scale
+        min_y *= self.debug_image_scale
+        max_y *= self.debug_image_scale
+        if max_y - min_y > 2000 or max_x - min_x > 2000:
+            print("Image too large, not publishing")
+            return
+
+        image = 255 * np.ones(
+            (
+                int(max_y - min_y + 1),
+                int(max_x - min_x + 1),
+                3,
+            ),
+            np.uint8,
+        )
+
+        for i, (track_id, buoy) in enumerate(self.buoys.items()):
+            x, y, [red, green] = buoy
+            x_scaled = int(x * self.debug_image_scale - min_x)
+            y_scaled = int(y * self.debug_image_scale - min_y)
+
+            # Assign color based on cluster label
+            cluster_label = cluster_labels[i]
+            color = self.get_color(cluster_label)
+
+            # Draw a triangle for green buoys and a circle for red buoys
+            if green > red:
+                # Draw triangle for green buoy
+                points = np.array(
+                    [
+                        [x_scaled, y_scaled - 15],
+                        [x_scaled - 15, y_scaled + 15],
+                        [x_scaled + 15, y_scaled + 15],
+                    ],
+                    np.int32,
+                )
+                cv2.polylines(image, [points], isClosed=True, color=color, thickness=2)
+            else:
+                # Draw circle for red buoy
+                cv2.circle(image, (x_scaled, y_scaled), 10, color, -1)
+
+            # Display track_id and probabilities as text
             cv2.putText(
                 image,
-                f"Stamp: {self.header.stamp.sec}.{self.header.stamp.nanosec}",
-                (10, int(max_y - min_y - 10)),
+                f"T{track_id}",
+                (x_scaled, y_scaled - 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 0, 0),
+                color,
                 1,
             )
 
-            # draw the closest, second closest and closest infront gate with different colors
-            if closest_gate is not None:
-                gate_pose = closest_gate.hypothesis.kinematics.pose_with_covariance.pose
+        # Plot the vehicle's current odometry
+        odom_x_scaled = int(odom_x * self.debug_image_scale - min_x)
+        odom_y_scaled = int(odom_y * self.debug_image_scale - min_y)
+
+        # Calculate arrow endpoint based on yaw
+        arrow_length = 20  # Adjust the arrow length as needed
+        end_x = int(odom_x_scaled + arrow_length * np.cos(yaw))
+        end_y = int(odom_y_scaled + arrow_length * np.sin(yaw))
+        print(f"Odom: {odom_x_scaled}, {odom_y_scaled}, {end_x}, {end_y}")
+        # Draw an arrow for the vehicle's current odometry direction
+        cv2.arrowedLine(
+            image,
+            (odom_x_scaled, odom_y_scaled),
+            (end_x, end_y),
+            (0, 0, 0),  # Color of the arrow
+            5,          # Thickness of the arrow
+            tipLength=0.5
+        )
+        # Draw gates based on gate_statuses
+        if gate_statuses is not None:
+            # Draw closest gate
+            if gate_statuses.closest_gate:
+                closest_gate = gate_statuses.closest_gate[0]
+                gate_pose = closest_gate.gate_center.pose
                 x = int((gate_pose.position.x) * self.debug_image_scale - min_x)
                 y = int((gate_pose.position.y) * self.debug_image_scale - min_y)
-                cv2.circle(image, (x, y), 10, (0, 255, 0), 1, 1)
-            if second_closest_gate is not None:
-                gate_pose = (
-                    second_closest_gate.hypothesis.kinematics.pose_with_covariance.pose
+                cv2.circle(image, (x, y), 10, (0, 255, 0), 1, 1)  # Green for closest gate
+                yaw = self.quaternion_to_yaw(
+                    [
+                        gate_pose.orientation.w,
+                        gate_pose.orientation.x,
+                        gate_pose.orientation.y,
+                        gate_pose.orientation.z,
+                    ]
                 )
+                x2 = int(x + 20 * np.cos(yaw))
+                y2 = int(y + 20 * np.sin(yaw))
+                cv2.arrowedLine(image, (x, y), (x2, y2), (0, 255, 0), 5, tipLength=0.5)
+
+            # Draw second closest gate
+            if gate_statuses.second_closest_gate:
+                second_closest_gate = gate_statuses.second_closest_gate[0]
+                gate_pose = second_closest_gate.gate_center.pose
                 x = int((gate_pose.position.x) * self.debug_image_scale - min_x)
                 y = int((gate_pose.position.y) * self.debug_image_scale - min_y)
-                cv2.circle(image, (x, y), 15, (0, 0, 255), 1, 1)
-            if closest_gate_infront is not None:
-                gate_pose = (
-                    closest_gate_infront.hypothesis.kinematics.pose_with_covariance.pose
+                cv2.circle(image, (x, y), 15, (0, 0, 255), 1, 1)  # Red for second closest gate
+                yaw = self.quaternion_to_yaw(
+                    [
+                        gate_pose.orientation.w,
+                        gate_pose.orientation.x,
+                        gate_pose.orientation.y,
+                        gate_pose.orientation.z,
+                    ]
                 )
+                x2 = int(x + 20 * np.cos(yaw))
+                y2 = int(y + 20 * np.sin(yaw))
+                cv2.arrowedLine(image, (x, y), (x2, y2), (0, 0, 255), 5, tipLength=0.5)
+
+            # Draw passed gates
+            for idx, passed_gate in enumerate(gate_statuses.passed_gates):
+                gate_pose = passed_gate.gate_center.pose
                 x = int((gate_pose.position.x) * self.debug_image_scale - min_x)
                 y = int((gate_pose.position.y) * self.debug_image_scale - min_y)
-                cv2.circle(image, (x, y), 20, (255, 0, 0), 1, 1)
-            self.debug_pub.publish(self.bridge.cv2_to_imgmsg(image, "bgr8"))
+
+                # Draw a cross for the passed gate
+                cross_size = 10
+                cv2.line(image, (x - cross_size, y - cross_size), (x + cross_size, y + cross_size), (255, 0, 0), 2)
+                cv2.line(image, (x + cross_size, y - cross_size), (x - cross_size, y + cross_size), (255, 0, 0), 2)
+
+                # Label the passed gate with an increasing number
+                cv2.putText(
+                    image,
+                    f"P{idx}",  # Using idx for numbering
+                    (x + 5, y - 5),  # Position the text above the cross
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 0, 0),  # Red for the text
+                    1,
+                )
+
+        # Add stamp as text at bottom corner
+        cv2.putText(
+            image,
+            f"Stamp: {self.header.stamp.sec}.{self.header.stamp.nanosec}",
+            (10, int(max_y - min_y - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            1,
+        )
+
+        self.debug_pub.publish(self.bridge.cv2_to_imgmsg(image, "bgr8"))
 
 
 def main(args=None):
