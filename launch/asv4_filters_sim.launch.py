@@ -103,6 +103,7 @@ def generate_launch_description():
                         "objects_config": "robotx.yaml",
                         "max_lost": 10,
                         "dist_threshold": 5.0,
+                        "max_range": 100.0
                     }
                 ],
             ),
@@ -131,6 +132,7 @@ def generate_launch_description():
                         "dets_3d_topic": "/asv4/bev_detections",
                         "filtered_topic": "/asv4/bev_detections/filtered",
                         "objects_config": "robotx.yaml",
+                        "max_range": 50.0
                     }
                 ],
             ),

@@ -137,6 +137,9 @@ class DetectedObject3DLabelingNode(Node):
         cost_matrix = (
             np.ones((len(next_dets.objects), len(detection_2d_msg.objects))) * 1e9
         )
+        dist_matrix = (
+            np.ones((len(next_dets.objects), len(detection_2d_msg.objects))) * 1e9
+        )
         # self.get_logger().info(f"Num objects: {len(next_dets.objects)} {len(detection_2d_msg.objects)}")
         for i, obj_3d in enumerate(next_dets.objects):
             projected_2d_points, dist = self.project_3d_to_2d(
@@ -156,9 +159,11 @@ class DetectedObject3DLabelingNode(Node):
                 det_bbox = self.get_bbox_from_2d_detection(det_2d)
                 proj_bbox = self.get_bbox_from_2d_points(projected_2d_points)
                 overlap = self.compute_overlap(det_bbox, proj_bbox)
+                # distance mapping 0-10 to 0-1 and 10-
                 cost_matrix[i][j] = (
                     1 / (overlap + 1e-9) * dist
                 )  # prioritize nearer objects
+                dist_matrix[i][j] = dist
 
                 # if overlap > best_overlap:
                 #     best_overlap = overlap
@@ -168,11 +173,19 @@ class DetectedObject3DLabelingNode(Node):
             #     self.track_identities[obj_3d.hypothesis.track_id][best_class_id] += 1
         if min(cost_matrix.shape) == 0:
             return
-        if cost_matrix.min() > 1 / (0.01 + 1e-9):
-            return
+        # if cost_matrix.min() > min(1 / (0.01 + 1e-9), 30):
+        #     self.get_logger().info(
+        #         f"Cost matrix too high {cost_matrix.min()}",
+        #         throttle_duration_sec=2.0,
+        #     )
+        #     return
         assignments = linear_sum_assignment(cost_matrix)
 
         for row, col in zip(assignments[0], assignments[1]):
+            if cost_matrix[row][col] > 1 / (0.01 + 1e-9):
+                continue
+            if dist_matrix[row][col] > 30:
+                continue
             track_id = next_dets.objects[row].hypothesis.track_id
             class_id = detection_2d_msg.objects[col].hypothesis.class_id
             self.track_identities[track_id][class_id] += 1
