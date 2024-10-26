@@ -4,15 +4,11 @@ from launch_ros.actions import Node
 # Launch File for running the lidar segmentation pipeline on the BBASV4 Simulation
 
 
-detected_object_3d_vis = [
-    "/uav2/projected_3d"
-]
+detected_object_3d_vis = ["/uav2/bottom_cam/projected_3d"]
 detected_object_3d_vis_tf = [
     # "/asv4/robotx/filtered_detections",
 ]
-detected_object_2d_vis = [
-    "/sim/detections_2d"
-]
+detected_object_2d_vis = ["/sim/detections_2d"]
 
 
 def generate_launch_description():
@@ -61,7 +57,7 @@ def generate_launch_description():
                         ],
                         "detection_frame": "odom_ned",
                         "height_offset_topic": "/uav2/height_offset",
-                        "output_detections_topic": "/uav2/projected_3d",
+                        "output_detections_topic": "/uav2/bottom_cam/projected_3d",
                         "objects_config": "drone.yaml",
                         "ground_z": -0.2,
                     }
@@ -75,7 +71,7 @@ def generate_launch_description():
                     {
                         "objects_config": "drone.yaml",
                         "pose_frame": "odom_ned",
-                        "detected_objects_3d_topic": "/uav2/projected_3d",
+                        "detected_objects_3d_topic": "/uav2/bottom_cam/projected_3d",
                         "cluster_interval": 2.0,
                         "queue_size": 10,
                         "min_cluster_size": 2,
