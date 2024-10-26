@@ -103,8 +103,7 @@ class GateDetection(Node):
         self.id_to_name = {
             obj["label"]: obj["name"] for obj in self.objects_config["objects"]
         }
-        if self.debug :
-            print(self.id_to_name)
+        if self.debug : print("List of objects: {self.id_to_name}")
         self.gate_geofence = None
         self.name_to_id = {v: k for k, v in self.id_to_name.items()}
         self.green_buoy_id = self.name_to_id["green_cylinder"]
@@ -121,19 +120,21 @@ class GateDetection(Node):
         self.latest_poses = None
 
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
+
         self.use_heading = True
+        # set heading for the gate 
         self.declare_parameter("heading_direction", 180.0) # degrees enu for nbpark # point west
-        self.declare_parameter("heading_direction", -30.0) # degrees enu for rsyc
+        # self.declare_parameter("heading_direction", -30.0) # degrees enu for rsyc
         self.heading_direction = np.deg2rad(
             self.get_parameter("heading_direction").get_parameter_value().double_value
         ) 
         
-        
+        # transform buoys to align with gate heading and scale 
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([(c, -s), (s, c)])
-        self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
         # self.clustering_T = np.eye(2)
+        self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
         self.inv_clustering_T = np.linalg.inv(self.clustering_T)
         self.forward_direction = R @ np.array([1, 0])
 
@@ -165,11 +166,13 @@ class GateDetection(Node):
             "/robotx24/configure_gate_task",
             self.configure_gate_task_callback,
         )
-        self.create_timer(0.1, self.show_buoys)
+        # show buoys execute at 10hz 
+        self.create_timer(0.1, self.show_buoys) 
 
     def configure_gate_task_callback(
         self, req: ConfigureGateTask.Request, res: ConfigureGateTask.Response
     ):
+        # if task not active, reset everything
         if not req.active:
             self.running = False
             self.buoys = {}
@@ -180,16 +183,19 @@ class GateDetection(Node):
             self.gate_estimate_valid = False
             res.success = True
             return res
+        # configure task based on request param
         self.use_heading = req.use_heading
         self.initial_pose_estimate = req.estimated_pose
+        # if true, set to initial gate's heading 
         if self.use_heading:
             self.heading_direction = quat2euler(
-                attrgetter("w", "x", "y", "z")(self.initial_pose_estimate.pose.orientation)
+                attrgetter("w", "x", "y", "z")(self.initial_pose_estimate.pose.orientation) 
             )[2]
-        if self.use_heading:
-            self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, 60, 30)
-        else:  # set geofence as square
-            self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, 60, 60)
+            w, l = 60, 30 # rectangular geofence (aligned w heading)
+        else:
+            w, l = 60,60 # square geofence 
+        self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, width=w, length=l)
+        if self.debug: print("Reconfigured Gate task, geofence set to : {self.gate_geofence}")
         self.get_logger().info(f"Setting geofence to {self.gate_geofence}")
         self.clustering_T = self.R @ np.array([[2, 0], [0, 1]]) @ self.R.T
         self.forward_direction = self.R @ np.array([1, 0])
@@ -232,8 +238,10 @@ class GateDetection(Node):
     def odom_callback(self, msg):
         self.vehicle_position = msg.pose.pose.position
 
+    # triggers each time a new object is detected 
     def detected_objects_callback(self, msg):
         if not self.running:
+            if self.debug: print("detection not running")
             return
         if len(msg.objects) != 0:
             self.buoys = {}
