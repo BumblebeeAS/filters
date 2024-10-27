@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
 
+import logging
+import time
+from collections import deque
+from copy import deepcopy
+from operator import attrgetter
+from pathlib import Path
+from threading import Lock
+
+import numpy as np
 import rclpy
+from ament_index_python.packages import get_package_share_directory
+from bb_filters.log import RclLogHandler
+from bb_perception_msgs.msg import DetectedObject3DArray
+from geometry_msgs.msg import Point, Point32, PolygonStamped, Quaternion
+from ml_detector.schema_validator import get_config, load_schema
+from nav_msgs.msg import Odometry
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.time import Time
-from bb_perception_msgs.msg import DetectedObject3DArray
-import numpy as np
-from collections import deque
-from ament_index_python.packages import get_package_share_directory
-from pathlib import Path
-
-from ml_detector.schema_validator import get_config, load_schema
-from bb_filters.log import RclLogHandler
-import logging
-from operator import attrgetter
-from transforms3d.euler import quat2euler, euler2quat
-
-import numpy as np
-from collections import deque
-import logging
-from copy import deepcopy
-from geometry_msgs.msg import Point, Point32, Quaternion, PolygonStamped
-from nav_msgs.msg import Odometry
-import time
-from threading import Lock
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from transforms3d.euler import euler2quat, quat2euler
 
 np.set_printoptions(formatter={"float": "{:0.3f}".format})
 LOGGER = logging.getLogger("obstacles_management")
@@ -68,6 +64,7 @@ class Identities:
 class HypothesisManager:
     id_to_name = {}
     lock = Lock()
+    uid_lock = Lock()
 
     def __init__(self, name, max_distance, max_num_hypothesis):
         self.name = name
@@ -77,19 +74,27 @@ class HypothesisManager:
 
         # Dictionary of hypotheses
         self.hypotheses = {}
+        self.hypotheses_uid = -1
 
         # Queue for latest updated hypotheses
         self.latest_hypotheses = deque()
         self.to_remove = set()
 
+    def get_new_hypothesis_uid(self):
+        with self.uid_lock:
+            self.hypotheses_uid += 1
+            new_uid = self.hypotheses_uid
+        return new_uid
+
+
     def update_hypothesis(
         self, new_position, new_yaw, new_identity, det, tid, stamp=None
     ):
         """Update the existing hypotheses or create a new one."""
-        closest_hypothesis = None
-        closest_distance = float("inf")
         with self.lock:
             # Search for the closest hypothesis within the allowed distance range
+            closest_hypothesis = None
+            closest_distance = float("inf")
             for hyp_id, (
                 positions,
                 yaw_values,
@@ -170,7 +175,7 @@ class HypothesisManager:
 
             else:
                 # Create a new hypothesis
-                new_hypothesis_id = len(self.hypotheses)
+                new_hypothesis_id = self.get_new_hypothesis_uid()
                 positions = deque([new_position], maxlen=self.tid_buffer_size)
                 yaw_values = deque([new_yaw], maxlen=self.tid_buffer_size)
                 identities = Identities().update(new_identity)
@@ -213,9 +218,13 @@ class HypothesisManager:
 
     def _mark_as_latest(self, hypothesis_id):
         """Mark a hypothesis as recently updated, keeping the queue size within limits."""
-        if hypothesis_id in self.latest_hypotheses:
-            self.latest_hypotheses.remove(hypothesis_id)
-        self.latest_hypotheses.appendleft(hypothesis_id)
+        if not self.latest_hypotheses or self.latest_hypotheses[0] != hypothesis_id:
+            # Remove if it exists and re-insert at the front
+            try:
+                self.latest_hypotheses.remove(hypothesis_id)
+            except ValueError:
+                pass
+            self.latest_hypotheses.appendleft(hypothesis_id)
 
     def _prune_hypotheses(self, _to_remove=()):
         """Remove old hypotheses if the number exceeds `max_num_hypothesis`."""
@@ -274,6 +283,7 @@ class ObstaclesManagementServer(Node):
         )
 
         self.max_range = 50.0
+        self.yaw = 0.0
         self.fov = np.deg2rad(270.0)
         self.max_disappear_time = (
             10.0  # detections in perceptive range disappear after 10 seconds
@@ -404,7 +414,8 @@ class ObstaclesManagementServer(Node):
             "Obstacle Management Server with Hypothesis Tracking started."
         )
         self.update_perceptive_range_timer = self.create_timer(
-            1.0, self.update_perceptive_range
+            1.0, self.update_perceptive_range,
+            callback_group=self.detections_sub_cb_group
         )
 
     def odom_callback(self, msg):
