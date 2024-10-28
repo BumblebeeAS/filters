@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
+from operator import attrgetter
 from pathlib import Path
 from typing import Dict, List
-from operator import attrgetter
+
 import numpy as np
 import rclpy
 import tf2_ros
@@ -14,7 +15,6 @@ from bb_perception_msgs.msg import (
     DetectedObject3D,
     DetectedObject3DArray,
 )
-from std_msgs.msg import Float32
 from geometry_msgs.msg import Point, Pose, PoseStamped
 from message_filters import Subscriber, TimeSynchronizer
 from ml_detector.helpers.log import RclLogHandler
@@ -22,6 +22,7 @@ from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo
+from std_msgs.msg import Float32
 from transforms3d.quaternions import quat2mat
 
 
@@ -146,7 +147,7 @@ class DetectedObject2DProjection(Node):
         self.camera_info_dict[camera_info.header.frame_id] = camera_info
 
     def height_offset_callback(self, offset: Float32):
-        self.height_offset = 0.0
+        self.height_offset = offset.data
 
     def callback(self, *detection_msgs):
         detected_objects_3d_array = DetectedObject3DArray()
@@ -220,7 +221,9 @@ class DetectedObject2DProjection(Node):
                 estimated_pose.position.z += ray_ends[4].z
 
                 estimated_pose_stamped = PoseStamped()
-                estimated_pose_stamped.header.stamp.nanosec = detection_msg.header.stamp.nanosec
+                estimated_pose_stamped.header.stamp.nanosec = (
+                    detection_msg.header.stamp.nanosec
+                )
                 estimated_pose_stamped.header.stamp.sec = detection_msg.header.stamp.sec
                 estimated_pose_stamped.pose = estimated_pose
                 estimated_pose_stamped.header.frame_id = self.detection_frame
@@ -285,8 +288,7 @@ class DetectedObject2DProjection(Node):
             rotation_matrix = quat2mat(attrgetter("w", "x", "y", "z")(q))
             ray_dir_world = rotation_matrix @ ray_dir_camera
 
-            t = abs(sensor_pose.position.z)
-            # t = 10.0
+            t = abs(sensor_pose.position.z) - self.height_offset
             self.logger.warning(f"t value {t}")
 
             ray_end = Point(
