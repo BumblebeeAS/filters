@@ -103,7 +103,7 @@ class GateDetection(Node):
         self.id_to_name = {
             obj["label"]: obj["name"] for obj in self.objects_config["objects"]
         }
-        if self.debug : print("List of objects: {self.id_to_name}")
+        if self.debug : print("List of objects:",self.id_to_name)
         self.gate_geofence = None
         self.name_to_id = {v: k for k, v in self.id_to_name.items()}
         self.green_buoy_id = self.name_to_id["green_cylinder"]
@@ -241,7 +241,6 @@ class GateDetection(Node):
     # triggers each time a new object is detected 
     def detected_objects_callback(self, msg):
         if not self.running:
-            if self.debug: print("detection not running")
             return
         if len(msg.objects) != 0:
             self.buoys = {}
@@ -314,9 +313,54 @@ class GateDetection(Node):
         self, cluster
     ) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], float]]:
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
+        if len(cluster) < 2:
+            self.get_logger().info(f"[No gate] Not enough buoys to form partial gate: {cluster}{len(cluster)}")
+            return None 
+        
         if len(cluster) < 3:
-            self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}", throttle_duration_sec=2.0)
-            return None
+            self.get_logger().info(f"[Partial gate] Less than 3 buoys: {cluster} {len(cluster)}", throttle_duration_sec=2.0)
+            # Cluster the buoys based on x, y positions
+            recluster = AgglomerativeClustering(
+                n_clusters=None, distance_threshold=10, linkage="ward"
+            )
+            cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
+
+            # Collect the buoy colors
+            buoy_colors = np.zeros((len(cluster), 3))  # red, green, white
+
+            for i, buoy in enumerate(cluster):
+                track_id, (x, y, colors) = buoy
+                buoy_colors[i] = colors  # Accumulate color probabilities
+
+            # Identify partial gate combinations
+            red_count = np.sum(buoy_colors[:, 0] > 0)
+            green_count = np.sum(buoy_colors[:, 1] > 0)
+            white_count = np.sum(buoy_colors[:, 2] > 0)
+
+            # Detect partial gates based on color combinations
+            if red_count >= 1 and white_count >= 1:
+                self.get_logger().info("Partial gate detected: Red-White")
+            elif white_count >= 2:
+                self.get_logger().info("Partial gate detected: White-White")
+            elif white_count >= 1 and green_count >= 1:
+                self.get_logger().info("Partial gate detected: White-Green")
+            elif red_count >= 1 and green_count >= 1:
+                self.get_logger().info("Partial gate detected: Red-Green")
+
+            # Compute the average position of the buoys in the cluster (centroid)
+            cluster_centroid = np.mean(np.array([c[1][:2] for c in cluster]), axis=0)
+
+            # Compute the orientation (yaw) of the gate based on the first two buoys
+            if len(cluster) >= 2:
+                first_buoy = cluster[0][1][:2]
+                second_buoy = cluster[1][1][:2]
+                yaw = np.arctan2(second_buoy[1] - first_buoy[1], second_buoy[0] - first_buoy[0])
+            else:
+                yaw = 0.0  # Default yaw if not enough buoys for orientation
+
+            # Return the gate pose and yaw
+            return cluster_centroid, yaw
+        # for complete gate
         recluster = AgglomerativeClustering(
             n_clusters=None, distance_threshold=10, linkage="ward"
         )
@@ -325,7 +369,7 @@ class GateDetection(Node):
         if num_children < 3 or num_children > 4:
             self.get_logger().info(f"Invalid number of clusters {num_children}", throttle_duration_sec=2.0)
             return None
-        cluster_centroids = np.zeros((num_children, 2))
+        cluposesster_centroids = np.zeros((num_children, 2))
         for i in range(num_children):
             cluster_centroids[i] = np.mean(
                 np.array([c[1][:2] for c in cluster])[cluster_labels == i], axis=0
@@ -539,7 +583,8 @@ class GateDetection(Node):
 
     def publish_gate_transform(self, gate_detections: List[DetectedObject3D]):
         # Extract position and direction for entrance gate
-        if len(gate_detections) != 3:
+        if len(gate_detections) < 2:
+            self.get_logger().info("Not enough detections to publish a gate", throttle_duration_sec=2.0)
             return
         self.get_logger().info("Publishing gate transforms", throttle_duration_sec=2.0)
         frame_ids = [
@@ -548,7 +593,10 @@ class GateDetection(Node):
             "gate_right" + ("_ned" if self.is_ned else ""),
         ]
         for i, gate in enumerate(gate_detections):
-            print(i, gate)
+           
+            if i >= len(frame_ids):
+                break  # Avoid index out of range if fewer than 3 detections
+            print(i, gate) 
             gate_transform = TransformStamped()
             gate_transform.header.stamp = self.get_clock().now().to_msg()
             gate_transform.header.frame_id = "map" + ("_ned" if self.is_ned else "")
@@ -584,11 +632,13 @@ class GateDetection(Node):
             @ self.clustering_T.T
         )
 
+        # defines clustering algo
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
             distance_threshold=15,  # Similar to 'eps', defines max distance for clusters, larger than estimate distance0
             linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
+        # requires more than 1 buoy to cluster a gate 
         if len(positions) == 1:
             self.get_logger().info("Only one buoy detected", throttle_duration_sec=2.0)
             return
@@ -626,7 +676,7 @@ class GateDetection(Node):
             cluster_details = [(tid, self.buoys[tid]) for tid in cluster_tids]
             self.get_logger().info(
                 f"Cluster {cluster} with tids {cluster_tids}: {len(cluster_details)}",
-                throttle_duration_sec=2.0,
+                throttle_duration_sec=2.0,>
             )
             poses = self.calculate_gate_poses(cluster_details)
             if poses is None:
