@@ -146,11 +146,12 @@ class GateDetection(Node):
         )
         self.subscription = self.create_subscription(
             DetectedObject3DArray,
-            "/asv4/vision/lidar_small_objects/dets_3d/labelled",
-            # "/asv4/robotx/filtered_detections",
+            # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            "/asv4/robotx/filtered_detections",
             self.detected_objects_callback,
             10,
         )
+        self.get_logger().info("subscribed to : /asv4/robotx/filtered_detections")
         self.gate_task_config_service = self.create_service(
             ConfigureGateTask,
             "/robotx24/configure_gate_task",
@@ -558,7 +559,7 @@ class GateDetection(Node):
             return
         else:
             self.get_logger().info(
-                f"{len(self.buoys)} buoys detected", throttle_duration_sec=2.0
+                f"{len(self.buoys)} buoys detected : {self.buoys}", throttle_duration_sec=2.0
             )
 
         # Extract buoy positions for clustering

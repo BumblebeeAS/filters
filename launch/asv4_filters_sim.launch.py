@@ -142,7 +142,7 @@ def generate_launch_description():
                 name="det_3d_labeller",
                 parameters=[
                     {
-                        "detection_2d_topic": "/asv4/vision/detections_2d",
+                        "detection_2d_topic": "/asv4/vision/detections_2d/fixed",
                         "detection_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
                         "camera_info_topics": [
                             "/asv4/left_cam/camera_info",
