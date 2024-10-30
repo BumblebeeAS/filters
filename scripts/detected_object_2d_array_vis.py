@@ -197,6 +197,7 @@ class DetectedObject2DArrayVisNode(Node):
         cy = camera_info.p[6]
 
         # Calculate the four corners of the bounding box
+        # TODO: check the // 2 instead of / 2
         bbox_corners = [
             (u - w // 2, v + h // 2),  # Bottom-left corner
             (u + w // 2, v + h // 2),  # Bottom-right corner
