@@ -115,6 +115,7 @@ install(PROGRAMS
   scripts/obstacles_management_server.py
   scripts/detected_object_2d_filter_projection_bottom_facing.py
   scripts/cluster_detected_objects_3d.py
+  scripts/pinger_gate_detection.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
