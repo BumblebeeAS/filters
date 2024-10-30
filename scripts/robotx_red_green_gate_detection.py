@@ -356,6 +356,7 @@ class RedGreenGateDetection(Node):
             self.gate_statuses.task_complete = False
 
     def detected_objects_callback(self, msg):
+        '''Sets probability of cylinders being buoys'''
         self.buoys = {}
         if len(msg.objects) != 0:
             self.is_ned = msg.objects[0].hypothesis.kinematics.header.frame_id.endswith(
@@ -641,6 +642,7 @@ class RedGreenGateDetection(Node):
         return np.dot(relative_position, self.vehicle_forward_direction)
 
     def show_buoys(self):
+        #TODO: Improve deciding of gates
         if not self.buoys:
             return
 
@@ -763,6 +765,7 @@ class RedGreenGateDetection(Node):
             )
 
     def compute_gate_statuses(self, gate_detections):
+        """Compute gate statuses based on the gate detections (take in gates output gates statuses, closest, past etc.)."""
         if not self.configs.active:
             return
         if self.odom_msg is None:
