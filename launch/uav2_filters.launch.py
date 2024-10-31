@@ -68,7 +68,7 @@ def generate_launch_description():
                         "pose_frame": "odom_ned",
                         "detected_objects_3d_topic": "/uav2/bottom_cam/projected_3d",
                         "cluster_interval": 2.0,
-                        "queue_size": 10,
+                        "queue_size": 100,
                         "min_cluster_size": 2,
                         "min_samples": 1,
                     }
