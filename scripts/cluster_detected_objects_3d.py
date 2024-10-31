@@ -113,6 +113,7 @@ class ClusterDetectedObject3D(Node):
             )
             # Do not enqueue if too far from estimate
             if not self.detection_pred(position, obj.hypothesis.class_id):
+                self.get_logger().info(f"dropping detection too far away: {position}")
                 continue
 
             self.get_logger().info(
