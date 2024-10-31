@@ -29,6 +29,28 @@ Dependencies:
 - transforms3d for Euler angle to quaternion conversion.
 - rclpy for ROS2 node functionality.
 """
+
+"""
+ros2 service call /robotx24/configure_gate_task bb_robotx_msgs/srv/ConfigureGateTask "active: true 
+use_heading: false
+estimated_pose:
+  header:
+    stamp:
+      sec: 0
+      nanosec: 0
+    frame_id: 'map'
+  pose:
+    position:
+      x: 190.0
+      y: 250.0
+      z: 0.0
+    orientation:
+      x: 0.0
+      y: 0.0
+      z: 1.0
+      w: 0.0"
+"""
+
 import colorsys
 import random
 from pathlib import Path
@@ -302,7 +324,7 @@ class GateDetection(Node):
             self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}", throttle_duration_sec=2.0)
             return None
         recluster = AgglomerativeClustering(
-            n_clusters=None, distance_threshold=10, linkage="ward"
+            n_clusters=None, distance_threshold=8, linkage="ward"
         )
         cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
         num_children = recluster.n_clusters_
