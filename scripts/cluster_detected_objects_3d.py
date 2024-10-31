@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 
-import rclpy
-import numpy as np
-from pathlib import Path
-from ament_index_python.packages import get_package_share_directory
-from sklearn.cluster import HDBSCAN
-from geometry_msgs.msg import PoseStamped
-from bb_perception_msgs.msg import (
-    DetectedObject3DArray,
-)
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
 from collections import defaultdict, deque
-from message_filters import Subscriber
-from ml_detector.schema_validator import get_config, load_schema
+from pathlib import Path
 
+import numpy as np
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from bb_perception_msgs.msg import DetectedObject3DArray
 from bb_uav_msgs.srv import LatLonConverter
 from geographic_msgs.msg import GeoPointStamped
+from geometry_msgs.msg import PoseStamped
+from message_filters import Subscriber
+from ml_detector.schema_validator import get_config, load_schema
+from permetrics import ClusteringMetric
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sklearn.cluster import HDBSCAN
+
 
 class ClusterDetectedObject3D(Node):
     def __init__(self):
@@ -70,6 +70,14 @@ class ClusterDetectedObject3D(Node):
         min_samples = (
             self.get_parameter("min_samples").get_parameter_value().integer_value
         )
+        self.declare_parameter("estimate_tolerance", 8.0)
+        self.estimate_tolerance = (
+            self.get_parameter("estimate_tolerance").get_parameter_value().double_value
+        )
+        self.declare_parameter("DBCV_threshold", 0.8)
+        self.DBCV_threshold = (
+            self.get_parameter("DBCV_threshold").get_parameter_value().double_value
+        )
         self.detections_subscriber = Subscriber(
             self, DetectedObject3DArray, self.detection_topic, qos_profile=qos
         )
@@ -87,16 +95,26 @@ class ClusterDetectedObject3D(Node):
         self.estimate_n = None
         self.estimate_r = None
         self.estimate_r_sub = self.create_subscription(
-            GeoPointStamped, "/uav2/search_report/estimate/robot_r", self.estimate_r_cb, 10)
+            GeoPointStamped,
+            "/uav2/search_report/estimate/robot_r",
+            self.estimate_r_cb,
+            10,
+        )
         self.estimate_n_sub = self.create_subscription(
-            GeoPointStamped, "/uav2/search_report/estimate/robot_n", self.estimate_n_cb, 10)
-        
+            GeoPointStamped,
+            "/uav2/search_report/estimate/robot_n",
+            self.estimate_n_cb,
+            10,
+        )
+
         self.home_latlon = None
         self.home_latlon_sub = self.create_subscription(
-            GeoPointStamped, "/uav2/home_lat_lon", self.home_latlon_cb, 10)
+            GeoPointStamped, "/uav2/home_lat_lon", self.home_latlon_cb, 10
+        )
 
         self.converter_client = self.create_client(
-            LatLonConverter, "/uav2/lat_lon_converter_srv")
+            LatLonConverter, "/uav2/lat_lon_converter_srv"
+        )
 
     def detection_callback(self, detections: DetectedObject3DArray):
         """Adds respective detections into their respective queues"""
@@ -167,6 +185,17 @@ class ClusterDetectedObject3D(Node):
             # Returns a new list where each index in position_queue is replaced by the cluster label
             clusterer = self.hdb.fit(position_queue)
             labels = clusterer.labels_
+            # Add clustering metric
+            cm = ClusteringMetric(X=np.array(position_queue), y_pred=labels)
+            DBCV_metric = cm.density_based_clustering_validation_index()
+            silhouette_score = cm.silhouette_score()
+            self.get_logger().info(
+                f"Cluster metrics for {self.id_to_name[class_id]} DBCV: {DBCV_metric} Silhouette score {silhouette_score}"
+            )
+            if DBCV_metric > self.DBCV_threshold:
+                self.get_logger().info(f"DBCV: {DBCV_metric} exceeds threshold")
+                return
+
             # Create a dict for the clusters
             clusters = defaultdict(list)
             for i, label in enumerate(labels):
@@ -183,9 +212,7 @@ class ClusterDetectedObject3D(Node):
                     largest_cluster_label = label
             largest_cluster_positions = clusters[largest_cluster_label]
             if len(largest_cluster_positions) == 0:
-                self.get_logger().info(
-                    f"Cluster has no positions"
-                )
+                self.get_logger().info(f"Cluster has no positions")
                 continue
             clustered_average_pose = self.merge_cluster(largest_cluster_positions)
             self.get_logger().info(
@@ -196,25 +223,23 @@ class ClusterDetectedObject3D(Node):
     # Methods for dropping detections far from estimates
     def estimate_r_cb(self, msg: GeoPointStamped) -> None:
         self.estimate_r = msg
-    
+
     def estimate_n_cb(self, msg: GeoPointStamped) -> None:
         self.estimate_n = msg
-    
+
     def home_latlon_cb(self, msg: GeoPointStamped) -> None:
         self.home_latlon = msg
 
-    def detection_pred(self, position: list[float],
-                       class_id: int,
-                       tolerance: float = 8.0) -> bool:
+    def detection_pred(self, position: list[float], class_id: int) -> bool:
         """Returns true if position (of detection) is near the estimates.
 
         Always returns true for anything that isn't robot_r or robot_n (ids 1 and 2).
-        
+
         Depends on the following topics for the estimate:
             - /uav2/search_report/estimate/robot_r
             - /uav2/search_report/estimate/robot_n
             - /uav2/home_lat_lon
-        
+
         Estimate to position conversion is done through LatLonCoverter.
 
         Tolerance is metres in euclidean distance. The z value is ignored.
@@ -222,17 +247,17 @@ class ClusterDetectedObject3D(Node):
         # No home lat lon, should not happen, but defensive check
         if self.home_latlon is None:
             return True
-        
+
         # Not R or N marker
         if class_id != 1 and class_id != 2:
             return True
-        
+
         # No estimates yet, just accept all
         if class_id == 1 and self.estimate_r is None:
             return True
         if class_id == 2 and self.estimate_n is None:
             return True
-        
+
         # Convert estimate to position
         estimate_latlon = LatLonConverter.Request()
         estimate_latlon.input_converter = self.home_latlon
@@ -242,10 +267,13 @@ class ClusterDetectedObject3D(Node):
         estimate_position: LatLonConverter.Response = estimate_position_future.result()
 
         # Get euclidean distance
-        dist = ((estimate_position.local_pose.pose.position.x - position[0]) ** 2
-            + (estimate_position.local_pose.pose.position.y - position[1]) ** 2) ** .5
+        dist = (
+            (estimate_position.local_pose.pose.position.x - position[0]) ** 2
+            + (estimate_position.local_pose.pose.position.y - position[1]) ** 2
+        ) ** 0.5
 
-        return dist <= tolerance
+        return dist <= self.estimate_tolerance
+
 
 def main(args=None):
     rclpy.init(args=args)

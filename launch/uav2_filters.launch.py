@@ -1,7 +1,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
-#TODO clean up launch file
+# TODO clean up launch file
 detected_object_3d_vis = ["/uav2/bottom_cam/projected_3d"]
 detected_object_2d_vis = ["/rn"]
 
@@ -71,6 +71,8 @@ def generate_launch_description():
                         "queue_size": 100,
                         "min_cluster_size": 2,
                         "min_samples": 1,
+                        "estimate_tolerance": 8.0,
+                        "DBCV_threshold": 0.8,
                     }
                 ],
             ),
