@@ -15,6 +15,8 @@ from collections import defaultdict, deque
 from message_filters import Subscriber
 from ml_detector.schema_validator import get_config, load_schema
 
+from bb_uav_msgs.srv import LatLonConverter
+from geographic_msgs.msg import GeoPointStamped
 
 class ClusterDetectedObject3D(Node):
     def __init__(self):
@@ -81,6 +83,21 @@ class ClusterDetectedObject3D(Node):
             cluster_interval, self.cluster_timer_callback
         )
 
+        # For dropping detections which are very far from the estimated locations
+        self.estimate_n = None
+        self.estimate_r = None
+        self.estimate_r_sub = self.create_subscription(
+            GeoPointStamped, "/uav2/search_report/estimate/robot_r", self.estimate_r_cb, 10)
+        self.estimate_n_sub = self.create_subscription(
+            GeoPointStamped, "/uav2/search_report/estimate/robot_n", self.estimate_n_cb, 10)
+        
+        self.home_latlon = None
+        self.home_latlon_sub = self.create_subscription(
+            GeoPointStamped, "/uav2/home_lat_lon", self.home_latlon_cb, 10)
+
+        self.converter_client = self.create_client(
+            LatLonConverter, "/uav2/lat_lon_converter_srv")
+
     def detection_callback(self, detections: DetectedObject3DArray):
         """Adds respective detections into their respective queues"""
         if not detections.objects:
@@ -94,6 +111,10 @@ class ClusterDetectedObject3D(Node):
                     obj.hypothesis.kinematics.pose_with_covariance.pose.position.z,
                 ]
             )
+            # Do not enqueue if too far from estimate
+            if not self.detection_pred(position, obj.hypothesis.class_id):
+                continue
+
             self.get_logger().info(
                 f"Enqueue detection for {self.id_to_name[obj.hypothesis.class_id]} with {position}"
             )
@@ -171,6 +192,59 @@ class ClusterDetectedObject3D(Node):
             )
             self.cluster_pose_publishers[class_id].publish(clustered_average_pose)
 
+    # Methods for dropping detections far from estimates
+    def estimate_r_cb(self, msg: GeoPointStamped) -> None:
+        self.estimate_r = msg
+    
+    def estimate_n_cb(self, msg: GeoPointStamped) -> None:
+        self.estimate_n = msg
+    
+    def home_latlon_cb(self, msg: GeoPointStamped) -> None:
+        self.home_latlon = msg
+
+    def detection_pred(self, position: list[float],
+                       class_id: int,
+                       tolerance: float = 8.0) -> bool:
+        """Returns true if position (of detection) is near the estimates.
+
+        Always returns true for anything that isn't robot_r or robot_n (ids 1 and 2).
+        
+        Depends on the following topics for the estimate:
+            - /uav2/search_report/estimate/robot_r
+            - /uav2/search_report/estimate/robot_n
+            - /uav2/home_lat_lon
+        
+        Estimate to position conversion is done through LatLonCoverter.
+
+        Tolerance is metres in euclidean distance. The z value is ignored.
+        """
+        # No home lat lon, should not happen, but defensive check
+        if self.home_latlon is None:
+            return True
+        
+        # Not R or N marker
+        if class_id != 1 and class_id != 2:
+            return True
+        
+        # No estimates yet, just accept all
+        if class_id == 1 and self.estimate_r is None:
+            return True
+        if class_id == 2 and self.estimate_n is None:
+            return True
+        
+        # Convert estimate to position
+        estimate_latlon = LatLonConverter.Request()
+        estimate_latlon.input_converter = self.home_latlon
+        estimate_latlon.lat_lon = (None, self.estimate_r, self.estimate_n)[class_id]
+        estimate_position_future = self.converter_client.call_async(estimate_latlon)
+        rclpy.spin_until_future_complete(self, estimate_position_future)
+        estimate_position: LatLonConverter.Response = estimate_position_future.result()
+
+        # Get euclidean distance
+        dist = ((estimate_position.local_pose.pose.position.x - position[0]) ** 2
+            + (estimate_position.local_pose.pose.position.y - position[1]) ** 2) ** .5
+
+        return dist <= tolerance
 
 def main(args=None):
     rclpy.init(args=args)
