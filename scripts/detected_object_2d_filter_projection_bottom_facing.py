@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
+from operator import attrgetter
 from pathlib import Path
 from typing import Dict, List
-from operator import attrgetter
+
 import numpy as np
 import rclpy
 import tf2_ros
@@ -14,48 +15,35 @@ from bb_perception_msgs.msg import (
     DetectedObject3D,
     DetectedObject3DArray,
 )
-from geometry_msgs.msg import Point, Pose
+from geometry_msgs.msg import Point, Pose, PoseStamped
 from message_filters import Subscriber, TimeSynchronizer
 from ml_detector.helpers.log import RclLogHandler
 from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo
+from std_msgs.msg import Float32
 from transforms3d.quaternions import quat2mat
 
 
 class DetectedObject2DProjection(Node):
     def __init__(self):
         super().__init__("detected_object_2d_projection_node")
-        self.declare_parameter(
-            "input_detections_topics", ["/asv4/vision/detections_2d"]
-        )
+        self.declare_parameter("input_detections_topics", ["/sim/detections_2d"])
         self.declare_parameter(
             "camera_info_topics",
             [
-                "/asv4/left_cam/camera_info",
-                "/asv4/right_cam/camera_info",
-                "/asv4/front_cam/camera_info",
+                "/camera_info",
             ],
         )
-        self.declare_parameter(
-            "output_detections_topic", "/asv4/vision/detections_2d/projected"
-        )
-        self.declare_parameter("objects_config", "robotx.yaml")
+        self.declare_parameter("output_detections_topic", "/uav2/projected_3d")
+        self.declare_parameter("objects_config", "drone.yaml")
         self.declare_parameter("publish_tf", False)
 
         self.input_detections_topics = (
             self.get_parameter("input_detections_topics")
             .get_parameter_value()
             .string_array_value
-        )
-        self.declare_parameter("inflate_height", 0.0)
-        self.inflate_height = (
-            self.get_parameter("inflate_height").get_parameter_value().double_value
-        )
-        self.declare_parameter("ground_z", -0.2)
-        self.ground_z = (
-            self.get_parameter("ground_z").get_parameter_value().double_value
         )
         self.declare_parameter("dist_limit", 60.0)
         self.dist_limit = (
@@ -70,6 +58,14 @@ class DetectedObject2DProjection(Node):
             self.get_parameter("output_detections_topic")
             .get_parameter_value()
             .string_value
+        )
+        self.declare_parameter("height_offset_topic", "/uav2/height_offset_topic")
+        height_offset_topic = (
+            self.get_parameter("height_offset_topic").get_parameter_value().string_value
+        )
+        self.declare_parameter("detection_frame", "odom_ned")
+        self.detection_frame = (
+            self.get_parameter("detection_frame").get_parameter_value().string_value
         )
         self.publish_tf = (
             self.get_parameter("publish_tf").get_parameter_value().bool_value
@@ -120,6 +116,10 @@ class DetectedObject2DProjection(Node):
             DetectedObject3DArray, self.output_detections_topic, 10
         )
 
+        self.detection_pose_publisher = self.create_publisher(
+            PoseStamped, "/uav2/detected_pose", 10
+        )
+
         self.tf_broadcast = tf2_ros.TransformBroadcaster(self)
 
         self.camera_info_subscribers = [
@@ -135,11 +135,19 @@ class DetectedObject2DProjection(Node):
             Subscriber(self, DetectedObject2DArray, topic, qos_profile=qos)
             for topic in self.input_detections_topics
         ]
+        self.height_offset_subscriber = Subscriber(
+            self, Float32, height_offset_topic, qos_profile=qos
+        )
+        self.height_offset_subscriber.registerCallback(self.height_offset_callback)
+        self.height_offset = 0.0
         self.time_sync = TimeSynchronizer([*self.detection_subscribers], 10)
         self.time_sync.registerCallback(self.callback)
 
     def camera_info_callback(self, camera_info: CameraInfo):
         self.camera_info_dict[camera_info.header.frame_id] = camera_info
+
+    def height_offset_callback(self, offset: Float32):
+        self.height_offset = offset.data
 
     def callback(self, *detection_msgs):
         detected_objects_3d_array = DetectedObject3DArray()
@@ -165,8 +173,6 @@ class DetectedObject2DProjection(Node):
                     )
                     continue
 
-                if detection.bbox_width == 0 or detection.bbox_height == 0:
-                    continue
                 # Compute the ray end points based on camera intrinsics and detection center
                 object_bottom_z = self.estimated_object_bottom.get(
                     detection.hypothesis.class_id, 0.0
@@ -191,34 +197,45 @@ class DetectedObject2DProjection(Node):
                     detection.centre_x,
                     detection.centre_y,
                     detection.bbox_width,
-                    detection.bbox_height * (1.0 + self.inflate_height),
+                    detection.bbox_height,
                     detection_msg.sensor_pose,
-                    object_bottom_z,
-                    np.mean(estimated_dists_from_dimension)
                 )
                 if len(ray_ends) == 0:
                     continue
+                self.get_logger().info(f"{ray_ends}")
 
                 # Populate the DetectedObject3D with the calculated rays
                 detected_object_3d.hypothesis.shape.dimensions.x = np.linalg.norm(
                     np.array([ray_ends[1].x, ray_ends[1].y, ray_ends[1].z])
                     - np.array([ray_ends[0].x, ray_ends[0].y, ray_ends[0].z])
                 )
-                detected_object_3d.hypothesis.shape.dimensions.z = np.linalg.norm(
+                detected_object_3d.hypothesis.shape.dimensions.y = np.linalg.norm(
                     np.array([ray_ends[2].x, ray_ends[2].y, ray_ends[2].z])
                     - np.array([ray_ends[0].x, ray_ends[0].y, ray_ends[0].z])
                 )
-                detected_object_3d.hypothesis.shape.dimensions.y = (
-                    detected_object_3d.hypothesis.shape.dimensions.x
-                )
+                detected_object_3d.hypothesis.shape.dimensions.z = 1.0
                 estimated_pose = Pose()
-                for i in range(2):
-                    estimated_pose.position.x += ray_ends[i].x
-                    estimated_pose.position.y += ray_ends[i].y
-                    estimated_pose.position.z += ray_ends[i].z
-                estimated_pose.position.x /= 2
-                estimated_pose.position.y /= 2
-                estimated_pose.position.z /= 2
+                # Create a centre pose for each detection based on last index
+                estimated_pose.position.x += ray_ends[4].x
+                estimated_pose.position.y += ray_ends[4].y
+                estimated_pose.position.z += ray_ends[4].z
+
+                estimated_pose_stamped = PoseStamped()
+                estimated_pose_stamped.header.stamp.nanosec = (
+                    detection_msg.header.stamp.nanosec
+                )
+                estimated_pose_stamped.header.stamp.sec = detection_msg.header.stamp.sec
+                estimated_pose_stamped.pose = estimated_pose
+                estimated_pose_stamped.header.frame_id = self.detection_frame
+                self.detection_pose_publisher.publish(estimated_pose_stamped)
+                # self.get_logger().info(f"position: X: {estimated_pose.position.x} Y: {estimated_pose.position.y} Z: {estimated_pose.position.z}")
+                # for i in range(4):
+                #     estimated_pose.position.x += ray_ends[i].x
+                #     estimated_pose.position.y += ray_ends[i].y
+                #     estimated_pose.position.z += ray_ends[i].z
+                # estimated_pose.position.x /= 4
+                # estimated_pose.position.y /= 4
+                # estimated_pose.position.z /= 4
                 detected_object_3d.hypothesis.kinematics.pose_with_covariance.pose = (
                     estimated_pose
                 )
@@ -239,8 +256,6 @@ class DetectedObject2DProjection(Node):
         w: int,
         h: int,
         sensor_pose,
-        object_bottom_z,
-        max_estimate_dist
     ):
         # Extract the camera intrinsics
         fx = camera_info.p[0]
@@ -254,10 +269,11 @@ class DetectedObject2DProjection(Node):
             (u + w // 2, v + h // 2),  # Bottom-right corner
             (u - w // 2, v - h // 2),  # Top-left corner
             (u + w // 2, v - h // 2),  # Top-right corner
+            (u, v),  # Center
         ]
+        # self.logger.warning(f"Bounding Box corners {bbox_corners}")
 
         rays_end_points = []
-        ts = []
 
         for i, (corner_u, corner_v) in enumerate(bbox_corners):
             # Normalized image coordinates for each corner
@@ -266,35 +282,24 @@ class DetectedObject2DProjection(Node):
 
             # Assuming the ray is projected out of the camera at a distance of 1 unit in the z direction
             ray_dir_camera = np.array([x_norm, y_norm, 1.0])
-
             # Rotate the ray direction to align with the sensor_pose
             # Assuming sensor_pose is a Pose message
             q = sensor_pose.orientation
             rotation_matrix = quat2mat(attrgetter("w", "x", "y", "z")(q))
             ray_dir_world = rotation_matrix @ ray_dir_camera
 
-            # Calculate the intersection with the ground plane (z = 0)
-            if len(ts) > 1:
-                t = ts[i - 2]
-            else:
-                t = (
-                    (object_bottom_z - self.ground_z) - sensor_pose.position.z
-                ) / ray_dir_world[2]
-                # t = min(t, max_estimate_dist) # doesn't work well
-            ts.append(t)
+            t = abs(sensor_pose.position.z) - self.height_offset
+            self.logger.warning(f"t value {t}")
+
             ray_end = Point(
                 x=sensor_pose.position.x + ray_dir_world[0] * t,
                 y=sensor_pose.position.y + ray_dir_world[1] * t,
                 z=sensor_pose.position.z + ray_dir_world[2] * t,
-                # z=0.0  # Since we are intersecting with the ground plane
             )
 
             rays_end_points.append(ray_end)
-
-        if min(ts) < 0:
-            return []
-        if max(ts) > self.dist_limit:
-            return []
+            # self.logger.warning(f"ray_dir_camera {ray_dir_camera}\nray_end_points{rays_end_points}")
+            # self.logger.info(f"weeeeeee {sensor_pose}")
         return rays_end_points
 
 

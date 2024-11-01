@@ -6,6 +6,7 @@ import numpy as np
 from collections import Counter, defaultdict, deque
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
 from rclpy.duration import Duration
 from sensor_msgs.msg import CameraInfo
 from bb_perception_msgs.msg import (
@@ -24,6 +25,9 @@ from std_msgs.msg import Header
 from typing import List, Tuple
 from shapely.geometry import box
 from scipy.optimize import linear_sum_assignment
+from copy import deepcopy
+
+np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
 
 class DetectedObject3DLabelingNode(Node):
@@ -88,9 +92,11 @@ class DetectedObject3DLabelingNode(Node):
         )
 
         # self.inflate_width = 1.5
-        self.inflate_width = 0.4
+        self.inflate_width = 0.3
+        self.inflate_height = 0.6
         self.bbox_inflate_factor = 1.5
-        self.latest_3d_detections = deque(maxlen=1)
+        self.latest_3d_detections = (None, None)
+        self.timeout_duration = Duration(seconds=5.0)
         self.track_identities = defaultdict(Counter)
 
         self.tf_buffer = Buffer(Duration(seconds=15), self)
@@ -100,12 +106,21 @@ class DetectedObject3DLabelingNode(Node):
         self.camera_info_dict[camera_info.header.frame_id] = camera_info
 
     def detection_3d_callback(self, detection_3d_msg: DetectedObject3DArray):
-        self.latest_3d_detections.append(detection_3d_msg)
+        self.latest_3d_detections = (
+            Time.from_msg(detection_3d_msg.header.stamp),
+            detection_3d_msg,
+        )
 
     def detection_2d_callback(self, detection_2d_msg: DetectedObject2DArray):
-        if len(self.latest_3d_detections) == 0:
+        # expire 3d detections
+        if self.latest_3d_detections[0] is not None and (
+            Time.from_msg(detection_2d_msg.header.stamp) - self.latest_3d_detections[0]
+            > self.timeout_duration
+        ):
+            self.latest_3d_detections = (None, None)
+        if self.latest_3d_detections[0] is None:
             return
-        next_dets = self.latest_3d_detections.popleft()
+        next_dets = self.latest_3d_detections[1]
         camera_info = self.camera_info_dict.get(detection_2d_msg.sensor.frame_id)
         if not camera_info:
             self.get_logger().warn(
@@ -119,7 +134,12 @@ class DetectedObject3DLabelingNode(Node):
         labeled_3d_objects.source = next_dets.source
         labeled_3d_objects.sensor_pose = next_dets.sensor_pose
 
-        cost_matrix = np.ones((len(next_dets.objects), len(detection_2d_msg.objects))) * 1e9
+        cost_matrix = (
+            np.ones((len(next_dets.objects), len(detection_2d_msg.objects))) * 1e9
+        )
+        dist_matrix = (
+            np.ones((len(next_dets.objects), len(detection_2d_msg.objects))) * 1e9
+        )
         # self.get_logger().info(f"Num objects: {len(next_dets.objects)} {len(detection_2d_msg.objects)}")
         for i, obj_3d in enumerate(next_dets.objects):
             projected_2d_points, dist = self.project_3d_to_2d(
@@ -138,8 +158,12 @@ class DetectedObject3DLabelingNode(Node):
             for j, det_2d in enumerate(detection_2d_msg.objects):
                 det_bbox = self.get_bbox_from_2d_detection(det_2d)
                 proj_bbox = self.get_bbox_from_2d_points(projected_2d_points)
-                overlap = self.compute_overlap(det_bbox, proj_bbox)                
-                cost_matrix[i][j] = 1/(overlap+1e-9) * dist# prioritize nearer objects
+                overlap = self.compute_overlap(det_bbox, proj_bbox)
+                # distance mapping 0-10 to 0-1 and 10-
+                cost_matrix[i][j] = (
+                    1 / (overlap + 1e-9) * dist
+                )  # prioritize nearer objects
+                dist_matrix[i][j] = dist
 
                 # if overlap > best_overlap:
                 #     best_overlap = overlap
@@ -149,18 +173,27 @@ class DetectedObject3DLabelingNode(Node):
             #     self.track_identities[obj_3d.hypothesis.track_id][best_class_id] += 1
         if min(cost_matrix.shape) == 0:
             return
-        if cost_matrix.min() > 1/(0.02 + 1e-9):
-            return
+        # if cost_matrix.min() > min(1 / (0.01 + 1e-9), 30):
+        #     self.get_logger().info(
+        #         f"Cost matrix too high {cost_matrix.min()}",
+        #         throttle_duration_sec=2.0,
+        #     )
+        #     return
         assignments = linear_sum_assignment(cost_matrix)
 
         for row, col in zip(assignments[0], assignments[1]):
+            if cost_matrix[row][col] > 1 / (0.01 + 1e-9):
+                continue
+            if dist_matrix[row][col] > 30:
+                continue
             track_id = next_dets.objects[row].hypothesis.track_id
             class_id = detection_2d_msg.objects[col].hypothesis.class_id
             self.track_identities[track_id][class_id] += 1
 
         # Label 3D objects based on the highest count
         for obj_3d in next_dets.objects:
-            track_counts = self.track_identities[obj_3d.hypothesis.track_id]
+            obj = deepcopy(obj_3d)
+            track_counts = self.track_identities[obj.hypothesis.track_id]
             if track_counts:
                 most_common_class, count = track_counts.most_common(1)[0]
                 second_most_common = (
@@ -168,20 +201,26 @@ class DetectedObject3DLabelingNode(Node):
                     if len(track_counts) > 1
                     else 0
                 )
-                if count > 3 and count > 1.5 * second_most_common:
-                    obj_3d.hypothesis.class_id = most_common_class
+                if count > 3 and count > 1.2 * second_most_common:
+                    obj.hypothesis.class_id = most_common_class
                 else:
-                    # self.get_logger().info(f"top label not good enough {count > 4} {count} {second_most_common}")
-                    obj_3d.hypothesis.class_id = 0
+                    self.get_logger().info(
+                        f"top label not good enough {count > 3} {count} {second_most_common}",
+                        throttle_duration_sec=2.0,
+                    )
+                    obj.hypothesis.class_id = 0
 
                 total_counts = sum(track_counts.values())
+                class_map = defaultdict(float)
                 for k, v in track_counts.items():
-                    obj_3d.hypothesis.classes.append(
-                        ObjectClassification(class_id=k, score=v / total_counts)
+                    class_map[k] += v / total_counts
+                total_prob_sum = sum(class_map.values())
+                for k, v in class_map.items():
+                    obj.hypothesis.classes.append(
+                        ObjectClassification(class_id=k, score=v / total_prob_sum)
                     )
-
-            labeled_3d_objects.objects.append(obj_3d)
-
+            labeled_3d_objects.objects.append(obj)
+        labeled_3d_objects.header.stamp = detection_2d_msg.header.stamp
         self.publisher.publish(labeled_3d_objects)
 
     def get_bbox_from_2d_detection(self, detection: DetectedObject2D) -> box:
@@ -219,7 +258,7 @@ class DetectedObject3DLabelingNode(Node):
                 camera_info.header.frame_id,
                 obj_3d.hypothesis.kinematics.header.frame_id,
                 rclpy.time.Time(),
-                Duration(seconds=0.1)
+                Duration(seconds=0.1),
             )
             # self.get_logger().info(f"Transform lookup success: {transform} {camera_info.header.frame_id} {obj_3d.hypothesis.kinematics.header.frame_id}")
 
@@ -257,10 +296,12 @@ class DetectedObject3DLabelingNode(Node):
             * fx
         )
         bbox_height = (
-            (obj_3d.hypothesis.shape.dimensions.z + self.inflate_width * 2)
+            (obj_3d.hypothesis.shape.dimensions.z + self.inflate_height * 2)
             / transformed_pose.position.z
             * fy
         )
+        bbox_width = max(bbox_width, 5)
+        bbox_height = max(bbox_height, 5)
 
         # Define the corners of the 2D bounding box
         bbox_corners = [
@@ -270,9 +311,9 @@ class DetectedObject3DLabelingNode(Node):
             (u - bbox_width / 2, v + bbox_height / 2),  # Top-left corner
         ]
 
-        return bbox_corners, np.linalg.norm([transformed_pose.position.x, transformed_pose.position.y])
-
-
+        return bbox_corners, np.linalg.norm(
+            [transformed_pose.position.x, transformed_pose.position.y]
+        )
 
     def compute_overlap(self, bbox1: box, bbox2: box) -> float:
         intersection = bbox1.intersection(bbox2).area

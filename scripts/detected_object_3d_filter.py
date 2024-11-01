@@ -30,6 +30,7 @@ class TrackerFilter(Node):
             "filtered_topic", "/asv4/vision/lidar_small_objects/dets_3d/filtered"
         )
         self.declare_parameter("max_lost", 5)
+        self.declare_parameter("max_range", 100.0)
         self.declare_parameter("dist_threshold", 1.5)
         self.max_lost = (
             self.get_parameter("max_lost").get_parameter_value().integer_value
@@ -81,6 +82,9 @@ class TrackerFilter(Node):
         )
         self.latest_header = None
         self.min_age = 5
+        self.max_range = (
+            self.get_parameter("max_range").get_parameter_value().double_value
+        )
         self.track_counts = defaultdict(lambda: np.zeros(6))
         self.detection_sub = self.create_subscription(
             DetectedObject3DArray,
@@ -91,6 +95,18 @@ class TrackerFilter(Node):
         self.obj_heights = defaultdict(lambda: (0, 0))
         self.obj_z = defaultdict(lambda: (0, 0))
         self.latest_header = None
+        self.add_on_set_parameters_callback(self.on_set_parameters_callback)
+
+    def on_set_parameters_callback(self, params):
+        for param in params:
+            if param.name == "max_lost":
+                self.max_lost = param.value.integer_value
+                self.tracker.max_lost = self.max_lost
+            if param.name == "dist_threshold":
+                self.dist_threshold = param.value.double_value
+                self.tracker.dist_threshold = self.dist_threshold
+            if param.name == "max_range":
+                self.max_range = param.value.double_value
 
     def odom_callback(self, msg: Odometry):
         self.sensor_pose = msg.pose.pose
@@ -112,7 +128,7 @@ class TrackerFilter(Node):
                 )
 
                 # Filter out objects beyond 50 meters
-                if distance > 50.0:
+                if distance > self.max_range:
                     continue
 
             x = pose.position.x - det.hypothesis.shape.dimensions.x / 2
