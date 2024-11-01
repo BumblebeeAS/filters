@@ -12,7 +12,6 @@ from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseStamped
 from message_filters import Subscriber
 from ml_detector.schema_validator import get_config, load_schema
-from permetrics import ClusteringMetric
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sklearn.cluster import HDBSCAN
@@ -86,7 +85,13 @@ class ClusterDetectedObject3D(Node):
         self.cluster_pose_publishers = {}
         # Create dict for a queue of every class
         self.class_queues = defaultdict(lambda: deque(maxlen=queue_size))
-        self.hdb = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
+        self.hdb = HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            cluster_selection_epsilon=0.0,
+            allow_single_cluster=True,
+            store_centers="centroid",
+        )
         self.cluster_timer = self.create_timer(
             cluster_interval, self.cluster_timer_callback
         )
@@ -126,7 +131,6 @@ class ClusterDetectedObject3D(Node):
                 [
                     obj.hypothesis.kinematics.pose_with_covariance.pose.position.x,
                     obj.hypothesis.kinematics.pose_with_covariance.pose.position.y,
-                    obj.hypothesis.kinematics.pose_with_covariance.pose.position.z,
                 ]
             )
             # Do not enqueue if too far from estimate
@@ -153,14 +157,13 @@ class ClusterDetectedObject3D(Node):
         average_pose = PoseStamped()
         average_pose.header.frame_id = self.pose_frame
         average_pose.header.stamp = self.get_clock().now().to_msg()
-        average_position = [0.0, 0.0, 0.0]
+        average_position = [0.0, 0.0]
         for position in positions:
             average_position[0] += position[0]
             average_position[1] += position[1]
-            average_position[2] += position[2]
         average_pose.pose.position.x = average_position[0] / len(positions)
         average_pose.pose.position.y = average_position[1] / len(positions)
-        average_pose.pose.position.z = average_position[2] / len(positions)
+        average_pose.pose.position.z = 0.0
         return average_pose
 
     def cluster_timer_callback(self):
@@ -178,24 +181,13 @@ class ClusterDetectedObject3D(Node):
                 single_pose.header.stamp = self.get_clock().now().to_msg()
                 single_pose.pose.position.x = position_queue[0][0]
                 single_pose.pose.position.y = position_queue[0][1]
-                single_pose.pose.position.z = position_queue[0][2]
+                single_pose.pose.position.z = 0.0
                 self.cluster_pose_publishers[class_id].publish(single_pose)
                 continue
 
             # Returns a new list where each index in position_queue is replaced by the cluster label
             clusterer = self.hdb.fit(position_queue)
             labels = clusterer.labels_
-            # Add clustering metric
-            cm = ClusteringMetric(X=np.array(position_queue), y_pred=labels)
-            DBCV_metric = cm.density_based_clustering_validation_index()
-            silhouette_score = cm.silhouette_score()
-            self.get_logger().info(
-                f"Cluster metrics for {self.id_to_name[class_id]} DBCV: {DBCV_metric} Silhouette score {silhouette_score}"
-            )
-            if DBCV_metric > self.DBCV_threshold:
-                self.get_logger().info(f"DBCV: {DBCV_metric} exceeds threshold")
-                return
-
             # Create a dict for the clusters
             clusters = defaultdict(list)
             for i, label in enumerate(labels):
@@ -246,16 +238,27 @@ class ClusterDetectedObject3D(Node):
         """
         # No home lat lon, should not happen, but defensive check
         if self.home_latlon is None:
+            self.get_logger().info("home_latlon is none")
             return True
 
         # Not R or N marker
         if class_id != 1 and class_id != 2:
+            self.get_logger().info("Neither R or N")
             return True
 
         # No estimates yet, just accept all
-        if class_id == 1 and self.estimate_r is None:
+        if class_id == 1 and self.estimate_n is None:
+            self.get_logger().info("No estimate for N")
             return True
-        if class_id == 2 and self.estimate_n is None:
+        if class_id == 2 and self.estimate_r is None:
+            self.get_logger().info("No estimate for R")
+            return True
+
+        if (
+            self.estimate_r.position.latitude == 0.0
+            or self.estimate_r.position.longitude == 0.0
+        ):
+            self.get_logger().info("Null land")
             return True
 
         # Convert estimate to position
