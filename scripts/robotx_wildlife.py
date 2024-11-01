@@ -1,5 +1,5 @@
+#!/usr/bin/env python3
 from collections import defaultdict
-from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Header
 import time
 from rclpy.node import Node
@@ -7,12 +7,10 @@ import rclpy
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
-    DetectedObject3D,
     DetectedObject3DArray,
-    DetectorSource,
-    ObjectHypothesis,
 )
 from ml_detector.schema_validator import get_config, load_schema
+from bb_robotx_msgs.srv import ConfigureWildlifeTask
 from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import TransformStamped
 
@@ -38,11 +36,19 @@ class EncirclementTask(Node):
             obj["label"]: obj["name"] for obj in self.objects_config["objects"]
         }
         self.name_to_id = {v: k for k, v in self.id_to_name.items()}
-        self.green_buoy_id = self.name_to_id["green_cylinder"]
-        self.red_buoy_id = self.name_to_id["red_cylinder"]
+        self.green_buoy_id = self.name_to_id["green_sphere"]
+        self.blue_buoy_id = self.name_to_id["blue_sphere"]
+        self.red_buoy_id = self.name_to_id["red_sphere"]
         self.black_sphere = self.name_to_id["black_sphere"]
         self.unknown_id = self.name_to_id["unknown"]
         self.gate_id = self.name_to_id["gate"]
+        self.correct_buoy = None
+        self.wildlife_buoy_mapping = {
+            "iguana": self.green_buoy_id,
+            "manatee": self.blue_buoy_id,
+            "python": self.red_buoy_id
+        }
+        self.active = False
         self.subscription = self.create_subscription(
             DetectedObject3DArray,
             # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
@@ -50,6 +56,11 @@ class EncirclementTask(Node):
             "/asv4/vision/detections_2d/projected",
             self.detected_objects_callback,
             1,
+        )
+        self.configure_wildlife_service = self.create_service(
+            ConfigureWildlifeTask,
+            "/robotx24/configure_wildlife_task",
+            self.configure_wildlife_task
         )
         # Rest of your initialization code ...
 
@@ -63,6 +74,8 @@ class EncirclementTask(Node):
         self.latest = None
 
     def detected_objects_callback(self, msg):
+        if not self.active:
+            return
         current_time = time.time()
 
         # Clear history if 10 seconds have passed
@@ -79,23 +92,17 @@ class EncirclementTask(Node):
             self.get_logger().info(
                 f"Published most likely transform for track_id {1}: {self.latest}"
             )
+        if self.correct_buoy is None:
+            self.get_logger().warn(
+                "Wildlife not specified"
+            )
         for det in msg.objects:
             print(det.hypothesis.class_id)
-            # is_red_buoy = det.hypothesis.class_id == self.red_buoy_id
-            # if not is_red_buoy:
-            #     print("not red")
-            #     continue
-            # print("red")
-
-            # is_black_sphere = det.hypothesis.class_id == self.black_sphere
-            # if not is_black_sphere:
-            #     print("not black")
-            #     continue
-            # print("black")
-
-            is_green_buoy = det.hypothesis.class_id == self.green_buoy_id
-            if not is_green_buoy:
+            is_correct_buoy = det.hypothesis.class_id == self.correct_buoy
+            if not is_correct_buoy:
+            #     print("incorrect")
                 continue
+            # print("red")
 
             pose = det.hypothesis.kinematics.pose_with_covariance.pose
             track_id = det.hypothesis.track_id
@@ -103,6 +110,14 @@ class EncirclementTask(Node):
             # Track the position (x, y) of the buoy
             self.buoy_pose_history[track_id].append(
                 (pose.position.x, pose.position.y))
+
+    def configure_wildlife_task(self, req, res):
+        self.get_logger().info(f"config wildlife {req}")
+        self.active = req.active
+        self.correct_buoy = self.wildlife_buoy_mapping[req.wildlife_type]
+        res.success = True
+        return res
+
 
     def determine_most_likely_pose(self):
         tf_message = TFMessage()
