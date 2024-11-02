@@ -47,7 +47,7 @@ from bb_perception_msgs.msg import (
 from bb_robotx_msgs.msg import GateStatuses, GateInfo
 from bb_robotx_msgs.srv import ConfigurePathTask
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Pose, Quaternion, TransformStamped
+from geometry_msgs.msg import Pose, Quaternion, TransformStamped, PoseStamped
 from nav_msgs.msg import Odometry
 from ml_detector.schema_validator import get_config, load_schema
 from rclpy.node import Node
@@ -165,6 +165,14 @@ class RedGreenGateDetection(Node):
             Odometry, "/asv4/nav/world", self.odom_callback, 10,
             callback_group=self.main_cb_group
         )
+        if not self.configs.prequali:
+            self.ftp_end_subscription = self.create_subscription(
+                PoseStamped,
+                "/robotx24/ftp_end",
+                self.ftp_end_cb,
+                10,
+            )
+
         self.create_timer(0.1, self.show_buoys)
 
     def reset(self):
@@ -388,6 +396,24 @@ class RedGreenGateDetection(Node):
             self.gate_statuses.task_complete = True
         else:
             self.gate_statuses.task_complete = False
+    
+    def ftp_end_cb(self, msg : PoseStamped):
+
+        if self.odom_msg is None:
+            return
+
+        distance = np.linalg.norm(np.array([
+            msg.pose.position.x - self.odom_msg.pose.pose.position.x,
+            msg.pose.position.y - self.odom_msg.pose.pose.position.y
+        ]))
+
+        if distance < 20:
+            # Log distance
+            self.get_logger().info(f"Distance to end: {distance}")
+            self.gate_statuses.task_complete = True
+
+        # if distance < 4:
+        #     self.gate_statuses.task_complete = True
 
     def detected_objects_callback(self, msg):
         '''Sets probability of cylinders being buoys'''
