@@ -202,7 +202,8 @@ class DetectedObject2DProjection(Node):
                 )
                 if len(ray_ends) == 0:
                     continue
-                self.get_logger().info(f"{ray_ends}")
+                # self.get_logger().info(f"{ray_ends}")
+            
 
                 # Populate the DetectedObject3D with the calculated rays
                 detected_object_3d.hypothesis.shape.dimensions.x = np.linalg.norm(
@@ -289,7 +290,7 @@ class DetectedObject2DProjection(Node):
             ray_dir_world = rotation_matrix @ ray_dir_camera
 
             t = abs(sensor_pose.position.z) - self.height_offset
-            self.logger.warning(f"t value {t}")
+            # self.logger.warning(f"t value {t}")
 
             ray_end = Point(
                 x=sensor_pose.position.x + ray_dir_world[0] * t,

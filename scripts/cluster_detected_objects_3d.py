@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 
-import rclpy
-import numpy as np
-from pathlib import Path
-from ament_index_python.packages import get_package_share_directory
-from sklearn.cluster import HDBSCAN
-from geometry_msgs.msg import PoseStamped
-from bb_perception_msgs.msg import (
-    DetectedObject3DArray,
-)
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
 from collections import defaultdict, deque
+from pathlib import Path
+
+import numpy as np
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from bb_perception_msgs.msg import DetectedObject3DArray
+from geometry_msgs.msg import PoseStamped
 from message_filters import Subscriber
 from ml_detector.schema_validator import get_config, load_schema
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sklearn.cluster import HDBSCAN
 
 
 class ClusterDetectedObject3D(Node):
@@ -68,6 +67,14 @@ class ClusterDetectedObject3D(Node):
         min_samples = (
             self.get_parameter("min_samples").get_parameter_value().integer_value
         )
+        self.declare_parameter("estimate_tolerance", 8.0)
+        self.estimate_tolerance = (
+            self.get_parameter("estimate_tolerance").get_parameter_value().double_value
+        )
+        self.declare_parameter("DBCV_threshold", 0.8)
+        self.DBCV_threshold = (
+            self.get_parameter("DBCV_threshold").get_parameter_value().double_value
+        )
         self.detections_subscriber = Subscriber(
             self, DetectedObject3DArray, self.detection_topic, qos_profile=qos
         )
@@ -76,7 +83,13 @@ class ClusterDetectedObject3D(Node):
         self.cluster_pose_publishers = {}
         # Create dict for a queue of every class
         self.class_queues = defaultdict(lambda: deque(maxlen=queue_size))
-        self.hdb = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
+        self.hdb = HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            cluster_selection_epsilon=0.0,
+            allow_single_cluster=True,
+            store_centers="centroid",
+        )
         self.cluster_timer = self.create_timer(
             cluster_interval, self.cluster_timer_callback
         )
@@ -91,9 +104,9 @@ class ClusterDetectedObject3D(Node):
                 [
                     obj.hypothesis.kinematics.pose_with_covariance.pose.position.x,
                     obj.hypothesis.kinematics.pose_with_covariance.pose.position.y,
-                    obj.hypothesis.kinematics.pose_with_covariance.pose.position.z,
                 ]
             )
+
             self.get_logger().info(
                 f"Enqueue detection for {self.id_to_name[obj.hypothesis.class_id]} with {position}"
             )
@@ -113,14 +126,13 @@ class ClusterDetectedObject3D(Node):
         average_pose = PoseStamped()
         average_pose.header.frame_id = self.pose_frame
         average_pose.header.stamp = self.get_clock().now().to_msg()
-        average_position = [0.0, 0.0, 0.0]
+        average_position = [0.0, 0.0]
         for position in positions:
             average_position[0] += position[0]
             average_position[1] += position[1]
-            average_position[2] += position[2]
         average_pose.pose.position.x = average_position[0] / len(positions)
         average_pose.pose.position.y = average_position[1] / len(positions)
-        average_pose.pose.position.z = average_position[2] / len(positions)
+        average_pose.pose.position.z = 0.0
         return average_pose
 
     def cluster_timer_callback(self):
@@ -138,7 +150,7 @@ class ClusterDetectedObject3D(Node):
                 single_pose.header.stamp = self.get_clock().now().to_msg()
                 single_pose.pose.position.x = position_queue[0][0]
                 single_pose.pose.position.y = position_queue[0][1]
-                single_pose.pose.position.z = position_queue[0][2]
+                single_pose.pose.position.z = 0.0
                 self.cluster_pose_publishers[class_id].publish(single_pose)
                 continue
 
@@ -161,9 +173,7 @@ class ClusterDetectedObject3D(Node):
                     largest_cluster_label = label
             largest_cluster_positions = clusters[largest_cluster_label]
             if len(largest_cluster_positions) == 0:
-                self.get_logger().info(
-                    f"Cluster has no positions"
-                )
+                self.get_logger().info(f"Cluster has no positions")
                 continue
             clustered_average_pose = self.merge_cluster(largest_cluster_positions)
             self.get_logger().info(
