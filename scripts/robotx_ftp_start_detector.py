@@ -33,6 +33,7 @@ def create_pose_stamped_from_string(pose_str):
     
     # Convert yaw to quaternion
     yaw = math.radians(float(parts[4]))
+    # yaw = 0
     q = euler2quat(0, 0, yaw)
     pose_msg.pose.orientation.x = q[0]
     pose_msg.pose.orientation.y = q[1]
@@ -58,18 +59,18 @@ class FTPStartDetectionNode(Node):
         
     def listener_callback(self, msg):
         # Process the incoming light sequence message
-        light_sequence = (msg.first, msg.second, msg.third)
-        self.get_logger().info(f'Received light sequence: {light_sequence}')
+        first_light = msg.first
+        self.get_logger().info(f'Received first light: {first_light}')
         
         # Determine the start pose based on the light sequence
-        if light_sequence == (LightSequence.BLUE, LightSequence.RED, LightSequence.GREEN):
+        if first_light == LightSequence.BLUE:
             pose_msg = create_pose_stamped_from_string(BLUE_START)
-        elif light_sequence == (LightSequence.RED, LightSequence.GREEN, LightSequence.BLUE):
+        elif first_light == LightSequence.RED:
             pose_msg = create_pose_stamped_from_string(RED_START)
-        elif light_sequence == (LightSequence.GREEN, LightSequence.BLUE, LightSequence.RED):
+        elif first_light == LightSequence.GREEN:
             pose_msg = create_pose_stamped_from_string(GREEN_START)
         else:
-            self.get_logger().warn('Unknown light sequence')
+            self.get_logger().warn('Unknown first light')
             return
         
         # Set the timestamp
