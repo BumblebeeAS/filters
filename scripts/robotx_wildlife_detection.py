@@ -20,7 +20,10 @@ from bb_perception_msgs.msg import (
 from bb_robotx_msgs.srv import ConfigureWildlifeTask
 from ml_detector.schema_validator import get_config, load_schema
 from tf2_msgs.msg import TFMessage
+from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
+import numpy as np
+from bb_robotx_msgs.msg import WildlifePoses
 
 
 class EncirclementTask(Node):
@@ -57,17 +60,19 @@ class EncirclementTask(Node):
             # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
             # "/asv4/vision/detections_2d/projected/filtered",
             "/asv4/vision/detections_2d/projected",
+            # "/asv4/vision/detections_2d/fixed",
             self.detected_objects_callback,
             1,
         )
         # Rest of your initialization code ...
 
         self.buoy_pose_history = defaultdict(list)  # History of buoy poses
+        self.all_buoy_poses = defaultdict(list)  # All buoy poses
         self.tracking_duration = 10.0  # Track for 10 seconds
         self.tolerance = 2.0  # Tolerance for clustering poses (meters)
 
         self.tf_publisher = self.create_publisher(
-            TFMessage, "/wildlife_buoy_tf", 1)
+            PoseStamped, "/wildlife_buoy_pose", 1)
         self.start_time = time.time()
         self.latest = None
         self.wildlife_type = None
@@ -78,20 +83,100 @@ class EncirclementTask(Node):
             self.configure_wildlife_task_callback,
         )
 
+        self.all_wildlife_publisher = self.create_publisher(
+            WildlifePoses, "/all_wildlife_tf", 1
+        )
+
+        self.curr_pose = None
+
+        
+
+
+        # Subscription to the Odometry topic for current position
+        self.curr_position = self.create_subscription(
+            Odometry, "/asv4/nav/world", self.odom_callback, 10)
+        
+    def publish_closest_wildlife_poses(self):
+        # Create WildlifePoses message
+        wildlife_poses_msg = WildlifePoses()
+
+        # Check current position
+        if self.curr_pose is None:
+            self.get_logger().warn("Current position not yet available.")
+            return
+
+        # Closest poses for each wildlife type
+        closest_poses = {'python': None, 'iguana': None, 'manatee': None}
+        min_distances = {'python': float('inf'), 'iguana': float('inf'), 'manatee': float('inf')}
+
+        for class_id, poses in self.all_buoy_poses.items():
+            for pose in poses:
+                # Convert pose to numpy array
+                pose_np = np.array(pose)
+                distance = np.linalg.norm(pose_np - self.curr_pose)
+
+                # Check if it's the closest for the wildlife type
+                print("class id", class_id,"check: ", pose, distance)
+                if class_id in [self.red_sphere_id, self.red_buoy_id] and distance < min_distances['python']:
+                    print("python","check: ", pose, distance)
+                    min_distances['python'] = distance
+                    closest_poses['python'] = pose
+                elif class_id in [self.blue_sphere_id, self.black_bouy_id] and distance < min_distances['manatee']:
+                    print("manatee","check: ", pose, distance)
+                    min_distances['manatee'] = distance
+                    closest_poses['manatee'] = pose
+                elif class_id in [self.green_sphere_id, self.green_buoy_id] and distance < min_distances['iguana']:
+                    print("iguana","checkt: ", pose, distance)   
+                    min_distances['iguana'] = distance
+                    closest_poses['iguana'] = pose
+
+        # Assign closest poses to message if found
+        for wildlife_type, pose in closest_poses.items():
+            if pose is not None:
+                pose_stamped = PoseStamped()
+                pose_stamped.header.stamp = self.get_clock().now().to_msg()
+                pose_stamped.header.frame_id = "map"
+                pose_stamped.pose.position.x = pose[1]
+                pose_stamped.pose.position.y = pose[0]
+                pose_stamped.pose.position.z = 0.0
+                if wildlife_type == 'python':
+                    wildlife_poses_msg.python = pose_stamped
+                elif wildlife_type == 'manatee':
+                    wildlife_poses_msg.manatee = pose_stamped
+                elif wildlife_type == 'iguana':
+                    wildlife_poses_msg.iguana = pose_stamped
+
+        # Publish message
+        self.all_wildlife_publisher.publish(wildlife_poses_msg)
+        self.get_logger().info("Published closest wildlife poses for each type.")
+    
+    def odom_callback(self, msg):
+        if not self.running:
+            return 
+        # Update current position based on Odometry message
+        self.curr_pose = np.array([
+            msg.pose.pose.position.y,
+            msg.pose.pose.position.x,
+        ])
+        # self.get_logger().info(f"Current position updated to: x={self.curr_pose[0]}, y={self.curr_pose[1]}")
+
     def configure_wildlife_task_callback(
         self, req: ConfigureWildlifeTask.Request, res: ConfigureWildlifeTask.Response
     ):
         if not req.active:
             self.running = False
             self.buoy_pose_history = defaultdict(list)
+            self.all_buoy_poses = defaultdict(list)
             self.tracking_duration = 10.0
             self.tolerance = 2.0
             self.wildlife_type = req.wildlife_type
             res.success = True
+            print("Wildlife task deactivated.")
             return res
         self.running = True
         res.success = True
         print(f"Wildlife task configured with type: {req.wildlife_type}")
+        self.wildlife_type = req.wildlife_type
         if req.wildlife_type == "python":
             self.correct_ids = [self.red_sphere_id, self.red_buoy_id]
         elif req.wildlife_type == "manatee":
@@ -110,6 +195,7 @@ class EncirclementTask(Node):
         # Clear history if 10 seconds have passed
         if current_time - self.start_time > self.tracking_duration:
             self.determine_most_likely_pose()
+            self.publish_closest_wildlife_poses()
             self.buoy_pose_history.clear()
             self.start_time = current_time
 
@@ -122,7 +208,11 @@ class EncirclementTask(Node):
                 f"Published most likely transform for track_id {1}: {self.latest}"
             )
         for det in msg.objects:
-            print(det.hypothesis.class_id, self.wildlife_type)
+
+            if det.hypothesis.class_id in [self.red_sphere_id, self.red_buoy_id, self.green_sphere_id, self.green_buoy_id, self.blue_sphere_id, self.black_bouy_id]:
+                self.all_buoy_poses[det.hypothesis.class_id].append(
+                    (det.hypothesis.kinematics.pose_with_covariance.pose.position.x, det.hypothesis.kinematics.pose_with_covariance.pose.position.y)
+                )
 
             if det.hypothesis.class_id not in self.correct_ids:
                 continue
@@ -133,35 +223,13 @@ class EncirclementTask(Node):
             # Track the position (x, y) of the buoy
             self.buoy_pose_history[track_id].append(
                 (pose.position.x, pose.position.y))
+            
+            print(det.hypothesis.class_id, "wildlife", self.wildlife_type, "detected at", pose.position.x, pose.position.y)
 
-    def determine_most_likely_pose(self):
-        tf_message = TFMessage()
-        # To store (track_id, most_likely_pose, count)
-        all_most_likely_poses = []
+        
+        # Publish closest wildlife poses
+        # self.publish_closest_wildlife_poses()
 
-        # Iterate over all tracked buoy poses
-        for track_id, poses in self.buoy_pose_history.items():
-            # Cluster the poses for the current buoy
-            clustered_poses = self.cluster_poses(poses)
-            # Find the most likely pose for the current buoy
-            most_likely_pose, count = max(clustered_poses, key=lambda x: x[1])
-            # Store the most likely pose with its count
-            all_most_likely_poses.append((track_id, most_likely_pose, count))
-
-        # Find the most likely pose across all buoys (highest count)
-        if all_most_likely_poses:
-            track_id, most_likely_pose, _ = max(
-                all_most_likely_poses, key=lambda x: x[2])
-
-            # Create a transform message for the most likely pose
-            transform = self.create_transform_message(
-                track_id, most_likely_pose)
-            tf_message.transforms.append(transform)
-
-            self.latest = tf_message
-
-        else:
-            print("No buoys detected in the last 10 seconds.")
 
     def cluster_poses(self, poses):
         """Clusters poses that are within a given tolerance and returns them with counts."""
@@ -185,26 +253,57 @@ class EncirclementTask(Node):
             abs(pose1[1] - pose2[1]) <= self.tolerance
         )
 
-    def create_transform_message(self, track_id, pose):
-        """Creates a TransformStamped message for the buoy's most likely pose."""
-        transform = TransformStamped()
-        transform.header = Header()
-        transform.header.stamp = self.get_clock().now().to_msg()
-        transform.header.frame_id = "map"  # Replace with appropriate frame of reference
-        # Unique frame for each buoy
-        transform.child_frame_id = f"buoy_{track_id}"
+    def create_pose_message(self, track_id, pose):
+        """Creates a PoseStamped message for the buoy's most likely pose."""
+        pose_msg = PoseStamped()
+        pose_msg.header = Header()
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_msg.header.frame_id = "map"  # Replace with appropriate frame of reference
 
-        transform.transform.translation.x = pose[1]
-        transform.transform.translation.y = pose[0]
-        transform.transform.translation.z = 0.0  # Assuming 2D plane (z=0)
+        # Set position from the pose array (assuming pose[0] is y, pose[1] is x)
+        pose_msg.pose.position.x = pose[1]
+        pose_msg.pose.position.y = pose[0]
+        pose_msg.pose.position.z = 0.0  # Assuming a 2D plane (z=0)
 
-        # Identity rotation (no rotation)
-        transform.transform.rotation.x = 0.0
-        transform.transform.rotation.y = 0.0
-        transform.transform.rotation.z = 0.0
-        transform.transform.rotation.w = 1.0
+        # Identity orientation (no rotation)
+        pose_msg.pose.orientation.x = 0.0
+        pose_msg.pose.orientation.y = 0.0
+        pose_msg.pose.orientation.z = 0.0
+        pose_msg.pose.orientation.w = 1.0
 
-        return transform
+        return pose_msg
+
+    def determine_most_likely_pose(self):
+        geometry_msg = PoseStamped()
+        # To store (track_id, most_likely_pose, distance)
+        all_most_likely_poses = []
+
+        if self.curr_pose is None:
+            self.get_logger().warn("Current position not yet available.")
+            return
+
+        # Iterate over all tracked buoy poses
+        for track_id, poses in self.buoy_pose_history.items():
+            # Cluster the poses for the current buoy
+            clustered_poses = self.cluster_poses(poses)
+            # Find the closest pose to the current position
+            closest_pose = min(clustered_poses, key=lambda cluster: np.linalg.norm(np.array(cluster[0]) - self.curr_pose))
+            most_likely_pose = closest_pose[0]  # Get the pose with the lowest distance
+            count = closest_pose[1]  # Count remains as is
+
+            # Store the most likely pose with its count
+            all_most_likely_poses.append((track_id, most_likely_pose, count))
+
+        # Find the most likely pose across all buoys (highest count)
+        if all_most_likely_poses:
+            track_id, most_likely_pose, _ = max(all_most_likely_poses, key=lambda x: x[2])
+
+            # Create a transform message for the most likely pose
+            pose = self.create_pose_message(track_id, most_likely_pose)
+            self.latest = pose
+
+        else:
+            self.get_logger().info("No buoys detected in the last 10 seconds.")
 
 
 def main(args=None):
