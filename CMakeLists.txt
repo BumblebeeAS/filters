@@ -101,6 +101,7 @@ install(PROGRAMS
   scripts/lidar_detected_object_2d_filter.py
   scripts/zed_detector.py
   scripts/lidar_bbox_extractor.py
+  scripts/robotx_ftp_start_detector.py
   scripts/robotx_placard_detection.py
   scripts/robotx_prequali_gate_detection.py
   scripts/robotx_red_green_gate_detection.py
