@@ -324,7 +324,7 @@ class GateDetection(Node):
             self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}", throttle_duration_sec=2.0)
             return None
         recluster = AgglomerativeClustering(
-            n_clusters=None, distance_threshold=8, linkage="ward"
+            n_clusters=None, distance_threshold=5, linkage="ward"
         )
         cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
         num_children = recluster.n_clusters_
