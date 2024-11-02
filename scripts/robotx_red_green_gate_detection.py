@@ -473,7 +473,9 @@ class RedGreenGateDetection(Node):
         ]
         gate_orientation = np.arctan2(
             green_buoy_pose[1] - red_buoy_pose[1], green_buoy_pose[0] - red_buoy_pose[0]
-        )
+        ) # forward (green top): red left, green right
+        if (self.configs.reverse) :
+            gate_orientation += np.pi # reverse (red top): green left, red right
         gate_width = np.linalg.norm(np.array(green_buoy_pose) - np.array(red_buoy_pose))
         # the probability of gate being a gate depends on the difference in identities of the buoys in each cluster.
         probability = abs(
