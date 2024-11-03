@@ -74,7 +74,7 @@ class GateStatusNode(Node):
         self.pub_gate_ = self.create_publisher(String, '/asv4/robotx/pinger_gate', 10)
         self.pub_status_ = self.create_publisher(Bool, '/asv4/robotx/pinger_gate_status', 10)
         
-        self.service = self.create_service(SetBool, 'activate_pinger_gate_node', self.service_callback)
+        self.service = self.create_service(SetBool, '/robotx/activate_pinger_gate_node', self.service_callback)
 
         # Variables to store the latest data
         self.gate_detection = None
@@ -89,7 +89,7 @@ class GateStatusNode(Node):
 
     def gate_callback(self, msg):
         self.gate_detection = msg
-        self.get_logger().info(f'Received gate data: {msg}')
+        # self.get_logger().info(f'Received gate data: {msg}')
 
     def odom_callback(self, msg):
         self.vehicle_position = msg.pose.pose.position
