@@ -23,6 +23,12 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 import os
 
+ID_TO_COLOR = {
+    1: 'red',
+    2: 'green',
+    3: 'blue'
+}
+
 def create_pose_stamped_from_string(pose_str):
     parts = pose_str.split(';')
     pose_msg = PoseStamped()
@@ -72,6 +78,7 @@ class FTPStartDetectionNode(Node):
             LightSequence,
             '/robotx24/light_sequence',
             self.listener_callback,
+            10
         )
         
         # Create publishers for start and end poses
@@ -83,7 +90,7 @@ class FTPStartDetectionNode(Node):
 
     def listener_callback(self, msg):
         # Process the incoming light sequence message
-        first_light = msg.first
+        first_light = ID_TO_COLOR[msg.first]
         self.get_logger().info(f'Received first light: {first_light}')
         
         is_red_on_left = first_light == self.channel_start_color # is_forward
@@ -111,7 +118,7 @@ class FTPStartDetectionNode(Node):
         self.get_logger().info('Published start and end poses to /robotx24/ftp_start and /robotx24/ftp_end')
 
         # Publish the boolean of is_red_on_left
-        self.is_red_on_left_publisher.publish(Bool(data=is_reversed))
+        self.is_reversed_publisher.publish(Bool(data=is_reversed))
         self.get_logger().info('Published is_reversed to /robotx24/ftp_is_reversed')
 
 def main(args=None):
