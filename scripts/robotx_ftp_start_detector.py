@@ -16,14 +16,18 @@ import rclpy
 from rclpy.node import Node
 from bb_robotx_msgs.msg import LightSequence
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Bool
 from transforms3d.euler import euler2quat
 import math
+import yaml
+from ament_index_python.packages import get_package_share_directory
+import os
 
-# Global variables for start poses x,y,z,yaw
-RED_START = "map;190;205;0;180"
-GREEN_START = "map;92;160;0;0"
-BLUE_START = None
-# One of the start locations must be None
+ID_TO_COLOR = {
+    1: 'red',
+    2: 'green',
+    3: 'blue'
+}
 
 def create_pose_stamped_from_string(pose_str):
     parts = pose_str.split(';')
@@ -47,6 +51,28 @@ class FTPStartDetectionNode(Node):
     def __init__(self):
         super().__init__('ftp_start_detection_node')
         
+        # Load the YAML file
+        package_share_directory = get_package_share_directory('software-asv-3')
+        yaml_file_path = os.path.join(package_share_directory, 'estimates', 'current_course.yaml')
+        
+        with open(yaml_file_path, 'r') as file:
+            config = yaml.safe_load(file)
+        
+        # Parse the channel start and end colors
+        self.channel_start_color = config['channel_start_color']
+        self.channel_end_color = config['channel_end_color']
+
+        # Log colours
+        self.get_logger().info(f'Channel start color: {self.channel_start_color}')
+        self.get_logger().info(f'Channel end color: {self.channel_end_color}')
+        
+        # Assign the values based on the channel start color
+        channel_entrance = config['estimates']['channel_entrance'] # red on left
+        channel_exit = config['estimates']['channel_exit']
+
+        self.start_pose_str = f"map;{channel_entrance['x']};{channel_entrance['y']};0;{channel_entrance['yaw']}"
+        self.end_pose_str = f"map;{channel_exit['x']};{channel_exit['y']};0;{channel_exit['yaw']}"
+        
         # Create a subscriber to the light sequence topic
         self.subscription = self.create_subscription(
             LightSequence,
@@ -55,37 +81,31 @@ class FTPStartDetectionNode(Node):
             10
         )
         
-        # Create publishers to the /robotx24/ftp_start and /robotx24/ftp_end topics
+        # Create publishers for start and end poses
         self.start_publisher = self.create_publisher(PoseStamped, '/robotx24/ftp_start', 10)
         self.end_publisher = self.create_publisher(PoseStamped, '/robotx24/ftp_end', 10)
-        
+
+        # Create publisher for boolean of is_red_on_left
+        self.is_reversed_publisher = self.create_publisher(Bool, '/robotx24/ftp_is_reversed', 10)
+
     def listener_callback(self, msg):
         # Process the incoming light sequence message
-        first_light = msg.first
+        first_light = ID_TO_COLOR[msg.first]
         self.get_logger().info(f'Received first light: {first_light}')
         
-        # Determine the start pose based on the first light in the sequence
-        if first_light == LightSequence.BLUE:
-            start_pose_str = BLUE_START
-        elif first_light == LightSequence.RED:
-            start_pose_str = RED_START
-        elif first_light == LightSequence.GREEN:
-            start_pose_str = GREEN_START
-        else:
-            self.get_logger().warn('Unknown first light')
-            return
+        is_red_on_left = first_light == self.channel_start_color # is_forward
+        is_reversed = not is_red_on_left
+
+        self.get_logger().info(f'Is reversed (green on left)): {is_reversed}')
+
+        # Get PoseStamped messages for start and end poses
+        start_pose_msg = create_pose_stamped_from_string(self.start_pose_str)
+        end_pose_msg = create_pose_stamped_from_string(self.end_pose_str)
+
+        if (is_reversed):
+            # Swap the start and end poses
+            start_pose_msg, end_pose_msg = end_pose_msg, start_pose_msg
         
-        # Determine the end pose based on the remaining non-None start locations
-        if start_pose_str == BLUE_START:
-            end_pose_str = RED_START if RED_START is not None else GREEN_START
-        elif start_pose_str == RED_START:
-            end_pose_str = BLUE_START if BLUE_START is not None else GREEN_START
-        elif start_pose_str == GREEN_START:
-            end_pose_str = BLUE_START if BLUE_START is not None else RED_START
-        
-        # Create PoseStamped messages for start and end poses
-        start_pose_msg = create_pose_stamped_from_string(start_pose_str)
-        end_pose_msg = create_pose_stamped_from_string(end_pose_str)
         
         # Set the timestamp
         current_time = self.get_clock().now().to_msg()
@@ -96,6 +116,10 @@ class FTPStartDetectionNode(Node):
         self.start_publisher.publish(start_pose_msg)
         self.end_publisher.publish(end_pose_msg)
         self.get_logger().info('Published start and end poses to /robotx24/ftp_start and /robotx24/ftp_end')
+
+        # Publish the boolean of is_red_on_left
+        self.is_reversed_publisher.publish(Bool(data=is_reversed))
+        self.get_logger().info('Published is_reversed to /robotx24/ftp_is_reversed')
 
 def main(args=None):
     rclpy.init(args=args)
