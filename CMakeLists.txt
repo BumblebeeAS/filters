@@ -24,6 +24,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(bb_uav_msgs REQUIRED)
+find_package(geographic_msgs REQUIRED)
 
 set(DEPENDENCIES
   bb_perception_msgs
@@ -101,6 +103,7 @@ install(PROGRAMS
   scripts/lidar_detected_object_2d_filter.py
   scripts/zed_detector.py
   scripts/lidar_bbox_extractor.py
+  scripts/robotx_ftp_start_detector.py
   scripts/robotx_placard_detection.py
   scripts/robotx_prequali_gate_detection.py
   scripts/robotx_red_green_gate_detection.py
