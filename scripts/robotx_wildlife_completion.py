@@ -51,8 +51,8 @@ class PoseCompletionService(Node):
 
                 # Access the nested pose position properly
                 pose_position = np.array([
-                    pose_stamped.pose.position.y,
                     pose_stamped.pose.position.x,
+                    pose_stamped.pose.position.y,
                     pose_stamped.pose.position.z
                 ])
 

@@ -17,13 +17,13 @@ from bb_perception_msgs.msg import (
     DetectorSource,
     ObjectHypothesis,
 )
-from bb_robotx_msgs.srv import ConfigureWildlifeTask
+from bb_robotx_msgs.srv import ConfigureWildlifeTask, RobotxTaskStatusUpdate
 from ml_detector.schema_validator import get_config, load_schema
 from tf2_msgs.msg import TFMessage
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
 import numpy as np
-from bb_robotx_msgs.msg import WildlifePoses
+from bb_robotx_msgs.msg import WildlifePoses, WildlifeSequence
 
 
 class EncirclementTask(Node):
@@ -84,10 +84,21 @@ class EncirclementTask(Node):
         )
 
         self.all_wildlife_publisher = self.create_publisher(
-            WildlifePoses, "/all_wildlife_tf", 1
+            WildlifePoses, "/robotx/all_wildlife_poses", 1
         )
 
+        self.wildlife_sequence_publisher = self.create_publisher(
+            WildlifeSequence, "/robotx/wildlife_sequence", 1
+        )
+        self.wildlife_found = {
+            "python": False,
+            "manatee": False,
+            "iguana": False,
+        }
+
         self.curr_pose = None
+
+        self.task_client = self.create_client(RobotxTaskStatusUpdate, "/robotx24/update_task_status")
 
         
 
@@ -141,10 +152,46 @@ class EncirclementTask(Node):
                 pose_stamped.pose.position.z = 0.0
                 if wildlife_type == 'python':
                     wildlife_poses_msg.python = pose_stamped
+                    self.wildlife_found['python'] = True
                 elif wildlife_type == 'manatee':
                     wildlife_poses_msg.manatee = pose_stamped
+                    self.wildlife_found['manatee'] = True
                 elif wildlife_type == 'iguana':
                     wildlife_poses_msg.iguana = pose_stamped
+                    self.wildlife_found['iguana'] = True
+        
+        # Publish wildlife sequence
+        if all(self.wildlife_found.values()):
+            wildlife_sequence = WildlifeSequence()
+
+            tmp_wildlife = []
+            tmp_wildlife.append(("python", wildlife_poses_msg.python))
+            tmp_wildlife.append(("manatee", wildlife_poses_msg.manatee))
+            tmp_wildlife.append(("iguana", wildlife_poses_msg.iguana))
+            tmp_wildlife.sort(key=lambda x: x[1].pose.position.x)
+            if tmp_wildlife[0][0] == "python":
+                wildlife_sequence.first = wildlife_sequence.RED
+            elif tmp_wildlife[0][0] == "manatee":
+                wildlife_sequence.first = wildlife_sequence.BLUE
+            elif tmp_wildlife[0][0] == "iguana":
+                wildlife_sequence.first = wildlife_sequence.GREEN
+            
+            if tmp_wildlife[1][0] == "python":
+                wildlife_sequence.second = wildlife_sequence.RED
+            elif tmp_wildlife[1][0] == "manatee":
+                wildlife_sequence.second = wildlife_sequence.BLUE
+            elif tmp_wildlife[1][0] == "iguana":
+                wildlife_sequence.second = wildlife_sequence.GREEN
+
+            if tmp_wildlife[2][0] == "python":
+                wildlife_sequence.third = wildlife_sequence.RED
+            elif tmp_wildlife[2][0] == "manatee":
+                wildlife_sequence.third = wildlife_sequence.BLUE
+            elif tmp_wildlife[2][0] == "iguana":
+                wildlife_sequence.third = wildlife_sequence.GREEN
+            
+            self.wildlife_sequence_publisher.publish(wildlife_sequence)
+            self.get_logger().info("Published wildlife sequence.")
 
         # Publish message
         self.all_wildlife_publisher.publish(wildlife_poses_msg)
