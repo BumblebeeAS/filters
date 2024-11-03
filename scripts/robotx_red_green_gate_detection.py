@@ -57,6 +57,7 @@ from transforms3d.euler import euler2quat, quat2euler, quat2mat
 from tf2_ros.transform_broadcaster import TransformBroadcaster
 from scipy.spatial.distance import pdist, squareform
 from dataclasses import dataclass
+from copy import deepcopy
 
 
 @dataclass
@@ -68,7 +69,7 @@ class RedGreenGateConfig:
     specified_heading: bool = False
     prequali: bool = False
     scale_heading: bool = False
-    min_gate_width: float = 6.0
+    min_gate_width: float = 7.0
     max_gate_width: float = 20.0
     passed_threshold = 4.0  # threshold to mark gate as passed.
 
@@ -84,6 +85,8 @@ class RedGreenGateDetection(Node):
         self.declare_parameter("debug", True)
         self.debug = self.get_parameter("debug").get_parameter_value().bool_value
         self.past_buoy_ids = set()
+        self.reached_gate_ids = set()
+        self.passed_gate_ids = set()
         self.is_ned = False
         self.header = None
         self.detector_source = DetectorSource(
@@ -144,12 +147,14 @@ class RedGreenGateDetection(Node):
             self.detected_objects_callback,
             10,
         )
+        self.clustering_T, self.inv_clustering_T = np.eye(2), np.eye(2)
         self.odom_msg = None
         self.configure_path_task_service = self.create_service(
             ConfigurePathTask,
             "/asv4/robotx/configure_path_task",
             self.configure_path_task_cb,
         )
+        self.main_cb_group = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
         self.filtered_detections_sub = self.create_subscription(
             DetectedObject3DArray,
             "/asv4/robotx/filtered_detections",
@@ -157,7 +162,8 @@ class RedGreenGateDetection(Node):
             10,
         )
         self.odom_subscription = self.create_subscription(
-            Odometry, "/asv4/nav/world", self.odom_callback, 10
+            Odometry, "/asv4/nav/world", self.odom_callback, 10,
+            callback_group=self.main_cb_group
         )
         if not self.configs.prequali:
             self.ftp_end_subscription = self.create_subscription(
@@ -307,9 +313,20 @@ class RedGreenGateDetection(Node):
             ]
         )
 
+        heading_direction = quat2euler(
+            attrgetter("w", "x", "y", "z")(msg.pose.pose.orientation)
+        )[2]
+        c, s = np.cos(heading_direction), np.sin(heading_direction)
+        R = np.array([(c, -s), (s, c)])
+        self.clustering_T = R @ np.array([[4, 0], [0, 1]]) @ R.T
+        self.inv_clustering_T = np.linalg.inv(self.clustering_T)
         self.update_passed_gates()
 
     def convert_det_to_gate_info(self, det):
+        """
+        Detections of gate from filter
+        Need to match against past gates by dist to past gates (frozen)
+        """
         gate_info = GateInfo()
         gate_info.gate_width = det.hypothesis.shape.dimensions.y
         gate_info.probability = det.hypothesis.probability
@@ -334,12 +351,13 @@ class RedGreenGateDetection(Node):
         else:
             gate_info.is_in_front_vehicle = False
         gate_info.track_id = det.hypothesis.track_id
-        passed = det.hypothesis.track_id in self.gate_statuses.passed_gates
-        for passed_gate in self.gate_statuses.passed_gates:
-            if self.distance_between_gates(gate_info, passed_gate) < self.configs.passed_threshold:
-                passed = True
-                break
-        gate_info.passed = passed
+        # passed = False
+        # for passed_gate in self.gate_statuses.passed_gates:
+        #     if self.distance_between_gates(gate_info, passed_gate) < self.configs.passed_threshold:
+        #         passed = True
+        #         break
+        gate_info.passed = gate_info.track_id in self.passed_gate_ids
+        gate_info.reached = gate_info.track_id in self.reached_gate_ids
         return gate_info
 
     def update_passed_gates(self):
@@ -348,15 +366,31 @@ class RedGreenGateDetection(Node):
 
         if self.odom_msg is None or self.latest_filtered_detections is None:
             return
-
-        for gate_info in self.gate_statuses.detected_gates:
-            if gate_info.passed:
+        new_passed_gates = []
+        new_detected_gates = []
+        for gate_info in [*self.gate_statuses.detected_gates, *self.gate_statuses.passed_gates]:
+            self.get_logger().info(f"{gate_info.track_id} {gate_info.passed} {gate_info.reached}")
+            if gate_info.passed or gate_info.track_id in self.passed_gate_ids:
+                new_passed_gates.append(deepcopy(gate_info))
                 continue
             distance = np.linalg.norm(self.get_relative_position(gate_info))
-            if distance < 2.0:
-                gate_info.passed = True
-                self.gate_statuses.passed_gates.append(gate_info)
+            added = False
+            if distance < self.configs.passed_threshold or gate_info.track_id in self.reached_gate_ids:
+                gate_info.reached = True
+                self.reached_gate_ids.add(gate_info.track_id)
+                new_detected_gates.append(deepcopy(gate_info))
+                self.get_logger().info(f"Reached gate {gate_info.track_id}")
+                added = True
+            if (distance >= self.configs.passed_threshold and gate_info.reached) or gate_info.track_id in self.passed_gate_ids:
                 self.get_logger().info(f"Passed gate {gate_info.track_id}")
+                gate_info.passed = True
+                self.passed_gate_ids.add(gate_info.track_id)
+                new_passed_gates.append(deepcopy(gate_info))
+                added = True
+            if not added:
+                new_detected_gates.append(deepcopy(gate_info))
+        self.gate_statuses.passed_gates = new_passed_gates
+        self.gate_statuses.detected_gates = new_detected_gates
         if len(self.gate_statuses.passed_gates) >= self.configs.num_gates:
             self.get_logger().info("All gates passed")
             self.gate_statuses.task_complete = True
@@ -382,6 +416,7 @@ class RedGreenGateDetection(Node):
         #     self.gate_statuses.task_complete = True
 
     def detected_objects_callback(self, msg):
+        '''Sets probability of cylinders being buoys'''
         self.buoys = {}
         if len(msg.objects) != 0:
             self.is_ned = msg.objects[0].hypothesis.kinematics.header.frame_id.endswith(
@@ -669,6 +704,7 @@ class RedGreenGateDetection(Node):
         return np.dot(relative_position, self.vehicle_forward_direction)
 
     def show_buoys(self):
+        #TODO: Improve deciding of gates
         if not self.buoys:
             return
 
@@ -791,6 +827,7 @@ class RedGreenGateDetection(Node):
             )
 
     def compute_gate_statuses(self, gate_detections):
+        """Compute gate statuses based on the gate detections (take in gates output gates statuses, closest, past etc.)."""
         if not self.configs.active:
             return
         if self.odom_msg is None:
@@ -801,20 +838,19 @@ class RedGreenGateDetection(Node):
             for gate in gate_detections.objects
             if gate.hypothesis.class_id == self.gate_id
         ]
-        self.latest_filtered_detections = gate_detections
-        self.gate_statuses.header = gate_detections.header
-        self.gate_statuses.detected_gates = []
+        gate_statuses = GateStatuses()
+        gate_statuses.header = gate_detections.header
+        gate_statuses.detected_gates = []
 
-        for gate in self.latest_filtered_detections.objects:
+        for gate in gate_detections.objects:
             gate_info = self.convert_det_to_gate_info(gate)
             if not gate_info.passed:
-                self.gate_statuses.detected_gates.append(gate_info)
-            # else:
-            #     gate_info.passed = True
-            #     self.gate_statuses.passed_gates.append(gate_info)
+                gate_statuses.detected_gates.append(gate_info)
+            else:
+                gate_statuses.passed_gates.append(gate_info)
         # sort by distance from latest vehicle position
-        self.gate_statuses.detected_gates = sorted(
-            self.gate_statuses.detected_gates,
+        gate_statuses.detected_gates = sorted(
+            gate_statuses.detected_gates,
             key=lambda x: np.linalg.norm(
                 [
                     x.gate_center.pose.position.x
@@ -824,18 +860,20 @@ class RedGreenGateDetection(Node):
                 ]
             )
         )
-        if len(self.gate_statuses.detected_gates) > 0:
-            self.gate_statuses.closest_gate = [self.gate_statuses.detected_gates[0]]
+        if len(gate_statuses.detected_gates) > 0:
+            gate_statuses.closest_gate = [gate_statuses.detected_gates[0]]
         else:
-            self.gate_statuses.closest_gate = []
-        if len(self.gate_statuses.detected_gates) > 1:
-            self.gate_statuses.second_closest_gate = [
-                self.gate_statuses.detected_gates[1]
+            gate_statuses.closest_gate = []
+        if len(gate_statuses.detected_gates) > 1:
+            gate_statuses.second_closest_gate = [
+                gate_statuses.detected_gates[1]
             ]
         else:
-            self.gate_statuses.second_closest_gate = []
-        self.gate_statuses_pub.publish(self.gate_statuses)
+            gate_statuses.second_closest_gate = []
+        self.gate_statuses = gate_statuses
+        self.gate_statuses_pub.publish(gate_statuses)
         self.publish_next_closest_gate()
+        self.latest_filtered_detections = gate_detections
 
     def debug_visualization(self, cluster_labels, gate_detections, gate_statuses):
         if self.odom_msg is None:

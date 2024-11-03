@@ -15,7 +15,7 @@ TODO: expose the setting of direction as service.
 
 Parameters:
 - `objects_config` (str): Path to the configuration file for object schemas.
-
+-  `ros2 param set /gate_detection objects_config new_config.yaml` to change config at runtime
 Publications:
 - `/asv4/robotx/gates/debug` (sensor_msgs/Image): Debug image showing buoy positions and gates.
 - `/asv4/vision/gate_detections` (bb_perception_msgs/DetectedObject3DArray): Detected gates.
@@ -29,28 +29,6 @@ Dependencies:
 - transforms3d for Euler angle to quaternion conversion.
 - rclpy for ROS2 node functionality.
 """
-
-"""
-ros2 service call /robotx24/configure_gate_task bb_robotx_msgs/srv/ConfigureGateTask "active: true 
-use_heading: false
-estimated_pose:
-  header:
-    stamp:
-      sec: 0
-      nanosec: 0
-    frame_id: 'map'
-  pose:
-    position:
-      x: 190.0
-      y: 250.0
-      z: 0.0
-    orientation:
-      x: 0.0
-      y: 0.0
-      z: 1.0
-      w: 0.0"
-"""
-
 import colorsys
 import random
 from pathlib import Path
@@ -91,12 +69,13 @@ class GateDetection(Node):
         self.image = None
         self.declare_parameter("debug", True)
         self.debug = self.get_parameter("debug").get_parameter_value().bool_value
-        self.past_buoy_ids = set()
-        self.is_ned = False
+        self.past_buoy_ids = set() # ID of buoys that has been processed, set to avoid duplicates 
+        self.is_ned = False #using enu 
         self.header = None
         self.initial_pose_estimate = None
-        self.R = np.eye(3)
-        self.detector_source = DetectorSource(
+        self.R = np.eye(3) # initialise rotation matrix to a 3x3 identity matrix (no transformation)
+        # detector source metadata to encapsulates information about the sensorZZ
+        self.detector_source = DetectorSource( 
             sensor_name="gate_detector",
             frame_id="asv4/base_link",
             category=DetectorSource.LIDAR,
@@ -108,6 +87,7 @@ class GateDetection(Node):
             / "objects_schema.json"
         )
         self.objects_schema = load_schema(objects_schema_path)
+    
         self.declare_parameter("objects_config", "robotx.yaml")
         self.objects_config = get_config(
             Path(get_package_share_directory("ml_detector"))
@@ -123,6 +103,7 @@ class GateDetection(Node):
         self.id_to_name = {
             obj["label"]: obj["name"] for obj in self.objects_config["objects"]
         }
+        if self.debug : print("List of objects:",self.id_to_name)
         self.gate_geofence = None
         self.name_to_id = {v: k for k, v in self.id_to_name.items()}
         self.green_buoy_id = self.name_to_id["green_cylinder"]
@@ -130,23 +111,30 @@ class GateDetection(Node):
         self.white_buoy_id = self.name_to_id["white_cylinder"]
         self.unknown_id = self.name_to_id["unknown"]
         self.gate_id = self.name_to_id["gate"]
+        self.gate_left_id =  self.name_to_id["gate_left"]
+        self.gate_middle_id = self.name_to_id["gate_middle"]
+        self.gate_right_id = self.name_to_id["gate_right"]
+        
         self.vehicle_position = None
 
         self.latest_poses = None
 
         # scale all points in direction by factor to account for case where distance from start->end gate < width of gate
-        self.use_heading = True
-        # TODO: expose this as service or parameter
-        self.heading_direction = np.deg2rad(
-            180
-        )  # degrees enu # for nbpark # point west
-        # self.heading_direction = np.deg2rad(-30) # degrees enu for rsyc
 
+        self.use_heading = True
+        # set heading for the gate 
+        self.declare_parameter("heading_direction", 180.0) # degrees enu for nbpark # point west
+        # self.declare_parameter("heading_direction", -30.0) # degrees enu for rsyc
+        self.heading_direction = np.deg2rad(
+            self.get_parameter("heading_direction").get_parameter_value().double_value
+        ) 
+        
+        # transform buoys to align with gate heading and scale 
         # calculate 2x2 matrix to transform all x y coordinates to stretch coordinates in direction by 2x
         c, s = np.cos(self.heading_direction), np.sin(self.heading_direction)
         R = np.array([(c, -s), (s, c)])
-        self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
         # self.clustering_T = np.eye(2)
+        self.clustering_T = R @ np.array([[2, 0], [0, 1]]) @ R.T
         self.inv_clustering_T = np.linalg.inv(self.clustering_T)
         self.forward_direction = R @ np.array([1, 0])
 
@@ -168,22 +156,23 @@ class GateDetection(Node):
         )
         self.subscription = self.create_subscription(
             DetectedObject3DArray,
-            # "/asv4/vision/lidar_small_objects/dets_3d/labelled",
-            "/asv4/robotx/filtered_detections",
+            "/asv4/vision/lidar_small_objects/dets_3d/labelled",
+            # "/asv4/robotx/filtered_detections",
             self.detected_objects_callback,
             10,
         )
-        self.get_logger().info("subscribed to : /asv4/robotx/filtered_detections")
         self.gate_task_config_service = self.create_service(
             ConfigureGateTask,
             "/robotx24/configure_gate_task",
             self.configure_gate_task_callback,
         )
-        self.create_timer(0.1, self.show_buoys)
+        # show buoys execute at 10hz 
+        self.create_timer(0.1, self.show_buoys) 
 
     def configure_gate_task_callback(
         self, req: ConfigureGateTask.Request, res: ConfigureGateTask.Response
     ):
+        # if task not active, reset everything
         if not req.active:
             self.running = False
             self.buoys = {}
@@ -194,16 +183,19 @@ class GateDetection(Node):
             self.gate_estimate_valid = False
             res.success = True
             return res
+        # configure task based on request param
         self.use_heading = req.use_heading
         self.initial_pose_estimate = req.estimated_pose
+        # if true, set to initial gate's heading 
         if self.use_heading:
             self.heading_direction = quat2euler(
-                attrgetter("w", "x", "y", "z")(self.initial_pose_estimate.pose.orientation)
+                attrgetter("w", "x", "y", "z")(self.initial_pose_estimate.pose.orientation) 
             )[2]
-        if self.use_heading:
-            self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, 60, 30)
-        else:  # set geofence as square
-            self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, 60, 60)
+            w, l = 60, 30 # rectangular geofence (aligned w heading)
+        else:
+            w, l = 60,60 # square geofence 
+        self.gate_geofence = self.compute_geofence(self.initial_pose_estimate, width=w, length=l)
+        if self.debug: print("Reconfigured Gate task, geofence set to : {self.gate_geofence}")
         self.get_logger().info(f"Setting geofence to {self.gate_geofence}")
         self.clustering_T = self.R @ np.array([[2, 0], [0, 1]]) @ self.R.T
         self.forward_direction = self.R @ np.array([1, 0])
@@ -246,6 +238,7 @@ class GateDetection(Node):
     def odom_callback(self, msg):
         self.vehicle_position = msg.pose.pose.position
 
+    # triggers each time a new object is detected 
     def detected_objects_callback(self, msg):
         if not self.running:
             return
@@ -320,18 +313,63 @@ class GateDetection(Node):
         self, cluster
     ) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], float]]:
         # cluster the cluster into 2 clusters based on the x,y positions of the buoys
+        if len(cluster) < 2:
+            self.get_logger().info(f"[No gate] Not enough buoys to form partial gate: {cluster}{len(cluster)}")
+            return None 
+        
         if len(cluster) < 3:
-            self.get_logger().info(f"Not enough buoys to form a gate {cluster} {len(cluster)}", throttle_duration_sec=2.0)
-            return None
+            self.get_logger().info(f"[Partial gate] Less than 3 buoys: {cluster} {len(cluster)}", throttle_duration_sec=2.0)
+            # Cluster the buoys based on x, y positions
+            recluster = AgglomerativeClustering(
+                n_clusters=None, distance_threshold=10, linkage="ward"
+            )
+            cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
+
+            # Collect the buoy colors
+            buoy_colors = np.zeros((len(cluster), 3))  # red, green, white
+
+            for i, buoy in enumerate(cluster):
+                track_id, (x, y, colors) = buoy
+                buoy_colors[i] = colors  # Accumulate color probabilities
+
+            # Identify partial gate combinations
+            red_count = np.sum(buoy_colors[:, 0] > 0)
+            green_count = np.sum(buoy_colors[:, 1] > 0)
+            white_count = np.sum(buoy_colors[:, 2] > 0)
+
+            # Detect partial gates based on color combinations
+            if red_count >= 1 and white_count >= 1:
+                self.get_logger().info("Partial gate detected: Red-White")
+            elif white_count >= 2:
+                self.get_logger().info("Partial gate detected: White-White")
+            elif white_count >= 1 and green_count >= 1:
+                self.get_logger().info("Partial gate detected: White-Green")
+            elif red_count >= 1 and green_count >= 1:
+                self.get_logger().info("Partial gate detected: Red-Green")
+
+            # Compute the average position of the buoys in the cluster (centroid)
+            cluster_centroid = np.mean(np.array([c[1][:2] for c in cluster]), axis=0)
+
+            # Compute the orientation (yaw) of the gate based on the first two buoys
+            if len(cluster) >= 2:
+                first_buoy = cluster[0][1][:2]
+                second_buoy = cluster[1][1][:2]
+                yaw = np.arctan2(second_buoy[1] - first_buoy[1], second_buoy[0] - first_buoy[0])
+            else:
+                yaw = 0.0  # Default yaw if not enough buoys for orientation
+
+            # Return the gate pose and yaw
+            return cluster_centroid, yaw
+        # for complete gate
         recluster = AgglomerativeClustering(
-            n_clusters=None, distance_threshold=5, linkage="ward"
+            n_clusters=None, distance_threshold=10, linkage="ward"
         )
         cluster_labels = recluster.fit_predict(np.array([c[1][:2] for c in cluster]))
         num_children = recluster.n_clusters_
         if num_children < 3 or num_children > 4:
             self.get_logger().info(f"Invalid number of clusters {num_children}", throttle_duration_sec=2.0)
             return None
-        cluster_centroids = np.zeros((num_children, 2))
+        cluposesster_centroids = np.zeros((num_children, 2))
         for i in range(num_children):
             cluster_centroids[i] = np.mean(
                 np.array([c[1][:2] for c in cluster])[cluster_labels == i], axis=0
@@ -545,7 +583,8 @@ class GateDetection(Node):
 
     def publish_gate_transform(self, gate_detections: List[DetectedObject3D]):
         # Extract position and direction for entrance gate
-        if len(gate_detections) != 3:
+        if len(gate_detections) < 2:
+            self.get_logger().info("Not enough detections to publish a gate", throttle_duration_sec=2.0)
             return
         self.get_logger().info("Publishing gate transforms", throttle_duration_sec=2.0)
         frame_ids = [
@@ -554,7 +593,10 @@ class GateDetection(Node):
             "gate_right" + ("_ned" if self.is_ned else ""),
         ]
         for i, gate in enumerate(gate_detections):
-            print(i, gate)
+           
+            if i >= len(frame_ids):
+                break  # Avoid index out of range if fewer than 3 detections
+            print(i, gate) 
             gate_transform = TransformStamped()
             gate_transform.header.stamp = self.get_clock().now().to_msg()
             gate_transform.header.frame_id = "map" + ("_ned" if self.is_ned else "")
@@ -581,7 +623,7 @@ class GateDetection(Node):
             return
         else:
             self.get_logger().info(
-                f"{len(self.buoys)} buoys detected : {self.buoys}", throttle_duration_sec=2.0
+                f"{len(self.buoys)} buoys detected", throttle_duration_sec=2.0
             )
 
         # Extract buoy positions for clustering
@@ -590,11 +632,13 @@ class GateDetection(Node):
             @ self.clustering_T.T
         )
 
+        # defines clustering algo
         hierarchical_clusterer = AgglomerativeClustering(
             n_clusters=None,  # Set to None to allow distance-based threshold
             distance_threshold=15,  # Similar to 'eps', defines max distance for clusters, larger than estimate distance0
             linkage="single",  # Linkage method; 'ward', 'complete', 'average', or 'single'
         )
+        # requires more than 1 buoy to cluster a gate 
         if len(positions) == 1:
             self.get_logger().info("Only one buoy detected", throttle_duration_sec=2.0)
             return
@@ -632,7 +676,7 @@ class GateDetection(Node):
             cluster_details = [(tid, self.buoys[tid]) for tid in cluster_tids]
             self.get_logger().info(
                 f"Cluster {cluster} with tids {cluster_tids}: {len(cluster_details)}",
-                throttle_duration_sec=2.0,
+                throttle_duration_sec=2.0,>
             )
             poses = self.calculate_gate_poses(cluster_details)
             if poses is None:

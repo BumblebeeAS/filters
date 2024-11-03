@@ -201,11 +201,11 @@ class DetectedObject3DLabelingNode(Node):
                     if len(track_counts) > 1
                     else 0
                 )
-                if count > 3 and count > 1.2 * second_most_common:
+                if count > second_most_common:
                     obj.hypothesis.class_id = most_common_class
                 else:
                     self.get_logger().info(
-                        f"top label not good enough {count > 3} {count} {second_most_common}",
+                        f"top label not good enough {count} {second_most_common} {track_counts}",
                         throttle_duration_sec=2.0,
                     )
                     obj.hypothesis.class_id = 0
