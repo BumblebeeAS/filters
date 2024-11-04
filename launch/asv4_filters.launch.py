@@ -98,6 +98,22 @@ def generate_launch_description():
             ),
             Node(
                 package="bb_filters",
+                executable="detected_object_3d_filter.py",
+                # executable="detected_object_3d_composite_filter.py",
+                name="det_3d_sort_filter",
+                parameters=[
+                    {
+                        "dets_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
+                        "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
+                        "objects_config": "robotx.yaml",
+                        "max_lost": 10,
+                        "dist_threshold": 3.0,
+                        "max_range": 100.0
+                    }
+                ],
+            ),
+            Node(
+                package="bb_filters",
                 executable="detected_object_3d_labelling.py",
                 name="det_3d_labeller",
                 parameters=[
@@ -152,13 +168,15 @@ def generate_launch_description():
                 executable="detected_object_2d_filter_projection.py",
                 name="dets_2d_projection",
                 parameters=[
-                    "input_detections_topics": [
-                        "/asv4/vision/detections_2d/fixed",
-                    ],
-                    "output_detections_topic": "/asv4/vision/detections_2d/projected",
-                    "objects_config": "robotx.yaml",
-                    "inflate_height": 0.1,
-                    "ground_z": -0.2
+                    {
+                        "input_detections_topics": [
+                            "/asv4/vision/detections_2d/fixed",
+                        ],
+                        "output_detections_topic": "/asv4/vision/detections_2d/projected",
+                        "objects_config": "robotx.yaml",
+                        "inflate_height": 0.1,
+                        "ground_z": -0.2
+                    }
                 ],
             ),
         ]

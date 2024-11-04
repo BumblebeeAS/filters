@@ -639,6 +639,8 @@ class GateDetection(Node):
                 continue
             self.gate_estimate_valid = True
             gate_position, yaw = poses
+            if self.use_heading:
+                yaw = self.heading_direction
             gate_quat = euler2quat(0, 0, yaw)
             gate_quat = Quaternion(
                 w=gate_quat[0], x=gate_quat[1], y=gate_quat[2], z=gate_quat[3]
