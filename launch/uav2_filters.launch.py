@@ -69,7 +69,7 @@ def generate_launch_description():
                         "detected_objects_3d_topic": "/uav2/bottom_cam/projected_3d",
                         "cluster_interval": 2.0,
                         "queue_size": 10,
-                        "min_cluster_size": 10,
+                        "min_cluster_size": 2,
                         "min_samples": 1,
                         "estimate_tolerance": 8.0,
                         "DBCV_threshold": 0.8,
