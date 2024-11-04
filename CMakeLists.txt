@@ -26,6 +26,7 @@ find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(bb_uav_msgs REQUIRED)
 find_package(geographic_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(DEPENDENCIES
   bb_perception_msgs

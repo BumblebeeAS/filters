@@ -14,6 +14,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sklearn.cluster import HDBSCAN
 
+from std_srvs.srv import Trigger
 
 class ClusterDetectedObject3D(Node):
     def __init__(self):
@@ -56,7 +57,7 @@ class ClusterDetectedObject3D(Node):
             self.get_parameter("cluster_interval").get_parameter_value().double_value
         )
         self.declare_parameter("queue_size", 10)
-        queue_size = (
+        self.queue_size = (
             self.get_parameter("queue_size").get_parameter_value().integer_value
         )
         self.declare_parameter("min_cluster_size", 2)
@@ -82,7 +83,7 @@ class ClusterDetectedObject3D(Node):
         # Publish multiple topics for each detection
         self.cluster_pose_publishers = {}
         # Create dict for a queue of every class
-        self.class_queues = defaultdict(lambda: deque(maxlen=queue_size))
+        self.class_queues = defaultdict(lambda: deque(maxlen=self.queue_size))
         self.hdb = HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
@@ -93,6 +94,10 @@ class ClusterDetectedObject3D(Node):
         self.cluster_timer = self.create_timer(
             cluster_interval, self.cluster_timer_callback
         )
+
+        # trigger to flush queue
+        self.flush_queue_srv = self.create_service(
+            Trigger, "/uav2/clusters/flush_queue", self.flush_queue_cb)
 
     def detection_callback(self, detections: DetectedObject3DArray):
         """Adds respective detections into their respective queues"""
@@ -181,6 +186,11 @@ class ClusterDetectedObject3D(Node):
             )
             self.cluster_pose_publishers[class_id].publish(clustered_average_pose)
 
+    def flush_queue_cb(self, req: Trigger.Request, 
+            resp: Trigger.Response) -> Trigger.Response:
+        self.class_queues = defaultdict(lambda: deque(maxlen=self.queue_size))
+        resp.success = True
+        return resp
 
 def main(args=None):
     rclpy.init(args=args)
