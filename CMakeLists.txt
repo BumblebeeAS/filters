@@ -121,6 +121,7 @@ install(PROGRAMS
   scripts/detected_object_2d_filter_projection_bottom_facing.py
   scripts/cluster_detected_objects_3d.py
   scripts/pinger_gate_detection.py
+  scripts/ml_color_relabel_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -143,9 +143,11 @@ class LightTowerDetection(Node):
         self.subscription_2d = self.create_subscription(
             DetectedObject2DArray,
             (
-                f"/{self.namespace}/vision/detections_2d/fixed"
-                if self.namespace == "asv4"
-                else f"/{self.namespace}/vision/detections_2d"
+                f"/{self.namespace}/vision/detections_2d"
+                # f"/{self.namespace}/vision/detections_2d/fixed"
+                # if self.namespace == "asv4"
+                # else f"/{self.namespace}/vision/detections_2d"
+                # "/asv4/vision/detections_2d_relabelled"
             ),
             self.detected_objects_2d_callback,
             10,
@@ -271,6 +273,7 @@ class LightTowerDetection(Node):
         )
         self.tcm_fixed = sorted_colours
         new_best_colours = np.argmax(sorted_colours, axis=1)
+        print(new_best_colours, sorted_colours)
         if any(np.sum(sorted_colours, axis=1) == 0):
             self.get_logger().info("get_seq_from_time_colour_map some empty")
             return
@@ -301,9 +304,11 @@ class LightTowerDetection(Node):
         )
 
     def check_condition_tcm(self):
+        if self.best_sequence_count_tcm >= self.best_sequence_threshold:
+            return True
         new_sequence = self.get_seq_from_time_colour_map()
         if new_sequence is None:
-            self.best_sequence_count_tcm = 0
+            self.best_sequence_count_tcm -= 1
             return False
         if new_sequence == self.best_sequence_tcm:
             current_time = Time.from_msg(self.get_clock().now().to_msg())
@@ -497,10 +502,12 @@ class LightTowerDetection(Node):
             ]
 
         if len(panel_dets) == 0:
+            self.get_logger().info("No panel detected.")
             return
         else:
             best_placard = max(panel_dets, key=lambda det: det.hypothesis.probability)
             color = self.ID_TO_COLOR[best_placard.hypothesis.class_id]
+            self.get_logger().info("Detected panel: " + self.COLORS_LIST[color])
         if len(self.latest_colors) >= self.degree:
             for i, prev_color in enumerate(self.latest_colors):
                 if prev_color != color:
