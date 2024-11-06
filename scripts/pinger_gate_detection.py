@@ -108,8 +108,8 @@ class GateStatusNode(Node):
         elif self.gate_left_threshold[0] <= doa <= self.gate_left_threshold[1] : 
             return "gate_left" 
         else:
-            self.get_logger().info(f"Invalid Gate, not pulishing")
-            return "Invalid"
+            self.get_logger().info(f"Invalid doa")
+            return
 
     def pinger_callback(self, msg):
         """ taking only the doa, elevation data and others not accurate
