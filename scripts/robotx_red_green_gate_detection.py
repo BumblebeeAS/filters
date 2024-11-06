@@ -369,7 +369,7 @@ class RedGreenGateDetection(Node):
         new_passed_gates = []
         new_detected_gates = []
         for gate_info in [*self.gate_statuses.detected_gates, *self.gate_statuses.passed_gates]:
-            self.get_logger().info(f"{gate_info.track_id} {gate_info.passed} {gate_info.reached}")
+            # self.get_logger().info(f"{gate_info.track_id} {gate_info.passed} {gate_info.reached}")
             if gate_info.passed or gate_info.track_id in self.passed_gate_ids:
                 new_passed_gates.append(deepcopy(gate_info))
                 continue
@@ -394,8 +394,8 @@ class RedGreenGateDetection(Node):
         if len(self.gate_statuses.passed_gates) >= self.configs.num_gates:
             self.get_logger().info("All gates passed")
             self.gate_statuses.task_complete = True
-        else:
-            self.gate_statuses.task_complete = False
+        # else:
+        #     self.gate_statuses.task_complete = False
     
     def ftp_end_cb(self, msg : PoseStamped):
 
@@ -829,6 +829,7 @@ class RedGreenGateDetection(Node):
     def compute_gate_statuses(self, gate_detections):
         """Compute gate statuses based on the gate detections (take in gates output gates statuses, closest, past etc.)."""
         if not self.configs.active:
+            self.get_logger().warn("Red Green Detector Inactive")
             return
         if self.odom_msg is None:
             self.get_logger().warn("No odometry message received")
