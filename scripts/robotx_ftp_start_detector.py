@@ -62,14 +62,17 @@ class FTPStartDetectionNode(Node):
         self.channel_start_color = config['channel_start_color']
         self.channel_end_color = config['channel_end_color']
 
-        # Log colours
-        self.get_logger().info(f'Channel start color: {self.channel_start_color}')
-        self.get_logger().info(f'Channel end color: {self.channel_end_color}')
-        
         # Assign the values based on the channel start color
         channel_entrance = config['estimates']['channel_entrance'] # red on left
         channel_exit = config['estimates']['channel_exit']
 
+        # Log colours
+        self.get_logger().info(f'Channel start color: {self.channel_start_color}')
+        self.get_logger().info(f'Channel start estimates: {channel_entrance}')
+
+        self.get_logger().info(f'Channel end color: {self.channel_end_color}')
+        self.get_logger().info(f'Channel end estimates: {channel_exit}')
+        
         self.start_pose_str = f"map;{channel_entrance['x']};{channel_entrance['y']};0;{channel_entrance['yaw']}"
         self.end_pose_str = f"map;{channel_exit['x']};{channel_exit['y']};0;{channel_exit['yaw']}"
         
