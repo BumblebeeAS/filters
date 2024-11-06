@@ -72,9 +72,9 @@ class GateStatusNode(Node):
         )
     
         # assuming 5m in front and facing gate straight head 
-        self.gate_left_threshold = (270,320) # red - white 
-        self.gate_middle_threshold = (325,40) # white - white 
-        self.gate_right_threshold = (45,75) # white - green
+        self.gate_left_threshold = (275,325) # red - white 
+        self.gate_middle_threshold = (330,35) # white - white 
+        self.gate_right_threshold = (40,75) # white - green
         # Publishers
         self.pub_gate_ = self.create_publisher(String, '/asv4/robotx/pinger_gate', 10)
         self.pub_status_ = self.create_publisher(Bool, '/asv4/robotx/pinger_gate_status', 10)
@@ -101,14 +101,15 @@ class GateStatusNode(Node):
         # self.get_logger().info(f'Received odometry data.'throttle_duration_sec=2.0)
         
     def get_gate_from_doa(self,doa):
-        if self.gate_middle_threshold[0] >= doa and doa <= self.gate_middle_threshold[1] : 
+        # assert: doa [0,359]
+        if self.gate_middle_threshold[0] <= doa or doa <= self.gate_middle_threshold[1] : 
            return  "gate_middle"
         elif self.gate_right_threshold[0] <= doa <= self.gate_right_threshold[1] : 
             return "gate_right" 
         elif self.gate_left_threshold[0] <= doa <= self.gate_left_threshold[1] : 
             return "gate_left" 
         else:
-            self.get_logger().info(f"Invalid doa")
+            self.get_logger().info(f"Invalid doa: {doa}")
             return
 
     def pinger_callback(self, msg):
