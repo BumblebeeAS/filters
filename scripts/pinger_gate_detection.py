@@ -47,7 +47,7 @@ class GateStatusNode(Node):
         pinger_data = self.get_parameter("pinger_data").get_parameter_value().string_value
         
         # taking some doa to average for best result 
-        self.declare_parameter("doa_cluster_size", 10)
+        self.declare_parameter("doa_cluster_size", 7)
         self.doa_cluster_size = self.get_parameter("doa_cluster_size").get_parameter_value().integer_value
         self.get_logger().info(f"DOA cluster size set to: {self.doa_cluster_size}")
 
