@@ -277,12 +277,12 @@ class LightTowerDetection(Node):
         if any(np.sum(sorted_colours, axis=1) == 0):
             self.get_logger().info("get_seq_from_time_colour_map some empty")
             return
-        if any(col == 0 for col in new_best_colours[:3]):
-            self.get_logger().info(f"get_seq_from_time_colour_map some colour black")
-            return
-        if any(col != 0 for col in new_best_colours[3:]):
-            self.get_logger().info(f"get_seq_from_time_colour_map last 2 not black")
-            return
+        # if any(col == 0 for col in new_best_colours[:3]):
+        #     self.get_logger().info(f"get_seq_from_time_colour_map some colour black")
+        #     return
+        # if any(col != 0 for col in new_best_colours[3:]):
+        #     self.get_logger().info(f"get_seq_from_time_colour_map last 2 not black")
+        #     return
         if (
             new_best_colours[0] == new_best_colours[1]
             or new_best_colours[1] == new_best_colours[2]
@@ -294,7 +294,7 @@ class LightTowerDetection(Node):
         # check that best colours are at least 0.5 of everything
         if np.any(
             np.sort(sorted_colours, axis=1)[:, -1] / np.sum(sorted_colours, axis=1)
-            < 0.5
+            < 0.25
         ):
             return
         return LightSequence(
