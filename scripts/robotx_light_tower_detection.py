@@ -120,6 +120,7 @@ class LightTowerDetection(Node):
 
         self.degree = 1  # only update transition up to degree time steps in the past.
         # e.g. if degree is 2, increments state n-1 -> n by 2 and state n-2 -> n by 1
+        self.timestep = 0
         self.latest_colors = deque(maxlen=self.degree)
         self.scaling_factor = (
             self.degree * (self.degree + 1) / 2
@@ -196,6 +197,7 @@ class LightTowerDetection(Node):
             (5 * self.time_colour_map_granularity, 4)
         )  # rows: 0 1 2 3 4, cols: black red blue green
         self.tcm_fixed = None
+        self.timestep = 0
         self.light_tower_positions.clear()
 
     def configure_task(self,
@@ -256,12 +258,15 @@ class LightTowerDetection(Node):
         self.tf_broadcaster.sendTransform(t)
 
     def get_seq_from_time_colour_map(self):
-        best_colours = np.argmax(self.time_colour_map, axis=1)
+        max_val = np.max(self.time_colour_map)
+        filtered_colours = np.copy(self.time_colour_map)
+        filtered_colours[filtered_colours / max_val < 0.1] = 0
+        best_colours = np.argmax(filtered_colours, axis=1)
         if np.all(best_colours == 0):
             self.get_logger().info("get_seq_from_time_colour_map all black")
             return
 
-        # check that there are 2 best colours that are 0 and their indices are adjacent or at the start and end
+        # # check that there are 2 best colours that are 0 and their indices are adjacent or at the start and end
         first_non_black_idx = np.where(best_colours != 0)[0][0]
         last_black_idx = np.where(best_colours == 0)[0][-1]
         if last_black_idx < 5 * self.time_colour_map_granularity - 1:
@@ -271,6 +276,7 @@ class LightTowerDetection(Node):
             .reshape(5, self.time_colour_map_granularity, 4)
             .sum(axis=1)
         )
+        # fill low values with 0 where low value < 0.1
         self.tcm_fixed = sorted_colours
         new_best_colours = np.argmax(sorted_colours, axis=1)
         print(new_best_colours, sorted_colours)
@@ -424,7 +430,7 @@ class LightTowerDetection(Node):
                 3,
                 axis=2,
             ).astype(np.uint8)
-            self.tcm_debug_img[1:6, :] = tcm_debug_arr
+            self.tcm_debug_img[1:6, :] = np.copy(tcm_debug_arr)
             tcm_debug_img_msg = self.bridge.cv2_to_imgmsg(
                 self.tcm_debug_img, encoding="bgr8"
             )
