@@ -291,9 +291,9 @@ class LightTowerDetection(Node):
         if any(np.sum(sorted_colours, axis=1) == 0):
             self.get_logger().info("get_seq_from_time_colour_map some empty")
             return
-        # if any(col == 0 for col in new_best_colours[:3]):
-        #     self.get_logger().info(f"get_seq_from_time_colour_map some colour black")
-        #     return
+        if any(col == 0 for col in new_best_colours[:3]):
+            self.get_logger().info(f"get_seq_from_time_colour_map some colour black")
+            return
         # if any(col != 0 for col in new_best_colours[3:]):
         #     self.get_logger().info(f"get_seq_from_time_colour_map last 2 not black")
         #     return
