@@ -263,12 +263,20 @@ class LightTowerDetection(Node):
         filtered_colours[filtered_colours / max_val < 0.1] = 0
         best_colours = np.argmax(filtered_colours, axis=1)
         if np.all(best_colours == 0):
-            self.get_logger().info("get_seq_from_time_colour_map all black")
+            self.get_logger().warn("get_seq_from_time_colour_map all black")
             return
 
         # # check that there are 2 best colours that are 0 and their indices are adjacent or at the start and end
-        first_non_black_idx = np.where(best_colours != 0)[0][0]
-        last_black_idx = np.where(best_colours == 0)[0][-1]
+        first_non_black_idxs = np.where(best_colours != 0)[0]
+        if len(first_non_black_idxs) == 0:
+            self.get_logger().warn("get_seq_from_time_colour_map no non-black")
+            return
+        first_non_black_idx = first_non_black_idxs[0]
+        last_black_idxs = np.where(best_colours == 0)[0]
+        if len(last_black_idxs) == 0:
+            self.get_logger().warn("get_seq_from_time_colour_map no black")
+            return
+        last_black_idx = last_black_idxs[-1]
         if last_black_idx < 5 * self.time_colour_map_granularity - 1:
             first_non_black_idx = last_black_idx + 1
         sorted_colours = (
