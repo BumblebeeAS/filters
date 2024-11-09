@@ -308,7 +308,7 @@ class LightTowerDetection(Node):
         # check that best colours are at least 0.5 of everything
         if np.any(
             np.sort(sorted_colours, axis=1)[:, -1] / np.sum(sorted_colours, axis=1)
-            < 0.25
+            < 0.35
         ):
             return
         return LightSequence(
