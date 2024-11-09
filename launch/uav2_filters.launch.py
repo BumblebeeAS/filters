@@ -19,7 +19,7 @@ def generate_launch_description():
                         {
                             "input_detections_topics": [topic],
                             "output_markers_topic": f"{topic}/marker",
-                            "objects_config": "old_drone.yaml",
+                            "objects_config": "711drone.yaml",
                         }
                     ],
                 )
@@ -35,7 +35,7 @@ def generate_launch_description():
                             "input_detections_topics": [topic],
                             "camera_info_topics": ["/wide/left/camera_info"],
                             "output_markers_topic": f"{topic}/marker",
-                            "objects_config": "old_drone.yaml",
+                            "objects_config": "711drone.yaml",
                         }
                     ],
                 )
@@ -64,11 +64,11 @@ def generate_launch_description():
                 name="cluster_det_obj_3d",
                 parameters=[
                     {
-                        "objects_config": "old_drone.yaml",
+                        "objects_config": "711drone.yaml",
                         "pose_frame": "odom_ned",
                         "detected_objects_3d_topic": "/uav2/bottom_cam/projected_3d",
                         "cluster_interval": 2.0,
-                        "queue_size": 10,
+                        "queue_size": 100,
                         "min_cluster_size": 2,
                         "min_samples": 1,
                         "estimate_tolerance": 8.0,

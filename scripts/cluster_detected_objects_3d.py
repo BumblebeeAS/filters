@@ -102,7 +102,7 @@ class ClusterDetectedObject3D(Node):
     def detection_callback(self, detections: DetectedObject3DArray):
         """Adds respective detections into their respective queues"""
         if not detections.objects:
-            self.get_logger().error("No detections to cluster")
+            # self.get_logger().error("No detections to cluster")
             return
         for obj in detections.objects:
             position = np.array(
@@ -112,9 +112,9 @@ class ClusterDetectedObject3D(Node):
                 ]
             )
 
-            self.get_logger().info(
-                f"Enqueue detection for {self.id_to_name[obj.hypothesis.class_id]} with {position}"
-            )
+            # self.get_logger().info(
+            #     f"Enqueue detection for {self.id_to_name[obj.hypothesis.class_id]} with {position}"
+            # )
             # Add publisher for each class
             if obj.hypothesis.class_id not in self.cluster_pose_publishers:
                 self.cluster_pose_publishers[obj.hypothesis.class_id] = (
@@ -157,6 +157,7 @@ class ClusterDetectedObject3D(Node):
                 single_pose.pose.position.y = position_queue[0][1]
                 single_pose.pose.position.z = 0.0
                 self.cluster_pose_publishers[class_id].publish(single_pose)
+                self.get_logger().info(f"Publishing single pose.... {single_pose.pose.position.x}, {single_pose.pose.position.y}")
                 continue
 
             # Returns a new list where each index in position_queue is replaced by the cluster label
@@ -189,6 +190,7 @@ class ClusterDetectedObject3D(Node):
     def flush_queue_cb(self, req: Trigger.Request, 
             resp: Trigger.Response) -> Trigger.Response:
         self.class_queues = defaultdict(lambda: deque(maxlen=self.queue_size))
+        self.get_logger().info(f"Class queue {self.class_queues}....")
         resp.success = True
         return resp
 
