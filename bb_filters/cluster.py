@@ -104,6 +104,10 @@ def get_idxs_in_largest_cluster(
 
     labels = np.array(hdbscan.labels_)
     non_noise_labels = labels[labels >= 0]
+
+    if len(non_noise_labels) == 0:
+        return np.array([])
+
     unique_labels, unique_label_counts = np.unique(non_noise_labels, return_counts=True)
     largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
     largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
