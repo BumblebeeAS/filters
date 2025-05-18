@@ -99,7 +99,10 @@ def get_idxs_in_largest_cluster(
     hdbscan: HDBSCAN,
     positions: np.ndarray,
 ) -> np.ndarray:
-    """Returns an array of indices belonging to the largest cluster."""
+    """Returns an array of indices belonging to the largest, non-noise cluster.
+
+    If no clusters are found, an empty array is returned.
+    """
     hdbscan.fit(positions)
 
     labels = np.array(hdbscan.labels_)

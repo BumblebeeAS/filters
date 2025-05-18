@@ -136,6 +136,9 @@ class ClusterPosesNode(Node):
 
         positions = np.array([get_position_tuple_from_pose(pose) for pose in pose_msgs])
         filtered_idxs = get_idxs_in_largest_cluster(self.hdbscan, positions)
+        if len(filtered_idxs) == 0:
+            self.get_logger().warn("No clusters found.")
+            return
         filtered_poses = [pose_msgs[i] for i in filtered_idxs]
 
         avg_pose = get_average_pose(filtered_poses, self.get_logger())
