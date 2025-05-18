@@ -103,17 +103,8 @@ install(PROGRAMS
   scripts/lidar_detected_object_2d_filter.py
   scripts/zed_detector.py
   scripts/lidar_bbox_extractor.py
-  scripts/robotx_ftp_start_detector.py
-  scripts/robotx_placard_detection.py
-  scripts/robotx_prequali_gate_detection.py
-  scripts/robotx_red_green_gate_detection.py
-  scripts/robotx_gate_detection.py
-  scripts/robotx_light_tower_detection.py
-  scripts/robotx_wildlife_detection.py
-  scripts/robotx_wildlife_completion.py
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py
-  scripts/robotx_sim_obstacles_converter.py
   scripts/detected_object_2d_filter_projection.py
   scripts/lidar_bbox_extractor.py
   scripts/detect_red_buoy.py
@@ -122,6 +113,17 @@ install(PROGRAMS
   scripts/cluster_detected_objects_3d.py
   scripts/pinger_gate_detection.py
   scripts/ml_color_relabel_node.py
+
+  scripts/robotx/robotx_ftp_start_detector.py
+  scripts/robotx/robotx_placard_detection.py
+  scripts/robotx/robotx_prequali_gate_detection.py
+  scripts/robotx/robotx_red_green_gate_detection.py
+  scripts/robotx/robotx_gate_detection.py
+  scripts/robotx/robotx_light_tower_detection.py
+  scripts/robotx/robotx_wildlife_detection.py
+  scripts/robotx/robotx_wildlife_completion.py
+  scripts/robotx/robotx_sim_obstacles_converter.py
+
   DESTINATION lib/${PROJECT_NAME}
 )
 
