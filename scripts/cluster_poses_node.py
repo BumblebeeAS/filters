@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
+from operator import attrgetter
 from typing import List
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseArray, PoseWithCovarianceStamped
+import tf2_ros
+from geometry_msgs.msg import (
+    PoseArray,
+    PoseWithCovarianceStamped,
+    Quaternion,
+    TransformStamped,
+    Vector3,
+)
 from message_filters import Cache, Subscriber
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
@@ -96,6 +104,9 @@ class ClusterPosesNode(Node):
         self.pose_array_publisher = self.create_publisher(
             PoseArray, output_pose_array_topic, 10
         )
+        self.br = tf2_ros.TransformBroadcaster(self)
+        self.cluster_tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+
         self.create_timer(
             cluster_interval,
             self.cluster_timer_callback,
@@ -145,6 +156,16 @@ class ClusterPosesNode(Node):
         latest_msg: PoseWithCovarianceStamped = self.pose_cache.getLast()
         avg_pose.header = latest_msg.header
         self.pose_publisher.publish(avg_pose)
+
+        transform_stamped = TransformStamped()
+        transform_stamped.header = latest_msg.header
+        transform_stamped.child_frame_id = "advay_please_remove_this"
+        t = attrgetter("x", "y", "z")(avg_pose.pose.pose.position)
+        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.pose.orientation)
+        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
+        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+
+        self.br.sendTransform(transform_stamped)
 
 
 def main(args=None):
