@@ -50,6 +50,13 @@ class ClusterPosesNode(Node):
             ),
         )
         self.declare_parameter(
+            "child_frame_id",
+            "advay_please_remove_this",
+            ParameterDescriptor(
+                description="Child frame id of the published transform."
+            ),
+        )
+        self.declare_parameter(
             "cluster_interval",
             1.0,
             ParameterDescriptor(
@@ -82,6 +89,9 @@ class ClusterPosesNode(Node):
             self.get_parameter("output_pose_array_topic")
             .get_parameter_value()
             .string_value
+        )
+        self.child_frame_id = (
+            self.get_parameter("child_frame_id").get_parameter_value().string_value
         )
         cluster_interval = (
             self.get_parameter("cluster_interval").get_parameter_value().double_value
@@ -159,7 +169,7 @@ class ClusterPosesNode(Node):
 
         transform_stamped = TransformStamped()
         transform_stamped.header = latest_msg.header
-        transform_stamped.child_frame_id = "advay_please_remove_this"
+        transform_stamped.child_frame_id = self.child_frame_id
         t = attrgetter("x", "y", "z")(avg_pose.pose.pose.position)
         qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.pose.orientation)
         transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
