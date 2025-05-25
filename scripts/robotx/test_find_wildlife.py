@@ -1,10 +1,8 @@
-from collections import defaultdict
-from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Header
 import time
-from rclpy.node import Node
-import rclpy
+from collections import defaultdict
 from pathlib import Path
+
+import rclpy
 from ament_index_python.packages import get_package_share_directory
 from bb_perception_msgs.msg import (
     DetectedObject3D,
@@ -12,14 +10,16 @@ from bb_perception_msgs.msg import (
     DetectorSource,
     ObjectHypothesis,
 )
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from ml_detector.schema_validator import get_config, load_schema
+from rclpy.node import Node
+from std_msgs.msg import Header
 from tf2_msgs.msg import TFMessage
-from geometry_msgs.msg import TransformStamped
 
 
 class EncirclementTask(Node):
     def __init__(self):
-        super().__init__('encirclement_task')
+        super().__init__("encirclement_task")
         objects_schema_path = (
             Path(get_package_share_directory("ml_detector"))
             / "configs"
@@ -57,8 +57,7 @@ class EncirclementTask(Node):
         self.tracking_duration = 10.0  # Track for 10 seconds
         self.tolerance = 2.0  # Tolerance for clustering poses (meters)
 
-        self.tf_publisher = self.create_publisher(
-            TFMessage, "/wildlife_buoy_tf", 1)
+        self.tf_publisher = self.create_publisher(TFMessage, "/wildlife_buoy_tf", 1)
         self.start_time = time.time()
         self.latest = None
 
@@ -101,8 +100,7 @@ class EncirclementTask(Node):
             track_id = det.hypothesis.track_id
 
             # Track the position (x, y) of the buoy
-            self.buoy_pose_history[track_id].append(
-                (pose.position.x, pose.position.y))
+            self.buoy_pose_history[track_id].append((pose.position.x, pose.position.y))
 
     def determine_most_likely_pose(self):
         tf_message = TFMessage()
@@ -121,11 +119,11 @@ class EncirclementTask(Node):
         # Find the most likely pose across all buoys (highest count)
         if all_most_likely_poses:
             track_id, most_likely_pose, _ = max(
-                all_most_likely_poses, key=lambda x: x[2])
+                all_most_likely_poses, key=lambda x: x[2]
+            )
 
             # Create a transform message for the most likely pose
-            transform = self.create_transform_message(
-                track_id, most_likely_pose)
+            transform = self.create_transform_message(track_id, most_likely_pose)
             tf_message.transforms.append(transform)
 
             self.latest = tf_message
@@ -151,8 +149,8 @@ class EncirclementTask(Node):
     def is_within_tolerance(self, pose1, pose2):
         """Checks if two poses are within a tolerance range."""
         return (
-            abs(pose1[0] - pose2[0]) <= self.tolerance and
-            abs(pose1[1] - pose2[1]) <= self.tolerance
+            abs(pose1[0] - pose2[0]) <= self.tolerance
+            and abs(pose1[1] - pose2[1]) <= self.tolerance
         )
 
     def create_transform_message(self, track_id, pose):
