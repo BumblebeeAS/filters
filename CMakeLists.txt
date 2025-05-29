@@ -101,7 +101,6 @@ install(PROGRAMS
   scripts/lidar_backproject.py
   scripts/UKF_Tracker.py
   scripts/lidar_detected_object_2d_filter.py
-  scripts/zed_detector.py
   scripts/lidar_bbox_extractor.py
   scripts/detected_object_2d_array_vis.py
   scripts/detected_object_3d_array_vis.py
@@ -111,7 +110,6 @@ install(PROGRAMS
   scripts/obstacles_management_server.py
   scripts/detected_object_2d_filter_projection_bottom_facing.py
   scripts/cluster_poses_node.py
-  scripts/pinger_gate_detection.py
   scripts/ml_color_relabel_node.py
 
   scripts/robotx/robotx_ftp_start_detector.py
@@ -123,6 +121,8 @@ install(PROGRAMS
   scripts/robotx/robotx_wildlife_detection.py
   scripts/robotx/robotx_wildlife_completion.py
   scripts/robotx/robotx_sim_obstacles_converter.py
+  scripts/robotx/zed_detector.py
+  scripts/robotx/pinger_gate_detection.py
 
   DESTINATION lib/${PROJECT_NAME}
 )
