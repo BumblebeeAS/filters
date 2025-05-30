@@ -51,7 +51,7 @@ class ClusterPosesNode(Node):
         )
         self.declare_parameter(
             "child_frame_id",
-            "advay_please_remove_this",
+            "auv4/gate/clustered",
             ParameterDescriptor(
                 description="Child frame id of the published transform."
             ),
