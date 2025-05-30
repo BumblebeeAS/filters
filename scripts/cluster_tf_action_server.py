@@ -15,6 +15,7 @@ from geometry_msgs.msg import (
     Vector3,
 )
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
@@ -35,8 +36,11 @@ class ClusterTfActionServer(Node):
         self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         self._action_server = ActionServer(
-            self, ClusterTf, "cluster_tfs", self.execute_callback
+            self, ClusterTf, "/auv4/cluster_tf", self.execute_callback
         )
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.get_logger().info("Cluster TFs Action Server initialized")
 
@@ -55,7 +59,7 @@ class ClusterTfActionServer(Node):
         self.get_logger().info("Goal accepted, executing callback")
         goal_handle.execute()
 
-    def execute_callback(self, goal_handle):
+    async def execute_callback(self, goal_handle):
         # Extract goal parameters
         goal = goal_handle.request
         input_parent = goal.input_parent_frame_id
@@ -82,14 +86,11 @@ class ClusterTfActionServer(Node):
         else:
             cache_size = int(clustering_duration / lookup_interval) + 10
         cache = TfLruCache(
-            size=cache_size, unique_time_interval=int(lookup_interval * 1000 // 2)
+            size=cache_size,
         )
 
-        tf_buffer = tf2_ros.Buffer()
-        tf_listener = tf2_ros.TransformListener(tf_buffer, self)
-
         start_time = self.get_clock().now()
-        end_time = start_time + Time(seconds=clustering_duration)
+        end_time = start_time + Duration(seconds=clustering_duration)
 
         self.get_logger().info(
             f"Collecting TF from {input_parent} to {input_child} for {clustering_duration} seconds"
@@ -99,6 +100,7 @@ class ClusterTfActionServer(Node):
         count = 0
 
         while self.get_clock().now() < end_time:
+            rclpy.spin_once(self)
             count += 1
 
             if goal_handle.is_cancel_requested:
@@ -107,9 +109,9 @@ class ClusterTfActionServer(Node):
 
             # Try to lookup transform
             try:
-                tf = tf_buffer.lookup_transform(
-                    source_frame=input_parent,
-                    target_frame=input_child,
+                tf = self.tf_buffer.lookup_transform(
+                    source_frame=input_child,
+                    target_frame=input_parent,
                     time=Time(),
                 )
                 cache.add(tf)
@@ -196,28 +198,14 @@ class ClusterTfActionServer(Node):
         if input_parent != output_parent:
             try:
                 # Get transform from input parent to output parent
-                parent_transform = tf_buffer.lookup_transform(
+                parent_transform = self.tf_buffer.lookup_transform(
                     target_frame=output_parent,
                     source_frame=input_parent,
-                    time=latest_time,
+                    time=Time(),
                 )
 
-                transformed_pose = (
-                    tf2_geometry_msgs.do_transform_pose_with_covariance_stamped(
-                        avg_pose, parent_transform
-                    )
-                )
-
-                # Extract position and orientation
-                t = attrgetter("x", "y", "z")(transformed_pose.pose.pose.position)
-                qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(
-                    transformed_pose.pose.pose.orientation
-                )
-                clustered_transform.transform.translation = Vector3(
-                    x=t[0], y=t[1], z=t[2]
-                )
-                clustered_transform.transform.rotation = Quaternion(
-                    x=qx, y=qy, z=qz, w=qw
+                avg_pose = tf2_geometry_msgs.do_transform_pose_with_covariance_stamped(
+                    avg_pose, parent_transform
                 )
 
             except Exception as e:
@@ -227,11 +215,17 @@ class ClusterTfActionServer(Node):
                 goal_handle.abort()
                 return result
 
+        # Extract position and orientation
+        t = attrgetter("x", "y", "z")(avg_pose.pose.pose.position)
+        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.pose.orientation)
+        clustered_transform.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
+        clustered_transform.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+
         # Publish as static transform
         self.static_tf_broadcaster.sendTransform(clustered_transform)
 
         self.get_logger().info(
-            f"Clustered transform from {input_parent} to {output_child} with average position: \n"
+            f"Clustered transform from {output_parent} to {output_child} with average position: \n"
             f"{avg_pose.pose.pose.position.x}, {avg_pose.pose.pose.position.y}, {avg_pose.pose.pose.position.z}"
         )
 
@@ -240,28 +234,22 @@ class ClusterTfActionServer(Node):
         goal_handle.publish_feedback(feedback_msg)
 
         # Return success result
-        result.success = True
-        result.message = f"Successfully clustered {len(filtered_poses)} transforms from {len(pose_msgs)} collected"
         result.clustered_transform = clustered_transform
         result.total_transforms_collected = len(pose_msgs)
         result.transforms_in_cluster = len(filtered_poses)
 
         goal_handle.succeed()
 
-        del tf_buffer
-        del tf_listener
-
         return result
 
 
 class TfLruCache:
-    def __init__(self, size: int, unique_time_interval: int):
+    def __init__(self, size: int):
         self.size = size
 
         # idx is the current insertion index (the open spot in the circular buffer)
         self.idx = 0
 
-        self.unique_time_interval = unique_time_interval
         self.cache = [None for i in range(self.size)]
         self.logger = rclpy.logging.get_logger("cluster_tf_node")
 
@@ -292,11 +280,12 @@ class TfLruCache:
             return True
 
         prev_tf = self._get(self.idx - 1)
+        # self.logger.info(f"current: {id(tf)}")
+        # self.logger.info(f"prev: {id(prev_tf)}")
 
-        t_delta = Time.from_msg(tf.header.stamp) - Time.from_msg(prev_tf.header.stamp)
-        if t_delta.nanoseconds < self.unique_time_interval * 1e6:
+        if Time.from_msg(tf.header.stamp) == Time.from_msg(prev_tf.header.stamp):
             self.logger.warn(
-                f"Skipping TF with timestamp {tf.header.stamp} as it is too close to the previous one."
+                f"Skipping TF with timestamp {tf.header.stamp} as it is the same as the previous one."
             )
             return False
 
