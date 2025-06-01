@@ -6,6 +6,12 @@ import numpy as np
 import rclpy
 import tf2_geometry_msgs
 import tf2_ros
+from bb_filters.cluster import (
+    get_average_pose,
+    get_idxs_in_largest_cluster,
+    get_position_tuple_from_pose,
+    tf_to_pose_with_covariance_stamped,
+)
 from bb_perception_msgs.action import ClusterTf
 from geometry_msgs.msg import Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -15,13 +21,6 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
-from bb_filters.cluster import (
-    get_average_pose,
-    get_idxs_in_largest_cluster,
-    get_position_tuple_from_pose,
-    tf_to_pose_with_covariance_stamped,
-)
-
 
 class ClusterTfActionServer(Node):
     """
@@ -29,6 +28,7 @@ class ClusterTfActionServer(Node):
     clusters them using HDBSCAN, and publishes the centroid of the
     largest cluster as a static TF transform.
     """
+
     def __init__(self):
         super().__init__("cluster_tfs_action_server")
 
@@ -38,11 +38,14 @@ class ClusterTfActionServer(Node):
         self.tf_listener = tf2_ros.TransformListener(
             self.tf_buffer, self, spin_thread=False
         )
-    
+
         self._action_server = ActionServer(
-            self, ClusterTf, "/auv4/cluster_tf", self.execute_callback,
+            self,
+            ClusterTf,
+            "/auv4/cluster_tf",
+            self.execute_callback,
             goal_callback=self.goal_callback,
-            cancel_callback=self.cancel_callback
+            cancel_callback=self.cancel_callback,
         )
 
         self.get_logger().info("Cluster TFs action server initialized")
@@ -65,8 +68,8 @@ class ClusterTfActionServer(Node):
         input_child = goal.input_child_frame_id
         output_parent = goal.output_parent_frame_id
         output_child = goal.output_child_frame_id
-        clustering_duration = goal.clustering_duration # seconds
-        lookup_interval = goal.tf_lookup_interval      # seconds
+        clustering_duration = goal.clustering_duration  # seconds
+        lookup_interval = goal.tf_lookup_interval  # seconds
         use_cache = goal.use_cache
         min_cluster_size = goal.min_cluster_size
         min_samples = goal.min_samples
@@ -74,9 +77,11 @@ class ClusterTfActionServer(Node):
         feedback_msg = ClusterTf.Feedback()
         result = ClusterTf.Result()
 
-        cache_size = (goal.cache_size 
-                      if use_cache 
-                      else int(clustering_duration / lookup_interval) + 10)
+        cache_size = (
+            goal.cache_size
+            if use_cache
+            else int(clustering_duration / lookup_interval) + 10
+        )
         cache = TfLruCache(size=cache_size, logger=self.get_logger())
 
         start_time = self.get_clock().now()
@@ -99,7 +104,7 @@ class ClusterTfActionServer(Node):
                 tf = self.tf_buffer.lookup_transform(
                     target_frame=input_parent,
                     source_frame=input_child,
-                    time=Time(), # TODO check if a timeout is needed
+                    time=Time(),  # TODO check if a timeout is needed
                 )
                 cache.add(tf)
             except Exception as e:
@@ -116,15 +121,17 @@ class ClusterTfActionServer(Node):
             )
             feedback_msg.transforms_collected_so_far = cache.get_count()
             goal_handle.publish_feedback(feedback_msg)
-            
+
             try:
                 rate.sleep()
             except:
                 self.get_logger().info("Interrupted during TF collection.")
                 goal_handle.canceled()
-                return result()
+                return result
 
-        feedback_msg.current_status = "Finished collecting transforms, starting clustering"
+        feedback_msg.current_status = (
+            "Finished collecting transforms, starting clustering"
+        )
         feedback_msg.collection_progress = 1.0
         feedback_msg.transforms_collected_so_far = cache.get_count()
         goal_handle.publish_feedback(feedback_msg)
