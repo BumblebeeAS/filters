@@ -6,12 +6,6 @@ import numpy as np
 import rclpy
 import tf2_geometry_msgs
 import tf2_ros
-from bb_filters.cluster import (
-    get_average_pose,
-    get_idxs_in_largest_cluster,
-    get_position_tuple_from_pose,
-    tf_to_pose_with_covariance_stamped,
-)
 from bb_perception_msgs.action import ClusterTf
 from geometry_msgs.msg import Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -20,6 +14,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
+
+from bb_filters.cluster import (
+    get_average_pose,
+    get_idxs_in_largest_cluster,
+    get_position_tuple_from_pose,
+    tf_to_pose_with_covariance_stamped,
+)
 
 
 class ClusterTfActionServer(Node):
@@ -106,7 +107,37 @@ class ClusterTfActionServer(Node):
                     source_frame=input_child,
                     time=Time(),  # TODO check if a timeout is needed
                 )
-                cache.add(tf)
+
+                # Transform to make parent frame output_parent
+                if input_parent != output_parent:
+                    curr_tf = TransformStamped()
+                    curr_tf.header.stamp = tf.header.stamp
+                    curr_tf.header.frame_id = output_parent
+                    curr_tf.child_frame_id = output_child
+
+                    parent_transform = self.tf_buffer.lookup_transform(
+                        target_frame=output_parent,
+                        source_frame=input_parent,
+                        time=Time.from_msg(tf.header.stamp),
+                    )
+
+                    world_pose = (
+                        tf2_geometry_msgs.do_transform_pose_with_covariance_stamped(
+                            tf_to_pose_with_covariance_stamped(tf), parent_transform
+                        )
+                    )
+
+                    t = attrgetter("x", "y", "z")(world_pose.pose.pose.position)
+                    qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(
+                        world_pose.pose.pose.orientation
+                    )
+                    curr_tf.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
+                    curr_tf.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+                else:
+                    curr_tf = tf
+
+                cache.add(curr_tf)
+
             except Exception as e:
                 self.get_logger().error(f"Failed to lookup transform: {e}")
                 self.get_logger().error(f"Traceback: {traceback.format_exc()}")
@@ -187,24 +218,6 @@ class ClusterTfActionServer(Node):
         clustered_transform.header.stamp = latest_time.to_msg()
         clustered_transform.header.frame_id = output_parent
         clustered_transform.child_frame_id = output_child
-
-        # Transform to output_parent frame if necessary
-        if input_parent != output_parent:
-            try:
-                parent_transform = self.tf_buffer.lookup_transform(
-                    target_frame=output_parent,
-                    source_frame=input_parent,
-                    time=Time(),
-                )
-                avg_pose = tf2_geometry_msgs.do_transform_pose_with_covariance_stamped(
-                    avg_pose, parent_transform
-                )
-            except Exception as e:
-                self.get_logger().error(
-                    f"Could not get transform from {input_parent} to {output_parent}: {e}"
-                )
-                goal_handle.abort()
-                return result
 
         t = attrgetter("x", "y", "z")(avg_pose.pose.pose.position)
         qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.pose.orientation)
