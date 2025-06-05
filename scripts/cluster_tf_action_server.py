@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
 import traceback
-from operator import attrgetter
+from collections import defaultdict
 
 import numpy as np
 import rclpy
 import tf2_geometry_msgs
 import tf2_ros
 from bb_perception_msgs.action import ClusterTf
-from geometry_msgs.msg import Quaternion, TransformStamped, Vector3
+from geometry_msgs.msg import Pose, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
-
-from bb_filters.cluster import (
-    get_average_pose,
-    get_idxs_in_largest_cluster,
-    get_position_tuple_from_pose,
-    tf_to_pose_with_covariance_stamped,
-)
 
 
 class ClusterTfActionServer(Node):
@@ -29,6 +22,8 @@ class ClusterTfActionServer(Node):
     clusters them using HDBSCAN, and publishes the centroid of the
     largest cluster as a static TF transform.
     """
+
+    CONTINUED_CACHE_SIZE = 5000
 
     def __init__(self):
         super().__init__("cluster_tfs_action_server")
@@ -49,6 +44,10 @@ class ClusterTfActionServer(Node):
             cancel_callback=self.cancel_callback,
         )
 
+        self.caches = defaultdict(
+            lambda: TfLruCache(self.CONTINUED_CACHE_SIZE, self.get_logger())
+        )
+
         self.get_logger().info("Cluster TFs action server initialized")
 
     def goal_callback(self, goal_request):
@@ -62,6 +61,84 @@ class ClusterTfActionServer(Node):
     def handle_accepted(self, goal_handle):
         self.get_logger().info("Goal accepted, executing callback")
         goal_handle.execute()
+
+    @staticmethod
+    def _get_position_from_transform(
+        tf: TransformStamped,
+    ) -> tuple[float, float, float]:
+        """Extract position tuple from TransformStamped."""
+        t = tf.transform.translation
+        return (t.x, t.y, t.z)
+
+    @staticmethod
+    def _get_orientation_from_transform(
+        tf: TransformStamped,
+    ) -> tuple[float, float, float, float]:
+        """Extract orientation tuple from TransformStamped."""
+        q = tf.transform.rotation
+        return (q.x, q.y, q.z, q.w)
+
+    @staticmethod
+    def _get_idxs_in_largest_cluster(
+        hdbscan: HDBSCAN, positions: np.ndarray
+    ) -> np.ndarray:
+        """Returns an array of indices belonging to the largest, non-noise cluster."""
+        hdbscan.fit(positions)
+
+        labels = np.array(hdbscan.labels_)
+        non_noise_labels = labels[labels >= 0]
+
+        if len(non_noise_labels) == 0:
+            return np.array([])
+
+        unique_labels, unique_label_counts = np.unique(
+            non_noise_labels, return_counts=True
+        )
+        largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
+        largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
+
+        return largest_cluster_idxs
+
+    @staticmethod
+    def _average_transforms(tfs: list[TransformStamped]) -> tuple[Vector3, Quaternion]:
+        """Calculate average translation and orientation from list of transforms."""
+        # Average translations
+        translations = np.array(
+            [ClusterTfActionServer._get_position_from_transform(tf) for tf in tfs]
+        )
+        avg_translation = translations.mean(axis=0)
+
+        # Average quaternions using eigenvector method
+        try:
+            quats = np.array(
+                [
+                    ClusterTfActionServer._get_orientation_from_transform(tf)
+                    for tf in tfs
+                ]
+            )
+            quat_matrix = np.dot(quats.T, quats)
+            eigvals, eigvecs = np.linalg.eigh(quat_matrix)
+            avg_quat = eigvecs[
+                :, np.argmax(eigvals)
+            ]  # eigenvector with largest eigenvalue
+        except np.linalg.LinAlgError:
+            # Fallback to last quaternion if averaging fails
+            avg_quat = ClusterTfActionServer._get_orientation_from_transform(tfs[-1])
+
+        return (
+            Vector3(x=avg_translation[0], y=avg_translation[1], z=avg_translation[2]),
+            Quaternion(x=avg_quat[0], y=avg_quat[1], z=avg_quat[2], w=avg_quat[3]),
+        )
+
+    @staticmethod
+    def _tf_to_pose(tf: TransformStamped) -> Pose:
+        """Convert TransformStamped to Pose (without covariance or header)."""
+        pose = Pose()
+        pose.position.x = tf.transform.translation.x
+        pose.position.y = tf.transform.translation.y
+        pose.position.z = tf.transform.translation.z
+        pose.orientation = tf.transform.rotation
+        return pose
 
     async def execute_callback(self, goal_handle):
         goal = goal_handle.request
@@ -78,12 +155,17 @@ class ClusterTfActionServer(Node):
         feedback_msg = ClusterTf.Feedback()
         result = ClusterTf.Result()
 
-        cache_size = (
-            goal.cache_size
-            if use_cache
-            else int(clustering_duration / lookup_interval) + 10
-        )
-        cache = TfLruCache(size=cache_size, logger=self.get_logger())
+        if goal.persistent:
+            cache = self.caches[
+                (input_parent, input_child, output_parent, output_child)
+            ]
+        else:
+            cache_size = (
+                goal.cache_size
+                if use_cache
+                else int(clustering_duration / lookup_interval) + 10
+            )
+            cache = TfLruCache(size=cache_size, logger=self.get_logger())
 
         start_time = self.get_clock().now()
         end_time = start_time + Duration(seconds=clustering_duration)
@@ -121,18 +203,21 @@ class ClusterTfActionServer(Node):
                         time=Time.from_msg(tf.header.stamp),
                     )
 
-                    world_pose = (
-                        tf2_geometry_msgs.do_transform_pose_with_covariance_stamped(
-                            tf_to_pose_with_covariance_stamped(tf), parent_transform
-                        )
+                    # Convert tf to pose for transformation
+                    pose = self._tf_to_pose(tf)
+
+                    # Transform the pose
+                    transformed_pose = tf2_geometry_msgs.do_transform_pose(
+                        pose, parent_transform
                     )
 
-                    t = attrgetter("x", "y", "z")(world_pose.pose.pose.position)
-                    qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(
-                        world_pose.pose.pose.orientation
+                    # Convert back to transform
+                    curr_tf.transform.translation = Vector3(
+                        x=transformed_pose.position.x,
+                        y=transformed_pose.position.y,
+                        z=transformed_pose.position.z,
                     )
-                    curr_tf.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-                    curr_tf.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+                    curr_tf.transform.rotation = transformed_pose.orientation
                 else:
                     curr_tf = tf
 
@@ -147,7 +232,7 @@ class ClusterTfActionServer(Node):
             feedback_msg.current_status = "Collecting transforms"
             feedback_msg.collection_progress = (
                 (self.get_clock().now() - start_time).nanoseconds
-                * 1e9
+                * 1e-9
                 / clustering_duration
             )
             feedback_msg.transforms_collected_so_far = cache.get_count()
@@ -189,9 +274,9 @@ class ClusterTfActionServer(Node):
             return result
 
         tfs, latest_time = cache.get_all()
-        pose_msgs = [tf_to_pose_with_covariance_stamped(tf) for tf in tfs]
 
-        positions = np.array([get_position_tuple_from_pose(pose) for pose in pose_msgs])
+        # Extract positions directly from transforms for clustering
+        positions = np.array([self._get_position_from_transform(tf) for tf in tfs])
 
         hdbscan = HDBSCAN(
             min_cluster_size=min_cluster_size,
@@ -201,7 +286,7 @@ class ClusterTfActionServer(Node):
             store_centers="centroid",
         )
 
-        filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
+        filtered_idxs = self._get_idxs_in_largest_cluster(hdbscan, positions)
         if len(filtered_idxs) == 0:
             self.get_logger().error(
                 "No clusters found, cannot create clustered transform."
@@ -209,34 +294,31 @@ class ClusterTfActionServer(Node):
             goal_handle.abort()
             return result
 
-        # Calculate average pose from largest cluster
-        filtered_poses = [pose_msgs[i] for i in filtered_idxs]
-        avg_pose = get_average_pose(filtered_poses, self.get_logger())
+        # Calculate average transform from largest cluster
+        filtered_tfs = [tfs[i] for i in filtered_idxs]
+        avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
 
         # Create the clustered transform
         clustered_transform = TransformStamped()
         clustered_transform.header.stamp = latest_time.to_msg()
         clustered_transform.header.frame_id = output_parent
         clustered_transform.child_frame_id = output_child
-
-        t = attrgetter("x", "y", "z")(avg_pose.pose.pose.position)
-        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.pose.orientation)
-        clustered_transform.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-        clustered_transform.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+        clustered_transform.transform.translation = avg_translation
+        clustered_transform.transform.rotation = avg_rotation
 
         self.static_tf_broadcaster.sendTransform(clustered_transform)
 
         self.get_logger().info(
             f"Clustered transform from {output_parent} to {output_child} "
-            f"with average position: {t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}"
+            f"with average position: {avg_translation.x:.3f}, {avg_translation.y:.3f}, {avg_translation.z:.3f}"
         )
 
         feedback_msg.current_status = "Clustering complete, static transform published"
         goal_handle.publish_feedback(feedback_msg)
 
         result.clustered_transform = clustered_transform
-        result.total_transforms_collected = len(pose_msgs)
-        result.transforms_in_cluster = len(filtered_poses)
+        result.total_transforms_collected = len(tfs)
+        result.transforms_in_cluster = len(filtered_tfs)
 
         goal_handle.succeed()
         return result
