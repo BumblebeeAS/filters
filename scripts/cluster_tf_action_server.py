@@ -366,9 +366,10 @@ class TfLruCache:
         return self.is_empty_flag
 
     def get_all(self) -> tuple[list[TransformStamped], Time]:
-        return [
-            self.cache[i] for i in range(self.size) if self.cache[i] is not None
-        ], self.get_latest_time()
+        return (
+            [self.cache[i] for i in range(self.size) if self.cache[i] is not None],
+            self.get_latest_time(),
+        )
 
     def get_count(self) -> int:
         return self.count
