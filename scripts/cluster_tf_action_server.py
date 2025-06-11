@@ -251,7 +251,7 @@ class ClusterTfActionServer(Node):
             hdbscan = HDBSCAN(
                 min_cluster_size=min_cluster_size,
                 min_samples=min_samples,
-                cluster_selection_epsilon=0.05,
+                cluster_selection_epsilon=0.2,
                 allow_single_cluster=True,
                 store_centers="centroid",
             )

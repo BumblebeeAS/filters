@@ -64,7 +64,7 @@ class SlalomClusterActionServer(Node):
             self.get_parameter("tf_lookup_interval").get_parameter_value().double_value
         )
 
-        self.declare_parameter(name="cache_size", value=5000)
+        self.declare_parameter(name="cache_size", value=10000)
         self.cache_size = (
             self.get_parameter("cache_size").get_parameter_value().integer_value
         )
@@ -169,7 +169,7 @@ class SlalomClusterActionServer(Node):
         hdbscan = HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
-            cluster_selection_epsilon=0.05,
+            cluster_selection_epsilon=0.5,
             allow_single_cluster=True,
             store_centers="centroid",
         )
