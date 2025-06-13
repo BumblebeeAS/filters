@@ -2,7 +2,7 @@ from operator import attrgetter
 from typing import List, Tuple
 
 import numpy as np
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TransformStamped
 from rclpy.impl.rcutils_logger import RcutilsLogger
 from sklearn.cluster import HDBSCAN
 
@@ -118,23 +118,20 @@ def get_idxs_in_largest_cluster(
     return largest_cluster_idxs
 
 
-def tf_to_pose_with_covariance_stamped(
-    tf: TransformStamped,
-) -> PoseWithCovarianceStamped:
-    """Convert a TransformStamped message to a PoseWithCovarianceStamped message.
+def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
+    """Convert a TransformStamped message to a PoseStamped message.
 
     Args:
         tf (TransformStamped): The TransformStamped message.
 
     Returns:
-        PoseWithCovarianceStamped: The converted PoseWithCovarianceStamped message.
+        PoseStamped: The converted PoseStamped message.
     """
-    pose_msg = PoseWithCovarianceStamped()
+    pose_msg = PoseStamped()
     pose_msg.header = tf.header
-    pose_msg.pose.pose.position.x = tf.transform.translation.x
-    pose_msg.pose.pose.position.y = tf.transform.translation.y
-    pose_msg.pose.pose.position.z = tf.transform.translation.z
-    pose_msg.pose.pose.orientation = tf.transform.rotation
-    pose_msg.pose.covariance = [0.0] * 36  # Initialize covariance to zero
+    pose_msg.pose.position.x = tf.transform.translation.x
+    pose_msg.pose.position.y = tf.transform.translation.y
+    pose_msg.pose.position.z = tf.transform.translation.z
+    pose_msg.pose.orientation = tf.transform.rotation
 
     return pose_msg

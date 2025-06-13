@@ -4,8 +4,9 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.cluster import tf_to_pose_stamped
 from bb_perception_msgs.action import ClusterTf
-from geometry_msgs.msg import Pose, Quaternion, TransformStamped, Vector3
+from geometry_msgs.msg import Pose, PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -83,6 +84,23 @@ class SlalomClusterActionServer(Node):
             self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
+        )
+
+        self.pose_array_publisher_all = self.create_publisher(
+            PoseArray, "output_pose_array_all", 10
+        )
+
+        # PoseArray publisher for debugging
+        self.pose_array_publisher_1 = self.create_publisher(
+            PoseArray, "output_pose_array_1", 10
+        )
+
+        self.pose_array_publisher_2 = self.create_publisher(
+            PoseArray, "output_pose_array_2", 10
+        )
+
+        self.pose_array_publisher_3 = self.create_publisher(
+            PoseArray, "output_pose_array_3", 10
         )
 
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
@@ -201,11 +219,39 @@ class SlalomClusterActionServer(Node):
     def order_transforms(self, tfs, top_indices, curr_pos):
         average_transforms = []
 
-        for indices in top_indices:
+        # Publish the array of poses for debugging
+        pose_stamped_msgs = list(map(tf_to_pose_stamped, tfs))
+        pose_array_msg = PoseArray()
+        pose_array_msg.header = pose_stamped_msgs[-1].header
+        pose_array_msg.poses = [
+            pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs
+        ]
+        self.pose_array_publisher_all.publish(pose_array_msg)
+
+        publishers = [
+            self.pose_array_publisher_1,
+            self.pose_array_publisher_2,
+            self.pose_array_publisher_3,
+        ]
+
+        for publisher, indices in zip(publishers, top_indices):
             if len(indices) == 0:
                 continue
 
             filtered_tfs = [tfs[i] for i in indices]
+
+            self.get_logger().info(
+                f"Processing cluster with {len(filtered_tfs)} transforms"
+            )
+
+            # Publish the array of poses for debugging
+            pose_stamped_msgs = list(map(tf_to_pose_stamped, filtered_tfs))
+            pose_array_msg = PoseArray()
+            pose_array_msg.header = pose_stamped_msgs[-1].header
+            pose_array_msg.poses = [
+                pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs
+            ]
+            publisher.publish(pose_array_msg)
 
             avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
             average_transforms.append((avg_translation, avg_rotation))
