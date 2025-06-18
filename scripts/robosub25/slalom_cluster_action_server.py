@@ -35,19 +35,9 @@ class SlalomClusterActionServer(Node):
             self.get_parameter("base_link_frame").get_parameter_value().string_value
         )
 
-        self.declare_parameter(name="tf_lookup_interval", value=0.05)
-        self.tf_lookup_interval = (
-            self.get_parameter("tf_lookup_interval").get_parameter_value().double_value
-        )
-
         self.declare_parameter(name="cache_size", value=10000)
         self.cache_size = (
             self.get_parameter("cache_size").get_parameter_value().integer_value
-        )
-
-        self.declare_parameter(name="tf_list_in", value=[])
-        self.tf_list_in = (
-            self.get_parameter("tf_list_in").get_parameter_value().string_array_value
         )
 
         # TF components
@@ -72,15 +62,9 @@ class SlalomClusterActionServer(Node):
 
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
 
-        # creates a bunch of debug publishers, one for each input frame
-        self.pub_dict = {
-            tf_in: self.create_publisher(PoseArray, f"output_pose_{tf_in}", 10)
-            for tf_in in self.tf_list_in
-        }
-        self._num_tfs = len(self.tf_list_in)
-        self.get_logger().info(
-            f"Multi cluster action server initialized for in: {self.tf_list_in}"
-        )
+        self.num_tfs = 0
+        self.pub_list = []  # will be created every time action is called
+        self.get_logger().info("Multi cluster action server initialized")
 
     def goal_callback(self, goal_request):
         self.get_logger().info("Received goal request, accepting")
@@ -107,9 +91,11 @@ class SlalomClusterActionServer(Node):
             self.get_logger().warn(f"Failed to lookup transform for {input_child}: {e}")
             self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
 
-    def collect_transforms(self, goal_handle, clustering_duration):
-        rate = self.create_rate(1.0 / self.tf_lookup_interval)
-        counts = {tf: 0 for tf in self.tf_list_in}  # purely for debugging
+    def collect_transforms(
+        self, goal_handle, clustering_duration, tf_list_in, tf_lookup_interval=0.05
+    ):
+        rate = self.create_rate(1.0 / tf_lookup_interval)
+        counts = {tf: 0 for tf in tf_list_in}  # purely for debugging
 
         self.get_logger().info(f"Collecting TFs for {clustering_duration} seconds")
 
@@ -121,10 +107,7 @@ class SlalomClusterActionServer(Node):
                 return "CANCEL"
 
             # list comprehension is much faster
-            [
-                self._collect_transform(input_child, counts)
-                for input_child in self.tf_list_in
-            ]
+            [self._collect_transform(input_child, counts) for input_child in tf_list_in]
 
             try:
                 rate.sleep()
@@ -136,7 +119,7 @@ class SlalomClusterActionServer(Node):
             self.get_logger().info(
                 f"Collected {counts[input_child]} tfs from {self.output_parent_frame} to {input_child}"
             )
-            for input_child in self.tf_list_in
+            for input_child in tf_list_in
         ]
 
         return "SUCCESS"
@@ -149,7 +132,7 @@ class SlalomClusterActionServer(Node):
                 f"Not enough transforms collected to perform clustering. "
                 f"Collected: {self.cache.get_count()}, Required: {min_num_poses}."
             )
-            return [[] for _ in range(self._num_tfs)]
+            return [[] for _ in range(self.num_tfs)]
 
         positions = np.array([self._get_position_from_transform(tf) for tf in tfs])
 
@@ -165,7 +148,7 @@ class SlalomClusterActionServer(Node):
         valid_mask = labels >= 0
 
         if not np.any(valid_mask):
-            return [[] for _ in range(self._num_tfs)]
+            return [[] for _ in range(self.num_tfs)]
 
         valid_labels = labels[valid_mask]
 
@@ -173,7 +156,7 @@ class SlalomClusterActionServer(Node):
         counts = np.bincount(valid_labels, minlength=max_label + 1)
 
         # negate counts to get descending order TODO: check if need stable sort
-        top_n_indices = np.argsort(-counts)[: self._num_tfs]
+        top_n_indices = np.argsort(-counts)[: self.num_tfs]
 
         result = [
             np.where(labels == cluster_id)[0].tolist()
@@ -181,7 +164,7 @@ class SlalomClusterActionServer(Node):
             if counts[cluster_id] > 0
         ]
 
-        while len(result) < self._num_tfs:
+        while len(result) < self.num_tfs:
             result.append([])
 
         return result
@@ -190,7 +173,7 @@ class SlalomClusterActionServer(Node):
         """Publish debug poses for a specific input child."""
         pose_stamped_msgs = map(tf_to_pose_stamped, tfs)
         pose_array_msg = PoseArray()
-        pose_array_msg.header = pose_stamped_msgs[-1].header
+        pose_array_msg.header = tfs[-1].header
         pose_array_msg.poses = [
             pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs
         ]
@@ -202,38 +185,20 @@ class SlalomClusterActionServer(Node):
         # Publish the array of poses for debugging
         self._pub_debug_poses(tfs, self.pose_array_publisher_all)
 
-        for indices in top_indices:
+        for i, indices in enumerate(top_indices):
             if len(indices) == 0:
                 break  # top_indices should have been sorted by len @line: 176
 
             filtered_tfs = [tfs[i] for i in indices]
-            # TODO: do we want to check all frame_ids in filtered_tfs are the same
-            frame_ids = {
-                tf.header.frame_id for tf in filtered_tfs
-            }  # TODO: check if use header.frame_id or child_frame_id
-            frame_id_counts = {
-                frame_id: sum(
-                    1 for tf in filtered_tfs if tf.header.frame_id == frame_id
-                )
-                for frame_id in frame_ids
-            }
-            self.get_logger().info(f"Frame ID counts: {frame_id_counts}")
-            if len(frame_ids) > 1:
-                self.get_logger().warn(
-                    f"Inconsistent frame_ids in filtered_tfs: {frame_ids}."
-                )
 
-            frame = max(frame_id_counts, key=frame_id_counts.get)
-            publisher = self.pub_dict[frame]
-            self._pub_debug_poses(filtered_tfs, publisher)
+            self._pub_debug_poses(
+                filtered_tfs, self.pub_list[i]
+            )  # pub_list created everytime action is called
 
-            # tf_key should be the frame_id, the elements in the input parameter for tf_list_in
             avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
-            average_transforms.append((avg_translation, avg_rotation, frame))
+            average_transforms.append((avg_translation, avg_rotation))
 
-        # TODO: check why we need to even sort
         average_transforms.sort(key=SlalomClusterActionServer._comparator(curr_pos))
-
         return average_transforms
 
     def publish_transform(self, translation, rotation, latest_time, output_child):
@@ -256,13 +221,25 @@ class SlalomClusterActionServer(Node):
         clustering_duration = goal.clustering_duration  # seconds
         min_cluster_size = goal.min_cluster_size
         min_samples = goal.min_samples
+        tf_list_in = goal.input_child_frame_ids
+        tf_list_out = goal.output_child_frame_ids
+        tf_lookup_interval = goal.tf_lookup_interval
+
+        self.num_tfs = len(tf_list_in)
+        self.pub_list = [
+            self.create_publisher(PoseArray, f"output_tf_{i}", 10)
+            for i in range(self.num_tfs)
+        ]
 
         feedback_msg = ClusterTf.Feedback()
         result = ClusterTf.Result()
 
         # cache_size = int(clustering_duration / lookup_interval) + 10
         collection_result = self.collect_transforms(
-            goal_handle=goal_handle, clustering_duration=clustering_duration
+            goal_handle=goal_handle,
+            clustering_duration=clustering_duration,
+            tf_list_in=tf_list_in,
+            tf_lookup_interval=tf_lookup_interval,
         )
 
         if collection_result == "ABORT":
@@ -301,13 +278,20 @@ class SlalomClusterActionServer(Node):
             self.get_logger().warn("No valid transforms found.")
 
         # faithfully pub all tfs that we have collected + clustered + ordered dont do any post processing
-        for avg_translation, avg_rotation, frame in average_transforms:
+        for (avg_translation, avg_rotation), tf_out in zip(
+            average_transforms, tf_list_out
+        ):
             self.publish_transform(
                 translation=avg_translation,
                 rotation=avg_rotation,
                 latest_time=latest_time,
-                output_child=frame + "/clustered",
+                output_child=tf_out,
             )
+
+        if not goal.persistent:
+            self.cache = TfLruCache(
+                size=self.cache_size, logger=self.get_logger()
+            )  # recreate cache everytime action called
 
         goal_handle.succeed()
         return result
