@@ -13,11 +13,15 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
-from bb_filters.cluster import tf_to_pose_stamped
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
 from bb_filters.tf_lru_cache import TfLruCache
 
 
-class SlalomClusterActionServer(Node):
+class MultiClusterActionServer(Node):
     """
     Todo hehe
     """
@@ -134,7 +138,7 @@ class SlalomClusterActionServer(Node):
             )
             return [[] for _ in range(self.num_tfs)]
 
-        positions = np.array([self._get_position_from_transform(tf) for tf in tfs])
+        positions = np.array([get_position_from_transform(tf) for tf in tfs])
 
         hdbscan = HDBSCAN(
             min_cluster_size=min_cluster_size,
@@ -180,7 +184,7 @@ class SlalomClusterActionServer(Node):
         publisher.publish(pose_array_msg)
 
     def order_transforms(self, tfs, top_indices, curr_pos):
-        average_transforms = []
+        ordered_tfs = []
 
         # Publish the array of poses for debugging
         self._pub_debug_poses(tfs, self.pose_array_publisher_all)
@@ -195,11 +199,11 @@ class SlalomClusterActionServer(Node):
                 filtered_tfs, self.pub_list[i]
             )  # pub_list created everytime action is called
 
-            avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
-            average_transforms.append((avg_translation, avg_rotation))
+            avg_translation, avg_rotation = average_transforms(filtered_tfs)
+            ordered_tfs.append((avg_translation, avg_rotation))
 
-        average_transforms.sort(key=SlalomClusterActionServer._comparator(curr_pos))
-        return average_transforms
+        ordered_tfs.sort(key=MultiClusterActionServer._comparator(curr_pos))
+        return ordered_tfs
 
     def publish_transform(self, translation, rotation, latest_time, output_child):
         clustered_transform = TransformStamped()
@@ -271,16 +275,14 @@ class SlalomClusterActionServer(Node):
             goal_handle.abort()
             return result
 
-        average_transforms = self.order_transforms(tfs, top_n_indices, curr_pos)
+        ordered_tfs = self.order_transforms(tfs, top_n_indices, curr_pos)
 
-        if len(average_transforms) == 0:
+        if len(ordered_tfs) == 0:
             # for loop below will not run in this case
             self.get_logger().warn("No valid transforms found.")
 
         # faithfully pub all tfs that we have collected + clustered + ordered dont do any post processing
-        for (avg_translation, avg_rotation), tf_out in zip(
-            average_transforms, tf_list_out
-        ):
+        for (avg_translation, avg_rotation), tf_out in zip(ordered_tfs, tf_list_out):
             self.publish_transform(
                 translation=avg_translation,
                 rotation=avg_rotation,
@@ -308,69 +310,10 @@ class SlalomClusterActionServer(Node):
 
         return d
 
-    @staticmethod
-    def _get_position_from_transform(
-        tf: TransformStamped,
-    ) -> tuple[float, float, float]:
-        """Extract position tuple from TransformStamped."""
-        t = tf.transform.translation
-        return (t.x, t.y, t.z)
-
-    @staticmethod
-    def _get_orientation_from_transform(
-        tf: TransformStamped,
-    ) -> tuple[float, float, float, float]:
-        """Extract orientation tuple from TransformStamped."""
-        q = tf.transform.rotation
-        return (q.x, q.y, q.z, q.w)
-
-    @staticmethod
-    def _average_transforms(tfs: list[TransformStamped]) -> tuple[Vector3, Quaternion]:
-        """Calculate average translation and orientation from list of transforms."""
-        # Average translations
-        translations = np.array(
-            [SlalomClusterActionServer._get_position_from_transform(tf) for tf in tfs]
-        )
-        avg_translation = translations.mean(axis=0)
-
-        # Average quaternions using eigenvector method
-        try:
-            quats = np.array(
-                [
-                    SlalomClusterActionServer._get_orientation_from_transform(tf)
-                    for tf in tfs
-                ]
-            )
-            quat_matrix = np.dot(quats.T, quats)
-            eigvals, eigvecs = np.linalg.eigh(quat_matrix)
-            avg_quat = eigvecs[
-                :, np.argmax(eigvals)
-            ]  # eigenvector with largest eigenvalue
-        except np.linalg.LinAlgError:
-            # Fallback to last quaternion if averaging fails
-            avg_quat = SlalomClusterActionServer._get_orientation_from_transform(
-                tfs[-1]
-            )
-
-        return (
-            Vector3(x=avg_translation[0], y=avg_translation[1], z=avg_translation[2]),
-            Quaternion(x=avg_quat[0], y=avg_quat[1], z=avg_quat[2], w=avg_quat[3]),
-        )
-
-    @staticmethod
-    def _tf_to_pose(tf: TransformStamped) -> Pose:
-        """Convert TransformStamped to Pose (without covariance or header)."""
-        pose = Pose()
-        pose.position.x = tf.transform.translation.x
-        pose.position.y = tf.transform.translation.y
-        pose.position.z = tf.transform.translation.z
-        pose.orientation = tf.transform.rotation
-        return pose
-
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SlalomClusterActionServer()
+    node = MultiClusterActionServer()
     try:
         rclpy.spin(node, executor=MultiThreadedExecutor())
     except KeyboardInterrupt:
