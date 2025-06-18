@@ -49,12 +49,6 @@ class SlalomClusterActionServer(Node):
         self.tf_list_in = (
             self.get_parameter("tf_list_in").get_parameter_value().string_array_value
         )
-        self.tf_list_in_clustered = [frame + "/clustered" for frame in self.tf_list_in]
-
-        self.declare_parameter(name="tf_list_out", value=[])
-        self.tf_list_out = (
-            self.get_parameter("tf_list_out").get_parameter_value().string_array_value
-        )
 
         # TF components
         self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
@@ -78,15 +72,14 @@ class SlalomClusterActionServer(Node):
 
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
 
-        # TODO: create a bunch of debug pubs see if want to remove in the future
+        # creates a bunch of debug publishers, one for each input frame
         self.pub_dict = {
             tf_in: self.create_publisher(PoseArray, f"output_pose_{tf_in}", 10)
             for tf_in in self.tf_list_in
         }
-        self._num_tfs = len(self.tf_list_out)  # TODO: use in or out?
-
+        self._num_tfs = len(self.tf_list_in)
         self.get_logger().info(
-            f"Multi cluster action server initialized for in: {self.tf_list_in} | out: {self.tf_list_out}"
+            f"Multi cluster action server initialized for in: {self.tf_list_in}"
         )
 
     def goal_callback(self, goal_request):
@@ -179,6 +172,7 @@ class SlalomClusterActionServer(Node):
         max_label = valid_labels.max()
         counts = np.bincount(valid_labels, minlength=max_label + 1)
 
+        # negate counts to get descending order TODO: check if need stable sort
         top_n_indices = np.argsort(-counts)[: self._num_tfs]
 
         result = [
@@ -208,24 +202,36 @@ class SlalomClusterActionServer(Node):
         # Publish the array of poses for debugging
         self._pub_debug_poses(tfs, self.pose_array_publisher_all)
 
-        publishers = self.pub_dict.values()
-
-        for publisher, indices in zip(publishers, top_indices):
+        for indices in top_indices:
             if len(indices) == 0:
-                continue
+                break  # top_indices should have been sorted by len @line: 176
 
             filtered_tfs = [tfs[i] for i in indices]
+            # TODO: do we want to check all frame_ids in filtered_tfs are the same
+            frame_ids = {
+                tf.header.frame_id for tf in filtered_tfs
+            }  # TODO: check if use header.frame_id or child_frame_id
+            frame_id_counts = {
+                frame_id: sum(
+                    1 for tf in filtered_tfs if tf.header.frame_id == frame_id
+                )
+                for frame_id in frame_ids
+            }
+            self.get_logger().info(f"Frame ID counts: {frame_id_counts}")
+            if len(frame_ids) > 1:
+                self.get_logger().warn(
+                    f"Inconsistent frame_ids in filtered_tfs: {frame_ids}."
+                )
 
-            self.get_logger().info(
-                f"Processing cluster with {len(filtered_tfs)} transforms"
-            )
-
-            # Publish the array of poses for debugging
+            frame = max(frame_id_counts, key=frame_id_counts.get)
+            publisher = self.pub_dict[frame]
             self._pub_debug_poses(filtered_tfs, publisher)
-            # TODO: stopped here
-            avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
-            average_transforms.append((avg_translation, avg_rotation))
 
+            # tf_key should be the frame_id, the elements in the input parameter for tf_list_in
+            avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
+            average_transforms.append((avg_translation, avg_rotation, frame))
+
+        # TODO: check why we need to even sort
         average_transforms.sort(key=SlalomClusterActionServer._comparator(curr_pos))
 
         return average_transforms
@@ -290,71 +296,25 @@ class SlalomClusterActionServer(Node):
 
         average_transforms = self.order_transforms(tfs, top_n_indices, curr_pos)
 
-        # if zero missing
-        # TODO: in progress
-        if len(average_transforms) == 3:
-            for i, output_child in enumerate(
-                [
-                    self.channel_one_tf_clustered,
-                    self.channel_two_tf_clustered,
-                    self.channel_three_tf_clustered,
-                ]
-            ):
-                self.publish_transform(
-                    translation=average_transforms[i][0],
-                    rotation=average_transforms[i][1],
-                    latest_time=latest_time,
-                    output_child=output_child,
-                )
-        # if one missing
-        elif len(average_transforms) == 2:
-            # check the offset
-            delta_z = abs(average_transforms[0][0].z - average_transforms[1][0].z)
+        if len(average_transforms) == 0:
+            # for loop below will not run in this case
+            self.get_logger().warn("No valid transforms found.")
 
+        # faithfully pub all tfs that we have collected + clustered + ordered dont do any post processing
+        for avg_translation, avg_rotation, frame in average_transforms:
             self.publish_transform(
-                translation=average_transforms[0][0],
-                rotation=average_transforms[0][1],
+                translation=avg_translation,
+                rotation=avg_rotation,
                 latest_time=latest_time,
-                output_child=self.channel_one_tf_clustered,
+                output_child=frame + "/clustered",
             )
-            # likely gates 0 and 2
-            if delta_z > 3.0:
-                self.publish_transform(
-                    translation=average_transforms[1][0],
-                    rotation=average_transforms[1][1],
-                    latest_time=latest_time,
-                    output_child=self.channel_three_tf_clustered,
-                )
-            else:
-                self.publish_transform(
-                    translation=average_transforms[1][0],
-                    rotation=average_transforms[1][1],
-                    latest_time=latest_time,
-                    output_child=self.channel_two_tf_clustered,
-                )
-        elif len(average_transforms) == 1:
-            self.publish_transform(
-                translation=average_transforms[0][0],
-                rotation=average_transforms[0][1],
-                latest_time=latest_time,
-                output_child=self.channel_one_tf_clustered,
-            )
-        else:
-            self.get_logger().warn("No clusters found!")
-
-        # feedback_msg.current_status = "Clustering complete, static transform published"
-        # goal_handle.publish_feedback(feedback_msg)
-
-        # result.clustered_transform = clustered_transform
-        # result.total_transforms_collected = len(tfs)
-        # result.transforms_in_cluster = len(filtered_tfs)
 
         goal_handle.succeed()
         return result
 
     @staticmethod
     def _comparator(origin: Vector3):
-        def d(transform: tuple[Vector3, Quaternion]):
+        def d(transform: tuple[Vector3, Quaternion, str]):
             translation = transform[0]
             return (
                 ((translation.x - origin.x) ** 2)
