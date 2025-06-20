@@ -233,8 +233,8 @@ class MultiClusterActionServer(Node):
 
         self.num_tfs = len(tf_list_in)
         self.pub_list = [
-            self.create_publisher(PoseArray, f"output_tf_{i}", 10)
-            for i in range(self.num_tfs)
+            self.create_publisher(PoseArray, f"/auv4/{out}_cluster_multi", 10)
+            for out in range(tf_list_out)
         ]
 
         feedback_msg = ClusterTf.Feedback()
