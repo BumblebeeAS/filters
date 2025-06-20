@@ -1,3 +1,4 @@
+import copy
 from operator import attrgetter
 from typing import List, Tuple
 
@@ -170,11 +171,12 @@ def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
         PoseStamped: The converted PoseStamped message.
     """
     pose_msg = PoseStamped()
-    pose_msg.header = tf.header
-    pose_msg.pose.position.x = tf.transform.translation.x
-    pose_msg.pose.position.y = tf.transform.translation.y
-    pose_msg.pose.position.z = tf.transform.translation.z
-    pose_msg.pose.orientation = tf.transform.rotation
+    tf_copy = copy.deepcopy(tf)
+    pose_msg.header = tf_copy.header
+    pose_msg.pose.position.x = tf_copy.transform.translation.x
+    pose_msg.pose.position.y = tf_copy.transform.translation.y
+    pose_msg.pose.position.z = tf_copy.transform.translation.z
+    pose_msg.pose.orientation = tf_copy.transform.rotation
 
     return pose_msg
 
@@ -182,10 +184,11 @@ def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
 def tf_to_pose(tf: TransformStamped) -> Pose:
     """Convert TransformStamped to Pose (without covariance or header)."""
     pose = Pose()
-    pose.position.x = tf.transform.translation.x
-    pose.position.y = tf.transform.translation.y
-    pose.position.z = tf.transform.translation.z
-    pose.orientation = tf.transform.rotation
+    tf_copy = copy.deepcopy(tf)
+    pose.position.x = tf_copy.transform.translation.x
+    pose.position.y = tf_copy.transform.translation.y
+    pose.position.z = tf_copy.transform.translation.z
+    pose.orientation = tf_copy.transform.rotation
     return pose
 
 

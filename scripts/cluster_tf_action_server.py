@@ -13,11 +13,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
-from bb_filters.cluster import (
-    average_transforms,
-    get_orientation_from_transform,
-    get_position_from_transform,
-)
+from bb_filters.cluster import average_transforms, get_position_from_transform
 from bb_filters.tf_lru_cache import TfLruCache
 
 
