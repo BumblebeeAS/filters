@@ -4,6 +4,7 @@ from geometry_msgs.msg import TransformStamped
 from rclpy.time import Time
 
 
+# TODO: use a fixed sized numpy array then can make everything faster
 class TfLruCache:
     def __init__(self, size: int, logger):
         self.size = size

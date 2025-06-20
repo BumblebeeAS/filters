@@ -13,44 +13,21 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
-from bb_filters.cluster import tf_to_pose_stamped
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
 from bb_filters.tf_lru_cache import TfLruCache
 
 
-class SlalomClusterActionServer(Node):
+class MultiClusterActionServer(Node):
     """
     Todo hehe
     """
 
     def __init__(self):
         super().__init__("slalom_cluster_action_server")
-
-        self.declare_parameter(
-            name="channel_one_tf",
-            value="slalom_layer_0",
-        )
-        self.channel_one_tf = (
-            self.get_parameter("channel_one_tf").get_parameter_value().string_value
-        )
-        self.channel_one_tf_clustered = self.channel_one_tf + "/clustered"
-
-        self.declare_parameter(
-            name="channel_two_tf",
-            value="slalom_layer_1",
-        )
-        self.channel_two_tf = (
-            self.get_parameter("channel_two_tf").get_parameter_value().string_value
-        )
-        self.channel_two_tf_clustered = self.channel_two_tf + "/clustered"
-
-        self.declare_parameter(
-            name="channel_three_tf",
-            value="slalom_layer_2",
-        )
-        self.channel_three_tf = (
-            self.get_parameter("channel_three_tf").get_parameter_value().string_value
-        )
-        self.channel_three_tf_clustered = self.channel_three_tf + "/clustered"
 
         self.declare_parameter(name="output_parent_frame", value="world_ned")
         self.output_parent_frame = (
@@ -60,11 +37,6 @@ class SlalomClusterActionServer(Node):
         self.declare_parameter(name="base_link_frame", value="auv4/base_link_ned")
         self.base_link_frame = (
             self.get_parameter("base_link_frame").get_parameter_value().string_value
-        )
-
-        self.declare_parameter(name="tf_lookup_interval", value=0.05)
-        self.tf_lookup_interval = (
-            self.get_parameter("tf_lookup_interval").get_parameter_value().double_value
         )
 
         self.declare_parameter(name="cache_size", value=10000)
@@ -82,7 +54,7 @@ class SlalomClusterActionServer(Node):
         self._action_server = ActionServer(
             self,
             ClusterTf,
-            "/auv4/slalom",
+            "/auv4/cluster_tf_multi",
             self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
@@ -92,22 +64,13 @@ class SlalomClusterActionServer(Node):
             PoseArray, "output_pose_array_all", 10
         )
 
-        # PoseArray publisher for debugging
-        self.pose_array_publisher_1 = self.create_publisher(
-            PoseArray, "output_pose_array_1", 10
-        )
-
-        self.pose_array_publisher_2 = self.create_publisher(
-            PoseArray, "output_pose_array_2", 10
-        )
-
-        self.pose_array_publisher_3 = self.create_publisher(
-            PoseArray, "output_pose_array_3", 10
-        )
-
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
 
-        self.get_logger().info("Slalom cluster action server initialized")
+        # the below two vars will be created every time action is called
+        self.num_tfs = 0
+        self.pub_list = []
+
+        self.get_logger().info("Multi cluster action server initialized")
 
     def goal_callback(self, goal_request):
         self.get_logger().info("Received goal request, accepting")
@@ -121,41 +84,36 @@ class SlalomClusterActionServer(Node):
         self.get_logger().info("Goal accepted, executing callback")
         goal_handle.execute()
 
-    def collect_transforms(self, goal_handle, clustering_duration):
-        start_time = self.get_clock().now()
-        end_time = start_time + Duration(seconds=clustering_duration)
+    def _collect_transform(self, input_child, counts):
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                target_frame=self.output_parent_frame,
+                source_frame=input_child,
+                time=Time(),
+            )
+            self.cache.add(tf)
+            counts[input_child] += 1
+        except Exception as e:
+            self.get_logger().warn(f"Failed to lookup transform for {input_child}: {e}")
+            self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
+
+    def collect_transforms(
+        self, goal_handle, clustering_duration, tf_list_in, tf_lookup_interval=0.05
+    ):
+        rate = self.create_rate(1.0 / tf_lookup_interval)
+        counts = {tf: 0 for tf in tf_list_in}  # purely for debugging
 
         self.get_logger().info(f"Collecting TFs for {clustering_duration} seconds")
 
-        rate = self.create_rate(1.0 / self.tf_lookup_interval)
-
-        counts = {
-            self.channel_one_tf: 0,
-            self.channel_two_tf: 0,
-            self.channel_three_tf: 0,
-        }
-
+        start_time = self.get_clock().now()
+        end_time = start_time + Duration(seconds=clustering_duration)
         while self.get_clock().now() < end_time:
             if goal_handle.is_cancel_requested:
                 self.get_logger().info("Goal canceled during TF collection.")
                 return "CANCEL"
 
-            for input_child in [
-                self.channel_one_tf,
-                self.channel_two_tf,
-                self.channel_three_tf,
-            ]:
-                try:
-                    tf = self.tf_buffer.lookup_transform(
-                        target_frame=self.output_parent_frame,
-                        source_frame=input_child,
-                        time=Time(),  # TODO check if a timeout is needed
-                    )
-                    self.cache.add(tf)
-                    counts[input_child] += 1
-                except Exception as e:
-                    self.get_logger().warn(f"Failed to lookup transform: {e}")
-                    self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
+            # list comprehension is much faster
+            [self._collect_transform(input_child, counts) for input_child in tf_list_in]
 
             try:
                 rate.sleep()
@@ -163,14 +121,12 @@ class SlalomClusterActionServer(Node):
                 self.get_logger().info("Interrupted during TF collection.")
                 return "ABORT"
 
-        for input_child in [
-            self.channel_one_tf,
-            self.channel_two_tf,
-            self.channel_three_tf,
-        ]:
+        [
             self.get_logger().info(
-                f"Collected {counts[input_child]} transforms from {self.output_parent_frame} to {input_child}"
+                f"Collected {counts[input_child]} tfs from {self.output_parent_frame} to {input_child}"
             )
+            for input_child in tf_list_in
+        ]
 
         return "SUCCESS"
 
@@ -182,9 +138,9 @@ class SlalomClusterActionServer(Node):
                 f"Not enough transforms collected to perform clustering. "
                 f"Collected: {self.cache.get_count()}, Required: {min_num_poses}."
             )
-            return [[], [], []]
+            return [[] for _ in range(self.num_tfs)]
 
-        positions = np.array([self._get_position_from_transform(tf) for tf in tfs])
+        positions = np.array([get_position_from_transform(tf) for tf in tfs])
 
         hdbscan = HDBSCAN(
             min_cluster_size=min_cluster_size,
@@ -198,69 +154,58 @@ class SlalomClusterActionServer(Node):
         valid_mask = labels >= 0
 
         if not np.any(valid_mask):
-            return [[], [], []]
+            return [[] for _ in range(self.num_tfs)]
 
         valid_labels = labels[valid_mask]
 
         max_label = valid_labels.max()
         counts = np.bincount(valid_labels, minlength=max_label + 1)
 
-        top3_indices = np.argsort(-counts)[:3]
+        # negate counts to get descending order TODO: check if need stable sort
+        top_n_indices = np.argsort(-counts)[: self.num_tfs]
 
-        result = []
-        for cluster_id in top3_indices:
-            if counts[cluster_id] > 0:
-                indices = np.where(labels == cluster_id)[0].tolist()
-                result.append(indices)
+        result = [
+            np.where(labels == cluster_id)[0].tolist()
+            for cluster_id in top_n_indices
+            if counts[cluster_id] > 0
+        ]
 
-        while len(result) < 3:
+        while len(result) < self.num_tfs:
             result.append([])
 
         return result
 
-    def order_transforms(self, tfs, top_indices, curr_pos):
-        average_transforms = []
-
-        # Publish the array of poses for debugging
-        pose_stamped_msgs = list(map(tf_to_pose_stamped, tfs))
+    def _pub_debug_poses(self, tfs, publisher):
+        """Publish debug poses for a specific input child."""
+        pose_stamped_msgs = map(tf_to_pose_stamped, tfs)
         pose_array_msg = PoseArray()
-        pose_array_msg.header = pose_stamped_msgs[-1].header
+        pose_array_msg.header = tfs[-1].header
         pose_array_msg.poses = [
             pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs
         ]
-        self.pose_array_publisher_all.publish(pose_array_msg)
+        publisher.publish(pose_array_msg)
 
-        publishers = [
-            self.pose_array_publisher_1,
-            self.pose_array_publisher_2,
-            self.pose_array_publisher_3,
-        ]
+    def order_transforms(self, tfs, top_indices, curr_pos):
+        ordered_tfs = []
 
-        for publisher, indices in zip(publishers, top_indices):
+        # Publish the array of poses for debugging
+        self._pub_debug_poses(tfs, self.pose_array_publisher_all)
+
+        for i, indices in enumerate(top_indices):
             if len(indices) == 0:
-                continue
+                break  # top_indices should have been sorted by argsort previously
 
             filtered_tfs = [tfs[i] for i in indices]
 
-            self.get_logger().info(
-                f"Processing cluster with {len(filtered_tfs)} transforms"
-            )
+            self._pub_debug_poses(
+                filtered_tfs, self.pub_list[i]
+            )  # pub_list created everytime action is called
 
-            # Publish the array of poses for debugging
-            pose_stamped_msgs = list(map(tf_to_pose_stamped, filtered_tfs))
-            pose_array_msg = PoseArray()
-            pose_array_msg.header = pose_stamped_msgs[-1].header
-            pose_array_msg.poses = [
-                pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs
-            ]
-            publisher.publish(pose_array_msg)
+            avg_translation, avg_rotation = average_transforms(filtered_tfs)
+            ordered_tfs.append((avg_translation, avg_rotation))
 
-            avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
-            average_transforms.append((avg_translation, avg_rotation))
-
-        average_transforms.sort(key=SlalomClusterActionServer._comparator(curr_pos))
-
-        return average_transforms
+        ordered_tfs.sort(key=MultiClusterActionServer._comparator(curr_pos))
+        return ordered_tfs
 
     def publish_transform(self, translation, rotation, latest_time, output_child):
         clustered_transform = TransformStamped()
@@ -282,13 +227,25 @@ class SlalomClusterActionServer(Node):
         clustering_duration = goal.clustering_duration  # seconds
         min_cluster_size = goal.min_cluster_size
         min_samples = goal.min_samples
+        tf_list_in = goal.input_child_frame_ids
+        tf_list_out = goal.output_child_frame_ids
+        tf_lookup_interval = goal.tf_lookup_interval
+
+        self.num_tfs = len(tf_list_in)
+        self.pub_list = [
+            self.create_publisher(PoseArray, f"/auv4/{out}_cluster_multi", 10)
+            for out in range(tf_list_out)
+        ]
 
         feedback_msg = ClusterTf.Feedback()
         result = ClusterTf.Result()
 
         # cache_size = int(clustering_duration / lookup_interval) + 10
         collection_result = self.collect_transforms(
-            goal_handle=goal_handle, clustering_duration=clustering_duration
+            goal_handle=goal_handle,
+            clustering_duration=clustering_duration,
+            tf_list_in=tf_list_in,
+            tf_lookup_interval=tf_lookup_interval,
         )
 
         if collection_result == "ABORT":
@@ -300,8 +257,10 @@ class SlalomClusterActionServer(Node):
 
         tfs, latest_time = self.cache.get_all()
 
-        top_3_indices = self.cluster_transforms(
-            tfs=tfs, min_cluster_size=min_cluster_size, min_samples=min_samples
+        top_n_indices = self.cluster_transforms(
+            tfs=tfs,
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
         )
 
         try:
@@ -318,72 +277,32 @@ class SlalomClusterActionServer(Node):
             goal_handle.abort()
             return result
 
-        average_transforms = self.order_transforms(tfs, top_3_indices, curr_pos)
+        ordered_tfs = self.order_transforms(tfs, top_n_indices, curr_pos)
 
-        # if zero missing
-        if len(average_transforms) == 3:
-            for i, output_child in enumerate(
-                [
-                    self.channel_one_tf_clustered,
-                    self.channel_two_tf_clustered,
-                    self.channel_three_tf_clustered,
-                ]
-            ):
-                self.publish_transform(
-                    translation=average_transforms[i][0],
-                    rotation=average_transforms[i][1],
-                    latest_time=latest_time,
-                    output_child=output_child,
-                )
-        # if one missing
-        elif len(average_transforms) == 2:
-            # check the offset
-            delta_z = abs(average_transforms[0][0].z - average_transforms[1][0].z)
+        if len(ordered_tfs) == 0:
+            # for loop below will not run in this case
+            self.get_logger().warn("No valid transforms found.")
 
+        # faithfully pub all tfs that we have collected + clustered + ordered dont do any post processing
+        for (avg_translation, avg_rotation), tf_out in zip(ordered_tfs, tf_list_out):
             self.publish_transform(
-                translation=average_transforms[0][0],
-                rotation=average_transforms[0][1],
+                translation=avg_translation,
+                rotation=avg_rotation,
                 latest_time=latest_time,
-                output_child=self.channel_one_tf_clustered,
+                output_child=tf_out,
             )
-            # likely gates 0 and 2
-            if delta_z > 3.0:
-                self.publish_transform(
-                    translation=average_transforms[1][0],
-                    rotation=average_transforms[1][1],
-                    latest_time=latest_time,
-                    output_child=self.channel_three_tf_clustered,
-                )
-            else:
-                self.publish_transform(
-                    translation=average_transforms[1][0],
-                    rotation=average_transforms[1][1],
-                    latest_time=latest_time,
-                    output_child=self.channel_two_tf_clustered,
-                )
-        elif len(average_transforms) == 1:
-            self.publish_transform(
-                translation=average_transforms[0][0],
-                rotation=average_transforms[0][1],
-                latest_time=latest_time,
-                output_child=self.channel_one_tf_clustered,
-            )
-        else:
-            self.get_logger().warn("No clusters found!")
 
-        # feedback_msg.current_status = "Clustering complete, static transform published"
-        # goal_handle.publish_feedback(feedback_msg)
-
-        # result.clustered_transform = clustered_transform
-        # result.total_transforms_collected = len(tfs)
-        # result.transforms_in_cluster = len(filtered_tfs)
+        if not goal.persistent:
+            self.cache = TfLruCache(
+                size=self.cache_size, logger=self.get_logger()
+            )  # recreate cache everytime action called
 
         goal_handle.succeed()
         return result
 
     @staticmethod
     def _comparator(origin: Vector3):
-        def d(transform: tuple[Vector3, Quaternion]):
+        def d(transform: tuple[Vector3, Quaternion, str]):
             translation = transform[0]
             return (
                 ((translation.x - origin.x) ** 2)
@@ -393,69 +312,10 @@ class SlalomClusterActionServer(Node):
 
         return d
 
-    @staticmethod
-    def _get_position_from_transform(
-        tf: TransformStamped,
-    ) -> tuple[float, float, float]:
-        """Extract position tuple from TransformStamped."""
-        t = tf.transform.translation
-        return (t.x, t.y, t.z)
-
-    @staticmethod
-    def _get_orientation_from_transform(
-        tf: TransformStamped,
-    ) -> tuple[float, float, float, float]:
-        """Extract orientation tuple from TransformStamped."""
-        q = tf.transform.rotation
-        return (q.x, q.y, q.z, q.w)
-
-    @staticmethod
-    def _average_transforms(tfs: list[TransformStamped]) -> tuple[Vector3, Quaternion]:
-        """Calculate average translation and orientation from list of transforms."""
-        # Average translations
-        translations = np.array(
-            [SlalomClusterActionServer._get_position_from_transform(tf) for tf in tfs]
-        )
-        avg_translation = translations.mean(axis=0)
-
-        # Average quaternions using eigenvector method
-        try:
-            quats = np.array(
-                [
-                    SlalomClusterActionServer._get_orientation_from_transform(tf)
-                    for tf in tfs
-                ]
-            )
-            quat_matrix = np.dot(quats.T, quats)
-            eigvals, eigvecs = np.linalg.eigh(quat_matrix)
-            avg_quat = eigvecs[
-                :, np.argmax(eigvals)
-            ]  # eigenvector with largest eigenvalue
-        except np.linalg.LinAlgError:
-            # Fallback to last quaternion if averaging fails
-            avg_quat = SlalomClusterActionServer._get_orientation_from_transform(
-                tfs[-1]
-            )
-
-        return (
-            Vector3(x=avg_translation[0], y=avg_translation[1], z=avg_translation[2]),
-            Quaternion(x=avg_quat[0], y=avg_quat[1], z=avg_quat[2], w=avg_quat[3]),
-        )
-
-    @staticmethod
-    def _tf_to_pose(tf: TransformStamped) -> Pose:
-        """Convert TransformStamped to Pose (without covariance or header)."""
-        pose = Pose()
-        pose.position.x = tf.transform.translation.x
-        pose.position.y = tf.transform.translation.y
-        pose.position.z = tf.transform.translation.z
-        pose.orientation = tf.transform.rotation
-        return pose
-
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SlalomClusterActionServer()
+    node = MultiClusterActionServer()
     try:
         rclpy.spin(node, executor=MultiThreadedExecutor())
     except KeyboardInterrupt:

@@ -13,6 +13,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
+from bb_filters.cluster import average_transforms, get_position_from_transform
 from bb_filters.tf_lru_cache import TfLruCache
 
 
@@ -61,22 +62,6 @@ class ClusterTfActionServer(Node):
         goal_handle.execute()
 
     @staticmethod
-    def _get_position_from_transform(
-        tf: TransformStamped,
-    ) -> tuple[float, float, float]:
-        """Extract position tuple from TransformStamped."""
-        t = tf.transform.translation
-        return (t.x, t.y, t.z)
-
-    @staticmethod
-    def _get_orientation_from_transform(
-        tf: TransformStamped,
-    ) -> tuple[float, float, float, float]:
-        """Extract orientation tuple from TransformStamped."""
-        q = tf.transform.rotation
-        return (q.x, q.y, q.z, q.w)
-
-    @staticmethod
     def _get_idxs_in_largest_cluster(
         hdbscan: HDBSCAN, positions: np.ndarray
     ) -> np.ndarray:
@@ -96,47 +81,6 @@ class ClusterTfActionServer(Node):
         largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
 
         return largest_cluster_idxs
-
-    @staticmethod
-    def _average_transforms(tfs: list[TransformStamped]) -> tuple[Vector3, Quaternion]:
-        """Calculate average translation and orientation from list of transforms."""
-        # Average translations
-        translations = np.array(
-            [ClusterTfActionServer._get_position_from_transform(tf) for tf in tfs]
-        )
-        avg_translation = translations.mean(axis=0)
-
-        # Average quaternions using eigenvector method
-        try:
-            quats = np.array(
-                [
-                    ClusterTfActionServer._get_orientation_from_transform(tf)
-                    for tf in tfs
-                ]
-            )
-            quat_matrix = np.dot(quats.T, quats)
-            eigvals, eigvecs = np.linalg.eigh(quat_matrix)
-            avg_quat = eigvecs[
-                :, np.argmax(eigvals)
-            ]  # eigenvector with largest eigenvalue
-        except np.linalg.LinAlgError:
-            # Fallback to last quaternion if averaging fails
-            avg_quat = ClusterTfActionServer._get_orientation_from_transform(tfs[-1])
-
-        return (
-            Vector3(x=avg_translation[0], y=avg_translation[1], z=avg_translation[2]),
-            Quaternion(x=avg_quat[0], y=avg_quat[1], z=avg_quat[2], w=avg_quat[3]),
-        )
-
-    @staticmethod
-    def _tf_to_pose(tf: TransformStamped) -> Pose:
-        """Convert TransformStamped to Pose (without covariance or header)."""
-        pose = Pose()
-        pose.position.x = tf.transform.translation.x
-        pose.position.y = tf.transform.translation.y
-        pose.position.z = tf.transform.translation.z
-        pose.orientation = tf.transform.rotation
-        return pose
 
     async def execute_callback(self, goal_handle):
         goal = goal_handle.request
@@ -248,7 +192,7 @@ class ClusterTfActionServer(Node):
             tfs, latest_time = cache.get_all()
 
             # Extract positions directly from transforms for clustering
-            positions = np.array([self._get_position_from_transform(tf) for tf in tfs])
+            positions = np.array([get_position_from_transform(tf) for tf in tfs])
 
             hdbscan = HDBSCAN(
                 min_cluster_size=min_cluster_size,
@@ -267,7 +211,7 @@ class ClusterTfActionServer(Node):
 
             # Calculate average transform from largest cluster
             filtered_tfs = [tfs[i] for i in filtered_idxs]
-            avg_translation, avg_rotation = self._average_transforms(filtered_tfs)
+            avg_translation, avg_rotation = average_transforms(filtered_tfs)
 
             # Create the clustered transform
             clustered_transform = TransformStamped()

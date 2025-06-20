@@ -1,10 +1,53 @@
+import copy
 from operator import attrgetter
 from typing import List, Tuple
 
 import numpy as np
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TransformStamped
+from geometry_msgs.msg import (
+    Pose,
+    PoseStamped,
+    PoseWithCovarianceStamped,
+    Quaternion,
+    TransformStamped,
+    Vector3,
+)
 from rclpy.impl.rcutils_logger import RcutilsLogger
 from sklearn.cluster import HDBSCAN
+
+
+def get_position_from_transform(tf: TransformStamped) -> Tuple[float, float, float]:
+    """Get the position tuple from a TransformStamped message.
+
+    Args:
+        tf (TransformStamped): The transform message.
+
+    Returns:
+        tuple(float, float, float): The position tuple.
+    """
+    return (
+        tf.transform.translation.x,
+        tf.transform.translation.y,
+        tf.transform.translation.z,
+    )
+
+
+def get_orientation_from_transform(
+    tf: TransformStamped,
+) -> Tuple[float, float, float, float]:
+    """Get the orientation tuple from a TransformStamped message.
+
+    Args:
+        tf (TransformStamped): The transform message.
+
+    Returns:
+        tuple(float, float, float, float): The orientation tuple xyzw.
+    """
+    return (
+        tf.transform.rotation.x,
+        tf.transform.rotation.y,
+        tf.transform.rotation.z,
+        tf.transform.rotation.w,
+    )
 
 
 def get_position_tuple_from_pose(
@@ -128,10 +171,50 @@ def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
         PoseStamped: The converted PoseStamped message.
     """
     pose_msg = PoseStamped()
-    pose_msg.header = tf.header
-    pose_msg.pose.position.x = tf.transform.translation.x
-    pose_msg.pose.position.y = tf.transform.translation.y
-    pose_msg.pose.position.z = tf.transform.translation.z
-    pose_msg.pose.orientation = tf.transform.rotation
+    tf_copy = copy.deepcopy(tf)
+    pose_msg.header = tf_copy.header
+    pose_msg.pose.position.x = tf_copy.transform.translation.x
+    pose_msg.pose.position.y = tf_copy.transform.translation.y
+    pose_msg.pose.position.z = tf_copy.transform.translation.z
+    pose_msg.pose.orientation = tf_copy.transform.rotation
 
     return pose_msg
+
+
+def tf_to_pose(tf: TransformStamped) -> Pose:
+    """Convert TransformStamped to Pose (without covariance or header)."""
+    pose = Pose()
+    tf_copy = copy.deepcopy(tf)
+    pose.position.x = tf_copy.transform.translation.x
+    pose.position.y = tf_copy.transform.translation.y
+    pose.position.z = tf_copy.transform.translation.z
+    pose.orientation = tf_copy.transform.rotation
+    return pose
+
+
+def average_transforms(tfs: List[TransformStamped]) -> PoseWithCovarianceStamped:
+    """Average a list of TransformStamped messages into a PoseWithCovarianceStamped message.
+
+    Args:
+        tfs (List[TransformStamped]): The list of TransformStamped messages.
+
+    Returns:
+        PoseWithCovarianceStamped: The averaged pose message.
+    """
+    translations = np.array([get_position_from_transform(tf) for tf in tfs])
+    avg_translation = translations.mean(axis=0)
+
+    try:  # Average quaternions using eigenvector method
+        quats = np.array([get_orientation_from_transform(tf) for tf in tfs])
+        quat_matrix = np.dot(quats.T, quats)
+        eigvals, eigvecs = np.linalg.eigh(quat_matrix)
+        avg_quat = eigvecs[:, np.argmax(eigvals)]  # eigenvector with largest eigenvalue
+    except np.linalg.LinAlgError:
+        avg_quat = get_orientation_from_transform(
+            tfs[-1]
+        )  # fallback to last quaternion
+
+    return (
+        Vector3(x=avg_translation[0], y=avg_translation[1], z=avg_translation[2]),
+        Quaternion(x=avg_quat[0], y=avg_quat[1], z=avg_quat[2], w=avg_quat[3]),
+    )
