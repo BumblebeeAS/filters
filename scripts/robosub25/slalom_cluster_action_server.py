@@ -66,8 +66,10 @@ class MultiClusterActionServer(Node):
 
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
 
+        # the below two vars will be created every time action is called
         self.num_tfs = 0
-        self.pub_list = []  # will be created every time action is called
+        self.pub_list = []
+
         self.get_logger().info("Multi cluster action server initialized")
 
     def goal_callback(self, goal_request):
@@ -191,7 +193,7 @@ class MultiClusterActionServer(Node):
 
         for i, indices in enumerate(top_indices):
             if len(indices) == 0:
-                break  # top_indices should have been sorted by len @line: 176
+                break  # top_indices should have been sorted by argsort previously
 
             filtered_tfs = [tfs[i] for i in indices]
 
