@@ -3,6 +3,7 @@ from typing import List, Tuple
 
 import numpy as np
 from geometry_msgs.msg import (
+    Pose,
     PoseStamped,
     PoseWithCovarianceStamped,
     Quaternion,
@@ -176,6 +177,16 @@ def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
     pose_msg.pose.orientation = tf.transform.rotation
 
     return pose_msg
+
+
+def tf_to_pose(tf: TransformStamped) -> Pose:
+    """Convert TransformStamped to Pose (without covariance or header)."""
+    pose = Pose()
+    pose.position.x = tf.transform.translation.x
+    pose.position.y = tf.transform.translation.y
+    pose.position.z = tf.transform.translation.z
+    pose.orientation = tf.transform.rotation
+    return pose
 
 
 def average_transforms(tfs: List[TransformStamped]) -> PoseWithCovarianceStamped:
