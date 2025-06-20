@@ -125,7 +125,7 @@ install(PROGRAMS
   scripts/robotx/zed_detector.py
   scripts/robotx/pinger_gate_detection.py
 
-  scripts/robosub25/slalom_cluster_action_server.py
+  scripts/robosub25/multi_cluster_action_server.py
 
   DESTINATION lib/${PROJECT_NAME}
 )
