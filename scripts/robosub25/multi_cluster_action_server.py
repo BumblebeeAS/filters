@@ -138,7 +138,7 @@ class MultiClusterActionServer(Node):
                 f"Not enough transforms collected to perform clustering. "
                 f"Collected: {self.cache.get_count()}, Required: {min_num_poses}."
             )
-            return [[] for _ in range(self.num_tfs)]
+            return [[] for _ in self.num_tfs]
 
         positions = np.array([get_position_from_transform(tf) for tf in tfs])
 
