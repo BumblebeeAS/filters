@@ -111,6 +111,7 @@ install(PROGRAMS
   scripts/detected_object_2d_filter_projection_bottom_facing.py
   scripts/cluster_poses_node.py
   scripts/cluster_tf_action_server.py
+  scripts/cluster_tf_multi_action_server.py
   scripts/ml_color_relabel_node.py
 
   scripts/robotx/robotx_ftp_start_detector.py
@@ -124,8 +125,6 @@ install(PROGRAMS
   scripts/robotx/robotx_sim_obstacles_converter.py
   scripts/robotx/zed_detector.py
   scripts/robotx/pinger_gate_detection.py
-
-  scripts/robosub25/multi_cluster_action_server.py
 
   DESTINATION lib/${PROJECT_NAME}
 )

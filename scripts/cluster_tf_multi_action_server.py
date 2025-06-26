@@ -4,8 +4,14 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTf
-from geometry_msgs.msg import Pose, PoseArray, Quaternion, TransformStamped, Vector3
+from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -13,21 +19,11 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose_stamped,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 
-
-class MultiClusterActionServer(Node):
-    """
-    Todo hehe
-    """
+class ClusterTfMultiActionServer(Node):
 
     def __init__(self):
-        super().__init__("slalom_cluster_action_server")
+        super().__init__("cluster_tf_multi_action_server")
 
         self.declare_parameter(name="output_parent_frame", value="world_ned")
         self.output_parent_frame = (
@@ -315,7 +311,7 @@ class MultiClusterActionServer(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MultiClusterActionServer()
+    node = ClusterTfMultiActionServer()
     try:
         rclpy.spin(node, executor=MultiThreadedExecutor())
     except KeyboardInterrupt:
