@@ -4,12 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose_stamped,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTf
 from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -19,9 +13,15 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
+from bb_filters.tf_lru_cache import TfLruCache
+
 
 class ClusterTfMultiActionServer(Node):
-
     def __init__(self):
         super().__init__("cluster_tf_multi_action_server")
 
@@ -200,7 +200,7 @@ class ClusterTfMultiActionServer(Node):
             avg_translation, avg_rotation = average_transforms(filtered_tfs)
             ordered_tfs.append((avg_translation, avg_rotation))
 
-        ordered_tfs.sort(key=MultiClusterActionServer._comparator(curr_pos))
+        ordered_tfs.sort(key=self._comparator(curr_pos))
         return ordered_tfs
 
     def publish_transform(self, translation, rotation, latest_time, output_child):
