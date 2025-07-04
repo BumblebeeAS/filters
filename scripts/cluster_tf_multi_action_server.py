@@ -108,8 +108,8 @@ class ClusterTfMultiActionServer(Node):
                 self.get_logger().info("Goal canceled during TF collection.")
                 return "CANCEL"
 
-            # list comprehension is much faster
-            [self._collect_transform(input_child, counts) for input_child in tf_list_in]
+            for input_child in tf_list_in:
+                self._collect_transform(input_child, counts)
 
             try:
                 rate.sleep()
