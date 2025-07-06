@@ -230,10 +230,36 @@ class ClusterTfActionServer(Node):
             self.static_tf_broadcaster.sendTransform(clustered_transform)
 
         if not worked:
-            self.get_logger().error(
-                "No clusters possible for all provided input transforms"
+            self.get_logger().warn(
+                "No clusters possible, falling back to last available TF for each pair."
             )
-            goal_handle.abort()
+            for output_parent, input_child, output_child in zip(
+                output_parents, input_children, output_children
+            ):
+                try:
+                    tf = self.tf_buffer.lookup_transform(
+                        target_frame=output_parent,
+                        source_frame=input_child,
+                        time=Time(),  # latest
+                    )
+
+                    fallback_tf = TransformStamped()
+                    fallback_tf.header.stamp = tf.header.stamp
+                    fallback_tf.header.frame_id = output_parent
+                    fallback_tf.child_frame_id = output_child
+                    fallback_tf.transform = tf.transform
+
+                    self.static_tf_broadcaster.sendTransform(fallback_tf)
+
+                    self.get_logger().info(
+                        f"Fallback: Published last TF from {output_parent} to {output_child}"
+                    )
+                except Exception as e:
+                    self.get_logger().error(
+                        f"Fallback failed for {output_parent} to {input_child}: {e}"
+                    )
+
+            goal_handle.succeed()
             return result
 
         # clear non persistent caches
