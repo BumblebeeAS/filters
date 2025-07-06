@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+import traceback
+
+import numpy as np
+import rclpy
+import tf2_ros
+from bb_perception_msgs.action import ClusterTf
+from geometry_msgs.msg import Pose, Quaternion, TransformStamped, Vector3
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN
+
+from bb_filters.cluster import average_transforms, get_position_from_transform
+from bb_filters.tf_lru_cache import TfLruCache
+
+
+class ClusterTfActionServer(Node):
+    """
+    ROS2 Action Server that collects TF transforms over a duration,
+    clusters them using HDBSCAN, and publishes the centroid of the
+    largest cluster as a static TF transform.
+    """
+
+    PERSISTENT_CACHE_SIZE = 5000
+
+    def __init__(self):
+        super().__init__("cluster_tfs_action_server")
+
+        # TF components
+        self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(
+            self.tf_buffer, self, spin_thread=False
+        )
+
+        self._action_server = ActionServer(
+            self,
+            ClusterTf,
+            "/auv4/cluster_tf",
+            self.execute_callback,
+            goal_callback=self.goal_callback,
+            cancel_callback=self.cancel_callback,
+        )
+
+        self.caches = dict()
+
+        self.get_logger().info("Cluster TFs action server initialized")
+
+    def goal_callback(self, goal_request):
+        self.get_logger().info("Received goal request, accepting")
+        return GoalResponse.ACCEPT
+
+    def cancel_callback(self, goal_handle):
+        self.get_logger().info("Received cancel request, accepting")
+        return CancelResponse.ACCEPT
+
+    def handle_accepted(self, goal_handle):
+        self.get_logger().info("Goal accepted, executing callback")
+        goal_handle.execute()
+
+    @staticmethod
+    def _get_idxs_in_largest_cluster(
+        hdbscan: HDBSCAN, positions: np.ndarray
+    ) -> np.ndarray:
+        """Returns an array of indices belonging to the largest, non-noise cluster."""
+        hdbscan.fit(positions)
+
+        labels = np.array(hdbscan.labels_)
+        non_noise_labels = labels[labels >= 0]
+
+        if len(non_noise_labels) == 0:
+            return np.array([])
+
+        unique_labels, unique_label_counts = np.unique(
+            non_noise_labels, return_counts=True
+        )
+        largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
+        largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
+
+        return largest_cluster_idxs
+
+    async def execute_callback(self, goal_handle):
+        goal = goal_handle.request
+        input_children = goal.input_child_frame_ids
+        output_parents = goal.output_parent_frame_ids
+        output_children = goal.output_child_frame_ids
+        clustering_duration = goal.clustering_duration  # seconds
+        lookup_interval = goal.tf_lookup_interval  # seconds
+        use_cache = goal.use_cache
+        min_cluster_size = goal.min_cluster_size
+        min_samples = goal.min_samples
+
+        feedback_msg = ClusterTf.Feedback()
+        result = ClusterTf.Result()
+
+        for output_parent, input_child in zip(output_parents, input_children):
+            if (output_parent, input_child) in self.caches:
+                continue
+
+            if goal.persistent:
+                self.caches[(output_parent, input_child)] = TfLruCache(
+                    size=self.PERSISTENT_CACHE_SIZE, logger=self.get_logger()
+                )
+            else:
+                cache_size = (
+                    goal.cache_size
+                    if use_cache
+                    else int(clustering_duration / lookup_interval) + 10
+                )
+                self.caches[(output_parent, input_child)] = TfLruCache(
+                    size=cache_size, logger=self.get_logger()
+                )
+
+        start_time = self.get_clock().now()
+        end_time = start_time + Duration(seconds=clustering_duration)
+
+        self.get_logger().info(f"Collecting TFsfor {clustering_duration} seconds")
+
+        rate = self.create_rate(1.0 / lookup_interval)
+
+        while self.get_clock().now() < end_time:
+            if goal_handle.is_cancel_requested:
+                self.get_logger().info("Goal canceled during TF collection.")
+                goal_handle.canceled()
+                return result
+
+            for output_parent, input_child in zip(output_parents, input_children):
+                try:
+                    tf = self.tf_buffer.lookup_transform(
+                        target_frame=output_parent,
+                        source_frame=input_child,
+                        time=Time(),  # TODO check if a timeout is needed
+                    )
+
+                    self.caches[(output_parent, input_child)].add(tf)
+                except Exception as e:
+                    self.get_logger().warn(f"Failed to lookup transform: {e}")
+                    self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
+
+            # feedback_msg.current_status = "Collecting transforms"
+            # feedback_msg.collection_progress = (
+            #     (self.get_clock().now() - start_time).nanoseconds
+            #     * 1e-9
+            #     / clustering_duration
+            # )
+            # feedback_msg.transforms_collected_so_far = cache.get_count()
+            # goal_handle.publish_feedback(feedback_msg)
+
+            try:
+                rate.sleep()
+            except:
+                self.get_logger().info("Interrupted during TF collection.")
+                goal_handle.canceled()
+                return result
+
+        # feedback_msg.current_status = (
+        #     "Finished collecting transforms, starting clustering"
+        # )
+        # feedback_msg.collection_progress = 1.0
+        # feedback_msg.transforms_collected_so_far = cache.get_count()
+        # goal_handle.publish_feedback(feedback_msg)
+
+        min_num_poses = max(min_cluster_size, min_samples)
+        worked = False
+
+        for output_parent, input_child, output_child in zip(
+            output_parents, input_children, output_children
+        ):
+            cache = self.caches[(output_parent, input_child)]
+
+            self.get_logger().info(
+                f"Collected {cache.get_count()} transforms from {output_parent} to {input_child}"
+            )
+
+            # Perform clustering
+            if cache.is_empty():
+                self.get_logger().warn(
+                    f"No transforms collected for {output_parent} to {input_child}, cannot perform clustering."
+                )
+                continue
+
+            if cache.get_count() < min_num_poses:
+                self.get_logger().warn(
+                    f"Not enough transforms collected to perform clustering. "
+                    f"Collected: {cache.get_count()}, Required: {min_num_poses}."
+                )
+                continue
+
+            tfs, latest_time = cache.get_all()
+
+            # Extract positions directly from transforms for clustering
+            positions = np.array([get_position_from_transform(tf) for tf in tfs])
+
+            hdbscan = HDBSCAN(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples,
+                cluster_selection_epsilon=0.2,
+                allow_single_cluster=True,
+                store_centers="centroid",
+            )
+
+            filtered_idxs = self._get_idxs_in_largest_cluster(hdbscan, positions)
+            if len(filtered_idxs) == 0:
+                self.get_logger().warn(
+                    "No clusters found, cannot create clustered transform."
+                )
+                continue
+
+            # Calculate average transform from largest cluster
+            filtered_tfs = [tfs[i] for i in filtered_idxs]
+            avg_translation, avg_rotation = average_transforms(filtered_tfs)
+
+            # Create the clustered transform
+            clustered_transform = TransformStamped()
+            clustered_transform.header.stamp = latest_time.to_msg()
+            clustered_transform.header.frame_id = output_parent
+            clustered_transform.child_frame_id = output_child
+            clustered_transform.transform.translation = avg_translation
+            clustered_transform.transform.rotation = avg_rotation
+
+            self.get_logger().info(
+                f"Clustered transform from {output_parent} to {output_child} "
+                f"with average position: {avg_translation.x:.3f}, {avg_translation.y:.3f}, {avg_translation.z:.3f}"
+            )
+            worked = True
+
+            self.static_tf_broadcaster.sendTransform(clustered_transform)
+
+        if not worked:
+            self.get_logger().warn(
+                "No clusters possible, falling back to last available TF for each pair."
+            )
+            for output_parent, input_child, output_child in zip(
+                output_parents, input_children, output_children
+            ):
+                try:
+                    tf = self.tf_buffer.lookup_transform(
+                        target_frame=output_parent,
+                        source_frame=input_child,
+                        time=Time(),  # latest
+                    )
+
+                    fallback_tf = TransformStamped()
+                    fallback_tf.header.stamp = tf.header.stamp
+                    fallback_tf.header.frame_id = output_parent
+                    fallback_tf.child_frame_id = output_child
+                    fallback_tf.transform = tf.transform
+
+                    self.static_tf_broadcaster.sendTransform(fallback_tf)
+
+                    self.get_logger().info(
+                        f"Fallback: Published last TF from {output_parent} to {output_child}"
+                    )
+                except Exception as e:
+                    self.get_logger().error(
+                        f"Fallback failed for {output_parent} to {input_child}: {e}"
+                    )
+
+            goal_handle.succeed()
+            return result
+
+
+        # clear non persistent caches
+        if not goal.persistent:
+            for output_parent, input_child in zip(output_parents, input_children):
+                del self.caches[(output_parent, input_child)]
+
+        # feedback_msg.current_status = "Clustering complete, static transform published"
+        # goal_handle.publish_feedback(feedback_msg)
+
+        # result.clustered_transform = clustered_transform
+        # result.total_transforms_collected = len(tfs)
+        # result.transforms_in_cluster = len(filtered_tfs)
+
+        goal_handle.succeed()
+        return result
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ClusterTfActionServer()
+    try:
+        rclpy.spin(node, executor=MultiThreadedExecutor())
+    except KeyboardInterrupt:
+        pass
+    rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
