@@ -87,8 +87,8 @@ class ClusterTfMultiActionServer(Node):
                 source_frame=input_child,
                 time=Time(),
             )
-            self.cache.add(tf)
-            counts[input_child] += 1
+            if self.cache.add(tf):
+                counts[input_child] += 1
         except Exception as e:
             self.get_logger().warn(f"Failed to lookup transform for {input_child}: {e}")
             self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
