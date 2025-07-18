@@ -142,7 +142,8 @@ def get_idxs_in_largest_cluster(
     hdbscan: HDBSCAN,
     positions: np.ndarray,
 ) -> np.ndarray:
-    """Returns an array of indices belonging to the largest, non-noise cluster.
+    """
+    Returns an array of indices belonging to the largest, non-noise cluster.
 
     If no clusters are found, an empty array is returned.
     """
@@ -192,7 +193,7 @@ def tf_to_pose(tf: TransformStamped) -> Pose:
     return pose
 
 
-def average_transforms(tfs: List[TransformStamped]) -> PoseWithCovarianceStamped:
+def average_transforms(tfs: List[TransformStamped]) -> tuple[Vector3, Quaternion]:
     """Average a list of TransformStamped messages into a PoseWithCovarianceStamped message.
 
     Args:

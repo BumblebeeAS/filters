@@ -4,24 +4,21 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import average_transforms, get_position_from_transform
-from bb_filters.tf_lru_cache import TfLruCache
-
-# from bb_perception_msgs.action import ClusterTf
 from bb_perception_msgs.srv import ClusterTf
 from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
+from bb_filters.cluster import (
+    average_transforms,
+    get_idxs_in_largest_cluster,
+    get_position_from_transform,
+)
+from bb_filters.tf_lru_cache import TfLruCache
+
 
 class ClusterTfServiceServer(Node):
-    """
-    ROS2 Action Server that collects TF transforms over a duration,
-    clusters them using HDBSCAN, and publishes the centroid of the
-    largest cluster as a static TF transform.
-    """
-
     PERSISTENT_CACHE_SIZE = 10000
 
     def __init__(self):
@@ -41,14 +38,16 @@ class ClusterTfServiceServer(Node):
         )
 
         self.caches = dict()
-        self.timer = self.create_timer(0.01, self.timer_callback)
+        self.timer = self.create_timer(
+            0.01, self.collect_tfs
+        )  # 100 Hz, if our detections are faster than this then I give you $100
 
         # shared flag between the service callback and timer callback
         self.enabled = False
 
         self.get_logger().info("Cluster TFs service server initialized")
 
-    def timer_callback(self):
+    def collect_tfs(self):
         if not self.enabled:
             return
 
@@ -57,7 +56,7 @@ class ClusterTfServiceServer(Node):
                 tf = self.tf_buffer.lookup_transform(
                     target_frame=output_parent,
                     source_frame=input_child,
-                    time=Time(),  # TODO check if a timeout is needed
+                    time=Time(),
                 )
                 self.get_logger().info(
                     "Transform found: "
@@ -68,7 +67,7 @@ class ClusterTfServiceServer(Node):
                 self.get_logger().warn(f"Failed to lookup transform: {e}")
                 self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
 
-    def create_finish_response(
+    def cluster_and_respond(
         self,
         response,
     ):
@@ -111,7 +110,7 @@ class ClusterTfServiceServer(Node):
                 store_centers="centroid",
             )
 
-            filtered_idxs = self._get_idxs_in_largest_cluster(hdbscan, positions)
+            filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
             if len(filtered_idxs) == 0:
                 self.get_logger().warn(
                     "No clusters found, cannot create clustered transform."
@@ -139,66 +138,44 @@ class ClusterTfServiceServer(Node):
 
             self.static_tf_broadcaster.sendTransform(clustered_transform)
 
+        response.is_enabled = False
         response.is_cluster_success = worked
-        response.message = (
-            message if worked else "No clusters found, no transforms created."
-        )
 
     def cluster_srv_callback(
         self, request: ClusterTf.Request, response: ClusterTf.Response
     ):
         if not request.enabled:  # not enabled do the clustering
-            self.create_finish_response(response)
-            self.enabled = False
+            self.cluster_and_respond(
+                response
+            )  # pass by reference, modifies the reference
 
+            if not self.persistent:
+                for output_parent, input_child in zip(
+                    self.output_parents, self.input_children
+                ):
+                    del self.caches[(output_parent, input_child)]
+
+            self.enabled = False
             return response
 
         self.enabled = request.enabled
         self.output_parents = request.output_parent_frame_ids.copy()
         self.input_children = request.input_child_frame_ids.copy()
         self.output_children = request.output_child_frame_ids.copy()
-        self.tf_lookup_interval = request.tf_lookup_interval
-        self.use_cache = request.use_cache
         self.min_cluster_size = request.min_cluster_size
         self.min_samples = request.min_samples
-        self.cache_size = request.cache_size
+        self.persistent = request.persistent
 
         for output_parent, input_child in zip(self.output_parents, self.input_children):
             if (output_parent, input_child) in self.caches:
                 continue
-            self.get_logger().info(
-                f"Using cache of size {self.cache_size} for {output_parent} to {input_child}"
-            )
             self.caches[(output_parent, input_child)] = TfLruCache(
                 size=self.PERSISTENT_CACHE_SIZE, logger=self.get_logger()
             )
 
-        response.message = (
-            "Cluster TFs service server is enabled, collecting transforms."
-        )
-        response.is_cluster_success = True
+        response.is_enabled = True
+        response.is_cluster_success = False
         return response
-
-    @staticmethod
-    def _get_idxs_in_largest_cluster(
-        hdbscan: HDBSCAN, positions: np.ndarray
-    ) -> np.ndarray:
-        """Returns an array of indices belonging to the largest, non-noise cluster."""
-        hdbscan.fit(positions)
-
-        labels = np.array(hdbscan.labels_)
-        non_noise_labels = labels[labels >= 0]
-
-        if len(non_noise_labels) == 0:
-            return np.array([])
-
-        unique_labels, unique_label_counts = np.unique(
-            non_noise_labels, return_counts=True
-        )
-        largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
-        largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
-
-        return largest_cluster_idxs
 
 
 def main(args=None):
