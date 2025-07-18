@@ -111,6 +111,7 @@ install(PROGRAMS
   scripts/detected_object_2d_filter_projection_bottom_facing.py
   scripts/cluster_poses_node.py
   scripts/cluster_tf_action_server.py
+  scripts/cluster_tf_service_server.py
   scripts/cluster_tf_multi_action_server.py
   scripts/ml_color_relabel_node.py
 
