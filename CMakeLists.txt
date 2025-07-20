@@ -113,6 +113,7 @@ install(PROGRAMS
   scripts/cluster_tf_action_server.py
   scripts/cluster_tf_service_server.py
   scripts/cluster_tf_multi_action_server.py
+  scripts/cluster_tf_multi_service_server.py
   scripts/ml_color_relabel_node.py
 
   scripts/robotx/robotx_ftp_start_detector.py
