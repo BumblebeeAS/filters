@@ -4,7 +4,9 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.action import ClusterTf
+from bb_filters.cluster import average_transforms, get_position_from_transform
+from bb_filters.tf_lru_cache import TfLruCache
+from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import Pose, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
@@ -12,9 +14,6 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
-
-from bb_filters.cluster import average_transforms, get_position_from_transform
-from bb_filters.tf_lru_cache import TfLruCache
 
 
 class ClusterTfActionServer(Node):
@@ -38,7 +37,7 @@ class ClusterTfActionServer(Node):
 
         self._action_server = ActionServer(
             self,
-            ClusterTf,
+            ClusterTfAction,
             "/auv4/cluster_tf",
             self.execute_callback,
             goal_callback=self.goal_callback,
@@ -83,7 +82,7 @@ class ClusterTfActionServer(Node):
         return largest_cluster_idxs
 
     async def execute_callback(self, goal_handle):
-        goal = goal_handle.request
+        goal: ClusterTfAction.Goal = goal_handle.request
         input_children = goal.input_child_frame_ids
         output_parents = goal.output_parent_frame_ids
         output_children = goal.output_child_frame_ids
@@ -93,8 +92,8 @@ class ClusterTfActionServer(Node):
         min_cluster_size = goal.min_cluster_size
         min_samples = goal.min_samples
 
-        feedback_msg = ClusterTf.Feedback()
-        result = ClusterTf.Result()
+        feedback_msg = ClusterTfAction.Feedback()
+        result = ClusterTfAction.Result()
 
         for output_parent, input_child in zip(output_parents, input_children):
             if (output_parent, input_child) in self.caches:

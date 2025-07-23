@@ -4,18 +4,17 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.srv import ClusterTf
-from geometry_msgs.msg import TransformStamped
-from rclpy.node import Node
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
-
 from bb_filters.cluster import (
     average_transforms,
     get_idxs_in_largest_cluster,
     get_position_from_transform,
 )
 from bb_filters.tf_lru_cache import TfLruCache
+from bb_perception_msgs.srv import ClusterTfSrv
+from geometry_msgs.msg import TransformStamped
+from rclpy.node import Node
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN
 
 
 class ClusterTfServiceServer(Node):
@@ -32,7 +31,7 @@ class ClusterTfServiceServer(Node):
         )
 
         self.service_server = self.create_service(
-            ClusterTf,
+            ClusterTfSrv,
             "/auv4/cluster_tfs_srv",
             self.cluster_srv_callback,
         )
@@ -142,7 +141,7 @@ class ClusterTfServiceServer(Node):
         response.is_cluster_success = worked
 
     def cluster_srv_callback(
-        self, request: ClusterTf.Request, response: ClusterTf.Response
+        self, request: ClusterTfSrv.Request, response: ClusterTfSrv.Response
     ):
         if not request.enabled:  # not enabled do the clustering
             self.cluster_and_respond(

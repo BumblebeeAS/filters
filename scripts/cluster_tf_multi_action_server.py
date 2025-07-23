@@ -4,7 +4,13 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.action import ClusterTf
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
+from bb_filters.tf_lru_cache import TfLruCache
+from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
@@ -12,13 +18,6 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
-
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose_stamped,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 
 
 class ClusterTfMultiActionServer(Node):
@@ -49,7 +48,7 @@ class ClusterTfMultiActionServer(Node):
 
         self._action_server = ActionServer(
             self,
-            ClusterTf,
+            ClusterTfAction,
             "/auv4/cluster_tf_multi",
             self.execute_callback,
             goal_callback=self.goal_callback,
@@ -60,7 +59,7 @@ class ClusterTfMultiActionServer(Node):
             PoseArray, "output_pose_array_all", 10
         )
 
-        self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
+        self.caches = dict()
 
         # the below two vars will be created every time action is called
         self.num_tfs = 0
@@ -80,21 +79,26 @@ class ClusterTfMultiActionServer(Node):
         self.get_logger().info("Goal accepted, executing callback")
         goal_handle.execute()
 
-    def _collect_transform(self, input_child, counts):
+    def _collect_transform(self, input_child, cache, counts):
         try:
             tf = self.tf_buffer.lookup_transform(
                 target_frame=self.output_parent_frame,
                 source_frame=input_child,
                 time=Time(),
             )
-            if self.cache.add(tf):
+            if cache.add(tf):
                 counts[input_child] += 1
         except Exception as e:
             self.get_logger().warn(f"Failed to lookup transform for {input_child}: {e}")
             self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
 
     def collect_transforms(
-        self, goal_handle, clustering_duration, tf_list_in, tf_lookup_interval=0.05
+        self,
+        goal_handle,
+        cache,
+        clustering_duration,
+        tf_list_in,
+        tf_lookup_interval=0.05,
     ):
         rate = self.create_rate(1.0 / tf_lookup_interval)
         counts = {tf: 0 for tf in tf_list_in}  # purely for debugging
@@ -109,7 +113,7 @@ class ClusterTfMultiActionServer(Node):
                 return "CANCEL"
 
             for input_child in tf_list_in:
-                self._collect_transform(input_child, counts)
+                self._collect_transform(input_child, cache, counts)
 
             try:
                 rate.sleep()
@@ -129,10 +133,10 @@ class ClusterTfMultiActionServer(Node):
     def cluster_transforms(self, tfs, min_cluster_size, min_samples) -> list[list[int]]:
         min_num_poses = max(min_cluster_size, min_samples)
 
-        if self.cache.get_count() < min_num_poses:
+        if len(tfs) < min_num_poses:
             self.get_logger().warn(
                 f"Not enough transforms collected to perform clustering. "
-                f"Collected: {self.cache.get_count()}, Required: {min_num_poses}."
+                f"Collected: {len(tfs)}, Required: {min_num_poses}."
             )
             return [[] for _ in range(self.num_tfs)]
 
@@ -219,13 +223,15 @@ class ClusterTfMultiActionServer(Node):
         self.static_tf_broadcaster.sendTransform(clustered_transform)
 
     async def execute_callback(self, goal_handle):
-        goal = goal_handle.request
+        goal: ClusterTfAction.Goal = goal_handle.request
         clustering_duration = goal.clustering_duration  # seconds
         min_cluster_size = goal.min_cluster_size
         min_samples = goal.min_samples
         tf_list_in = goal.input_child_frame_ids
         tf_list_out = goal.output_child_frame_ids
         tf_lookup_interval = goal.tf_lookup_interval
+        use_cache = goal.use_cache
+        persistent = goal.persistent
 
         self.num_tfs = len(tf_list_in)
         self.pub_list = [
@@ -233,12 +239,31 @@ class ClusterTfMultiActionServer(Node):
             for out in tf_list_out
         ]
 
-        feedback_msg = ClusterTf.Feedback()
-        result = ClusterTf.Result()
+        feedback_msg = ClusterTfAction.Feedback()
+        result = ClusterTfAction.Result()
 
-        # cache_size = int(clustering_duration / lookup_interval) + 10
+        cache_key = (tuple(sorted(tf_list_in)), tuple(sorted(tf_list_out)))
+
+        if cache_key not in self.caches:
+            if persistent:
+                self.caches[cache_key] = TfLruCache(
+                    self.cache_size, logger=self.get_logger()
+                )
+            else:
+                cache_size = (
+                    goal.cache_size
+                    if use_cache
+                    else int(clustering_duration / tf_lookup_interval) + 10
+                )
+                self.caches[cache_key] = TfLruCache(
+                    size=cache_size, logger=self.get_logger()
+                )
+
+        cache = self.caches[cache_key]
+
         collection_result = self.collect_transforms(
             goal_handle=goal_handle,
+            cache=cache,
             clustering_duration=clustering_duration,
             tf_list_in=tf_list_in,
             tf_lookup_interval=tf_lookup_interval,
@@ -251,7 +276,7 @@ class ClusterTfMultiActionServer(Node):
             goal_handle.canceled()
             return result
 
-        tfs, latest_time = self.cache.get_all()
+        tfs, latest_time = cache.get_all()
 
         top_n_indices = self.cluster_transforms(
             tfs=tfs,
@@ -279,6 +304,10 @@ class ClusterTfMultiActionServer(Node):
             # for loop below will not run in this case
             self.get_logger().warn("No valid transforms found.")
 
+        self.get_logger().info(
+            f"min_cluster_size: {min_cluster_size}, min_samples: {min_samples}"
+        )
+
         # faithfully pub all tfs that we have collected + clustered + ordered dont do any post processing
         for (avg_translation, avg_rotation), tf_out in zip(ordered_tfs, tf_list_out):
             self.publish_transform(
@@ -288,10 +317,8 @@ class ClusterTfMultiActionServer(Node):
                 output_child=tf_out,
             )
 
-        if not goal.persistent:
-            self.cache = TfLruCache(
-                size=self.cache_size, logger=self.get_logger()
-            )  # recreate cache everytime action called
+        if not persistent:
+            del self.caches[cache_key]
 
         goal_handle.succeed()
         return result

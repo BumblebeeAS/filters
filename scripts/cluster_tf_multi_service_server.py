@@ -4,19 +4,18 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.srv import ClusterTf
-from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
-from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
-
 from bb_filters.cluster import (
     average_transforms,
     get_position_from_transform,
     tf_to_pose_stamped,
 )
 from bb_filters.tf_lru_cache import TfLruCache
+from bb_perception_msgs.srv import ClusterTfSrv
+from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN
 
 
 class ClusterMultiServiceServer(Node):
@@ -46,7 +45,7 @@ class ClusterMultiServiceServer(Node):
         )
 
         self.service_server = self.create_service(
-            ClusterTf,
+            ClusterTfSrv,
             "/auv4/cluster_tfs_multi_srv",
             self.cluster_srv_callback,
         )
@@ -79,7 +78,7 @@ class ClusterMultiServiceServer(Node):
                 self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
 
     def cluster_srv_callback(
-        self, request: ClusterTf.Request, response: ClusterTf.Response
+        self, request: ClusterTfSrv.Request, response: ClusterTfSrv.Response
     ):
         if not request.enabled:
             self.enabled = False
