@@ -4,14 +4,19 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import average_transforms, get_position_from_transform
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose,
+)
 from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
-from geometry_msgs.msg import Pose, Quaternion, TransformStamped, Vector3
+from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.publisher import Publisher
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
@@ -116,7 +121,7 @@ class ClusterTfActionServer(Node):
         start_time = self.get_clock().now()
         end_time = start_time + Duration(seconds=clustering_duration)
 
-        self.get_logger().info(f"Collecting TFsfor {clustering_duration} seconds")
+        self.get_logger().info(f"Collecting TFs for {clustering_duration} seconds")
 
         rate = self.create_rate(1.0 / lookup_interval)
 
@@ -139,28 +144,12 @@ class ClusterTfActionServer(Node):
                     self.get_logger().warn(f"Failed to lookup transform: {e}")
                     self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
 
-            # feedback_msg.current_status = "Collecting transforms"
-            # feedback_msg.collection_progress = (
-            #     (self.get_clock().now() - start_time).nanoseconds
-            #     * 1e-9
-            #     / clustering_duration
-            # )
-            # feedback_msg.transforms_collected_so_far = cache.get_count()
-            # goal_handle.publish_feedback(feedback_msg)
-
             try:
                 rate.sleep()
             except:
                 self.get_logger().info("Interrupted during TF collection.")
                 goal_handle.canceled()
                 return result
-
-        # feedback_msg.current_status = (
-        #     "Finished collecting transforms, starting clustering"
-        # )
-        # feedback_msg.collection_progress = 1.0
-        # feedback_msg.transforms_collected_so_far = cache.get_count()
-        # goal_handle.publish_feedback(feedback_msg)
 
         min_num_poses = max(min_cluster_size, min_samples)
         worked = False
@@ -189,6 +178,9 @@ class ClusterTfActionServer(Node):
                 continue
 
             tfs, latest_time = cache.get_all()
+
+            pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
+            self._pub_debug_poses(tfs, pub)
 
             # Extract positions directly from transforms for clustering
             positions = np.array([get_position_from_transform(tf) for tf in tfs])
@@ -240,15 +232,16 @@ class ClusterTfActionServer(Node):
             for output_parent, input_child in zip(output_parents, input_children):
                 del self.caches[(output_parent, input_child)]
 
-        # feedback_msg.current_status = "Clustering complete, static transform published"
-        # goal_handle.publish_feedback(feedback_msg)
-
-        # result.clustered_transform = clustered_transform
-        # result.total_transforms_collected = len(tfs)
-        # result.transforms_in_cluster = len(filtered_tfs)
-
         goal_handle.succeed()
         return result
+
+    def _pub_debug_poses(self, tfs: list[TransformStamped], publisher: Publisher):
+        """Publish debug poses for a specific input child."""
+        pose_stamped_msgs = map(tf_to_pose, tfs)
+        pose_array_msg = PoseArray()
+        pose_array_msg.header = tfs[-1].header
+        pose_array_msg.poses = list(pose_stamped_msgs)
+        publisher.publish(pose_array_msg)
 
 
 def main(args=None):

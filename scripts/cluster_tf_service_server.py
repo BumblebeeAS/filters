@@ -8,11 +8,13 @@ from bb_filters.cluster import (
     average_transforms,
     get_idxs_in_largest_cluster,
     get_position_from_transform,
+    tf_to_pose,
 )
 from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.srv import ClusterTfSrv
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.node import Node
+from rclpy.publisher import Publisher
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
@@ -98,6 +100,9 @@ class ClusterTfServiceServer(Node):
 
             tfs, latest_time = cache.get_all()
 
+            pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
+            self._pub_debug_poses(tfs, pub)
+
             # Extract positions directly from transforms for clustering
             positions = np.array([get_position_from_transform(tf) for tf in tfs])
 
@@ -175,6 +180,14 @@ class ClusterTfServiceServer(Node):
         response.is_enabled = True
         response.is_cluster_success = False
         return response
+
+    def _pub_debug_poses(self, tfs: list[TransformStamped], publisher: Publisher):
+        """Publish debug poses for a specific input child."""
+        pose_stamped_msgs = map(tf_to_pose, tfs)
+        pose_array_msg = PoseArray()
+        pose_array_msg.header = tfs[-1].header
+        pose_array_msg.poses = list(pose_stamped_msgs)
+        publisher.publish(pose_array_msg)
 
 
 def main(args=None):

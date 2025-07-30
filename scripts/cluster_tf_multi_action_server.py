@@ -56,7 +56,7 @@ class ClusterTfMultiActionServer(Node):
         )
 
         self.pose_array_publisher_all = self.create_publisher(
-            PoseArray, "output_pose_array_all", 10
+            PoseArray, "/auv4/cluster_multi/poses", 10
         )
 
         self.caches = dict()
@@ -235,7 +235,7 @@ class ClusterTfMultiActionServer(Node):
 
         self.num_tfs = len(tf_list_in)
         self.pub_list = [
-            self.create_publisher(PoseArray, f"/auv4/{out}_cluster_multi", 10)
+            self.create_publisher(PoseArray, f"/auv4/{out}/poses", 10)
             for out in tf_list_out
         ]
 

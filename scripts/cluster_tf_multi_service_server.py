@@ -52,7 +52,7 @@ class ClusterMultiServiceServer(Node):
         self.timer = self.create_timer(0.01, self.collect_tfs)
 
         self.pose_array_publisher_all = self.create_publisher(
-            PoseArray, "output_pose_array_all_srv", 10
+            PoseArray, "/auv4/cluster_multi_srv/poses", 10
         )
 
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
@@ -141,7 +141,7 @@ class ClusterMultiServiceServer(Node):
 
         # for debugging purposes
         self.pub_list = [
-            self.create_publisher(PoseArray, f"/auv4/{out}_cluster_multi_srv", 10)
+            self.create_publisher(PoseArray, f"/auv4/{out}/poses", 10)
             for out in self.tf_list_out
         ]
 
