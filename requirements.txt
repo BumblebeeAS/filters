@@ -1,2 +1,3 @@
 scikit-learn
 shapely
+numpy<2
