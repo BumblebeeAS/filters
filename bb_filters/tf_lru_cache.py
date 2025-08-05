@@ -44,9 +44,9 @@ class TfLruCache:
         prev_tf = self._get(self.idx - 1)
 
         if Time.from_msg(tf.header.stamp) == Time.from_msg(prev_tf.header.stamp):
-            self.logger.warn(
-                f"Skipping TF with timestamp {tf.header.stamp} as it is the same as the previous one."
-            )
+            # self.logger.warn(
+            #     f"Skipping TF with timestamp {tf.header.stamp} as it is the same as the previous one."
+            # )
             return False
 
         if self.is_full:
