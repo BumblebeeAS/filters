@@ -4,12 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -19,6 +13,13 @@ from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
+
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 
 
 class ClusterTfActionServer(Node):
@@ -118,6 +119,7 @@ class ClusterTfActionServer(Node):
                     size=cache_size, logger=self.get_logger()
                 )
 
+        num_old_tfs = 0
         start_time = self.get_clock().now()
         end_time = start_time + Duration(seconds=clustering_duration)
 
@@ -139,6 +141,10 @@ class ClusterTfActionServer(Node):
                         time=Time(),  # TODO check if a timeout is needed
                     )
 
+                    if Time.from_msg(tf.header.stamp) < start_time:
+                        num_old_tfs += 1
+                        continue
+
                     self.caches[(output_parent, input_child)].add(tf)
                 except Exception as e:
                     self.get_logger().warn(f"Failed to lookup transform: {e}")
@@ -151,6 +157,8 @@ class ClusterTfActionServer(Node):
                 goal_handle.canceled()
                 return result
 
+        self.get_logger().warn(f"{num_old_tfs} old TFs collected")
+
         min_num_poses = max(min_cluster_size, min_samples)
         worked = False
 
@@ -160,7 +168,7 @@ class ClusterTfActionServer(Node):
             cache = self.caches[(output_parent, input_child)]
 
             self.get_logger().info(
-                f"Collected {cache.get_count()} transforms from {output_parent} to {input_child}"
+                f"Collected {cache.get_count()} valid transforms from {output_parent} to {input_child}"
             )
 
             # Perform clustering
