@@ -26,15 +26,15 @@ class TfLruCache:
         return self.count >= self.size
 
     def _get(self, idx: int) -> TransformStamped:
-        return self.cache[idx % self.size]
+        return self.cache[idx % self.size]  # type: ignore
 
     def _set(self, tf: TransformStamped):
-        self.cache[self.idx] = tf
+        self.cache[self.idx] = tf  # type: ignore
         self.latest_time = Time.from_msg(tf.header.stamp)
         self.idx = (self.idx + 1) % self.size
         self.count += 1
 
-    def add(self, tf: TransformStamped):
+    def add(self, tf: TransformStamped, min_time: Time | None = None) -> bool:
         if self.is_empty_flag:
             self.oldest_time = Time.from_msg(tf.header.stamp)
             self.is_empty_flag = False
@@ -47,6 +47,9 @@ class TfLruCache:
             # self.logger.warn(
             #     f"Skipping TF with timestamp {tf.header.stamp} as it is the same as the previous one."
             # )
+            return False
+
+        if min_time is not None and Time.from_msg(tf.header.stamp) < min_time:
             return False
 
         if self.is_full:

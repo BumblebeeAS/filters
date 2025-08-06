@@ -16,7 +16,7 @@ from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
+from sklearn.cluster import HDBSCAN  # type: ignore
 
 
 class ClusterTfServiceServer(Node):
@@ -45,6 +45,8 @@ class ClusterTfServiceServer(Node):
 
         # shared flag between the service callback and timer callback
         self.enabled = False
+        self.start_time = None
+        self.num_old_tfs = 0
 
         self.get_logger().info("Cluster TFs service server initialized")
 
@@ -63,7 +65,10 @@ class ClusterTfServiceServer(Node):
                     "Transform found: "
                     f"{output_parent} -> {input_child} at {tf.header.stamp}"
                 )
-                self.caches[(output_parent, input_child)].add(tf)
+                if not self.caches[(output_parent, input_child)].add(
+                    tf, self.start_time
+                ):
+                    self.num_old_tfs += 1
             except Exception as e:
                 self.get_logger().warn(f"Failed to lookup transform: {e}")
                 self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
@@ -149,6 +154,7 @@ class ClusterTfServiceServer(Node):
         self, request: ClusterTfSrv.Request, response: ClusterTfSrv.Response
     ):
         if not request.enabled:  # not enabled do the clustering
+            self.get_logger().warn(f"{self.num_old_tfs} old TFs collected.")
             self.cluster_and_respond(
                 response
             )  # pass by reference, modifies the reference
@@ -162,7 +168,10 @@ class ClusterTfServiceServer(Node):
             self.enabled = False
             return response
 
+        self.start_time = self.get_clock().now()
+        self.num_old_tfs = 0
         self.enabled = request.enabled
+
         self.output_parents = request.output_parent_frame_ids.copy()
         self.input_children = request.input_child_frame_ids.copy()
         self.output_children = request.output_child_frame_ids.copy()

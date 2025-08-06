@@ -15,7 +15,7 @@ from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
+from sklearn.cluster import HDBSCAN  # type: ignore
 
 
 class ClusterMultiServiceServer(Node):
@@ -57,6 +57,9 @@ class ClusterMultiServiceServer(Node):
 
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
         self.enabled = False
+        self.start_time = None
+        self.num_olf_tfs = 0
+
         self.get_logger().info("Multi cluster service server initialized")
 
     def collect_tfs(self):
@@ -70,7 +73,8 @@ class ClusterMultiServiceServer(Node):
                     source_frame=input_child,
                     time=Time(),
                 )
-                self.cache.add(tf)
+                if not self.cache.add(tf, self.start_time):
+                    self.num_old_tfs += 1
             except Exception as e:
                 self.get_logger().warn(
                     f"Failed to lookup transform for {input_child}: {e}"
@@ -81,6 +85,7 @@ class ClusterMultiServiceServer(Node):
         self, request: ClusterTfSrv.Request, response: ClusterTfSrv.Response
     ):
         if not request.enabled:
+            self.get_logger().warn(f"{self.num_old_tfs} old TFs collected.")
             self.enabled = False
             response.is_enabled = False
             response.is_cluster_success = False
@@ -131,7 +136,10 @@ class ClusterMultiServiceServer(Node):
 
             return response
 
+        self.start_time = self.get_clock().now()
+        self.num_old_tfs = 0
         self.enabled = True
+
         self.tf_list_in = request.input_child_frame_ids.copy()
         self.tf_list_out = request.output_child_frame_ids.copy()
         self.min_cluster_size = request.min_cluster_size

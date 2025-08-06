@@ -4,6 +4,12 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -12,14 +18,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
-
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose,
-)
-from bb_filters.tf_lru_cache import TfLruCache
+from sklearn.cluster import HDBSCAN  # type: ignore # type: ignores
 
 
 class ClusterTfActionServer(Node):
@@ -141,11 +140,11 @@ class ClusterTfActionServer(Node):
                         time=Time(),  # TODO check if a timeout is needed
                     )
 
-                    if Time.from_msg(tf.header.stamp) < start_time:
+                    if not self.caches[(output_parent, input_child)].add(
+                        tf, start_time
+                    ):
                         num_old_tfs += 1
-                        continue
 
-                    self.caches[(output_parent, input_child)].add(tf)
                 except Exception as e:
                     self.get_logger().warn(f"Failed to lookup transform: {e}")
                     self.get_logger().warn(f"Traceback: {traceback.format_exc()}")

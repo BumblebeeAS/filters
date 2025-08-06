@@ -79,18 +79,23 @@ class ClusterTfMultiActionServer(Node):
         self.get_logger().info("Goal accepted, executing callback")
         goal_handle.execute()
 
-    def _collect_transform(self, input_child, cache, counts):
+    def _collect_transform(self, input_child, cache, counts, min_time):
+        res = False
         try:
             tf = self.tf_buffer.lookup_transform(
                 target_frame=self.output_parent_frame,
                 source_frame=input_child,
                 time=Time(),
             )
-            if cache.add(tf):
+            res = cache.add(tf, min_time)
+
+            if res:
                 counts[input_child] += 1
         except Exception as e:
             self.get_logger().warn(f"Failed to lookup transform for {input_child}: {e}")
             self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
+        finally:
+            return int(res)
 
     def collect_transforms(
         self,
@@ -105,15 +110,19 @@ class ClusterTfMultiActionServer(Node):
 
         self.get_logger().info(f"Collecting TFs for {clustering_duration} seconds")
 
+        num_old_tfs = 0
         start_time = self.get_clock().now()
         end_time = start_time + Duration(seconds=clustering_duration)
+
         while self.get_clock().now() < end_time:
             if goal_handle.is_cancel_requested:
                 self.get_logger().info("Goal canceled during TF collection.")
                 return "CANCEL"
 
             for input_child in tf_list_in:
-                self._collect_transform(input_child, cache, counts)
+                num_old_tfs += self._collect_transform(
+                    input_child, cache, counts, start_time
+                )
 
             try:
                 rate.sleep()
@@ -121,13 +130,12 @@ class ClusterTfMultiActionServer(Node):
                 self.get_logger().info("Interrupted during TF collection.")
                 return "ABORT"
 
-        [
+        for input_child in tf_list_in:
             self.get_logger().info(
                 f"Collected {counts[input_child]} tfs from {self.output_parent_frame} to {input_child}"
             )
-            for input_child in tf_list_in
-        ]
 
+        self.get_logger().warn(f"{num_old_tfs} old TFs collected")
         return "SUCCESS"
 
     def cluster_transforms(self, tfs, min_cluster_size, min_samples) -> list[list[int]]:
