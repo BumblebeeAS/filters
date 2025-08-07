@@ -34,12 +34,19 @@ class TfLruCache:
         self.idx = (self.idx + 1) % self.size
         self.count += 1
 
-    def add(self, tf: TransformStamped, min_time: Time | None = None) -> bool:
+    def add(
+        self, tf: TransformStamped, min_time: Time | None = None
+    ) -> tuple[bool, bool, bool]:
+        """
+        Returns:
+            tuple[bool, bool, bool]: Tuple representing (success, is_duplicated_tf, is_old_tf)
+        """
+
         if self.is_empty_flag:
             self.oldest_time = Time.from_msg(tf.header.stamp)
             self.is_empty_flag = False
             self._set(tf)
-            return True
+            return (True, False, False)
 
         prev_tf = self._get(self.idx - 1)
 
@@ -47,16 +54,16 @@ class TfLruCache:
             # self.logger.warn(
             #     f"Skipping TF with timestamp {tf.header.stamp} as it is the same as the previous one."
             # )
-            return False
+            return (False, True, False)
 
         if min_time is not None and Time.from_msg(tf.header.stamp) < min_time:
-            return False
+            return (False, False, True)
 
         if self.is_full:
             self.oldest_time = Time.from_msg(self._get(self.idx + 1).header.stamp)
 
         self._set(tf)
-        return True
+        return (True, False, False)
 
     def get_oldest_time(self) -> Time:
         return self.oldest_time
@@ -69,7 +76,7 @@ class TfLruCache:
 
     def get_all(self) -> tuple[list[TransformStamped], Time]:
         return (
-            [self.cache[i] for i in range(self.size) if self.cache[i] is not None],
+            [self.cache[i] for i in range(self.size) if self.cache[i] is not None],  # type: ignore
             self.get_latest_time(),
         )
 

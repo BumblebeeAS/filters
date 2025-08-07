@@ -4,18 +4,19 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose_stamped,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.srv import ClusterTfSrv
 from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN  # type: ignore
+
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 
 
 class ClusterMultiServiceServer(Node):
@@ -58,7 +59,6 @@ class ClusterMultiServiceServer(Node):
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
         self.enabled = False
         self.start_time = None
-        self.num_olf_tfs = 0
 
         self.get_logger().info("Multi cluster service server initialized")
 
@@ -73,8 +73,11 @@ class ClusterMultiServiceServer(Node):
                     source_frame=input_child,
                     time=Time(),
                 )
-                if not self.cache.add(tf, self.start_time):
-                    self.num_old_tfs += 1
+                success, is_duplicated, is_old = self.cache.add(tf, self.start_time)
+
+                self.num_old_tfs += int(is_old)
+                self.num_duplicated_tfs += int(is_duplicated)
+
             except Exception as e:
                 self.get_logger().warn(
                     f"Failed to lookup transform for {input_child}: {e}"
@@ -86,6 +89,9 @@ class ClusterMultiServiceServer(Node):
     ):
         if not request.enabled:
             self.get_logger().warn(f"{self.num_old_tfs} old TFs collected.")
+            self.get_logger().warn(
+                f"{self.num_duplicated_tfs} duplicate TFs collected."
+            )
             self.enabled = False
             response.is_enabled = False
             response.is_cluster_success = False
@@ -138,6 +144,7 @@ class ClusterMultiServiceServer(Node):
 
         self.start_time = self.get_clock().now()
         self.num_old_tfs = 0
+        self.num_duplicated_tfs = 0
         self.enabled = True
 
         self.tf_list_in = request.input_child_frame_ids.copy()
