@@ -41,8 +41,8 @@ class ClusterTfServiceServer(Node):
 
         self.caches = dict()
         self.timer = self.create_timer(
-            0.01, self.collect_tfs
-        )  # 100 Hz, if our detections are faster than this then I give you $100
+            0.083, self.collect_tfs
+        )  # detections rate upper bounded by camera hz = 12hz
 
         # shared flag between the service callback and timer callback
         self.enabled = False
@@ -198,6 +198,8 @@ class ClusterTfServiceServer(Node):
         """Publish debug poses for a specific input child."""
         pose_stamped_msgs = map(tf_to_pose, tfs)
         pose_array_msg = PoseArray()
+        if len(tfs) == 0:
+            return
         pose_array_msg.header = tfs[-1].header
         pose_array_msg.poses = list(pose_stamped_msgs)
         publisher.publish(pose_array_msg)

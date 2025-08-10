@@ -50,7 +50,9 @@ class ClusterMultiServiceServer(Node):
             "/auv4/cluster_tfs_multi_srv",
             self.cluster_srv_callback,
         )
-        self.timer = self.create_timer(0.01, self.collect_tfs)
+        self.timer = self.create_timer(
+            0.083, self.collect_tfs
+        )  # detections rate upper bounded by camera hz = 12hz
 
         self.pose_array_publisher_all = self.create_publisher(
             PoseArray, "/auv4/cluster_multi_srv/poses", 10
@@ -208,6 +210,8 @@ class ClusterMultiServiceServer(Node):
         """Publish debug poses for a specific input child."""
         pose_stamped_msgs = map(tf_to_pose_stamped, tfs)
         pose_array_msg = PoseArray()
+        if len(tfs) == 0:
+            return
         pose_array_msg.header = tfs[-1].header
         pose_array_msg.poses = [
             pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs

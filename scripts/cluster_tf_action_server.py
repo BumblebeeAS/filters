@@ -12,7 +12,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.time import Time
-from sklearn.cluster import HDBSCAN  # type: ignore # type: ignores
+from sklearn.cluster import HDBSCAN
 
 from bb_filters.cluster import (
     average_transforms,
@@ -102,20 +102,20 @@ class ClusterTfActionServer(Node):
         result = ClusterTfAction.Result()
 
         for output_parent, input_child in zip(output_parents, input_children):
-            if (output_parent, input_child) in self.caches:
-                continue
+            cache_key = (output_parent, input_child)
 
             if goal.persistent:
-                self.caches[(output_parent, input_child)] = TfLruCache(
-                    size=self.PERSISTENT_CACHE_SIZE, logger=self.get_logger()
-                )
+                if cache_key not in self.caches:
+                    self.caches[cache_key] = TfLruCache(
+                        self.PERSISTENT_CACHE_SIZE, logger=self.get_logger()
+                    )
             else:
                 cache_size = (
                     goal.cache_size
                     if use_cache
                     else int(clustering_duration / lookup_interval) + 10
                 )
-                self.caches[(output_parent, input_child)] = TfLruCache(
+                self.caches[cache_key] = TfLruCache(
                     size=cache_size, logger=self.get_logger()
                 )
 
@@ -251,6 +251,8 @@ class ClusterTfActionServer(Node):
         """Publish debug poses for a specific input child."""
         pose_stamped_msgs = map(tf_to_pose, tfs)
         pose_array_msg = PoseArray()
+        if len(tfs) == 0:
+            return
         pose_array_msg.header = tfs[-1].header
         pose_array_msg.poses = list(pose_stamped_msgs)
         publisher.publish(pose_array_msg)

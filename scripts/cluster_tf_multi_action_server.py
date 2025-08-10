@@ -194,6 +194,8 @@ class ClusterTfMultiActionServer(Node):
         """Publish debug poses for a specific input child."""
         pose_stamped_msgs = map(tf_to_pose_stamped, tfs)
         pose_array_msg = PoseArray()
+        if len(tfs) == 0:
+            return
         pose_array_msg.header = tfs[-1].header
         pose_array_msg.poses = [
             pose_stamped_msg.pose for pose_stamped_msg in pose_stamped_msgs
@@ -259,20 +261,20 @@ class ClusterTfMultiActionServer(Node):
 
         cache_key = (tuple(sorted(tf_list_in)), tuple(sorted(tf_list_out)))
 
-        if cache_key not in self.caches:
-            if persistent:
+        if persistent:
+            if cache_key not in self.caches:
                 self.caches[cache_key] = TfLruCache(
                     self.cache_size, logger=self.get_logger()
                 )
-            else:
-                cache_size = (
-                    goal.cache_size
-                    if use_cache
-                    else int(clustering_duration / tf_lookup_interval) + 10
-                )
-                self.caches[cache_key] = TfLruCache(
-                    size=cache_size, logger=self.get_logger()
-                )
+        else:
+            cache_size = (
+                goal.cache_size
+                if use_cache
+                else int(clustering_duration / tf_lookup_interval) + 10
+            )
+            self.caches[cache_key] = TfLruCache(
+                size=cache_size, logger=self.get_logger()
+            )
 
         cache = self.caches[cache_key]
 
