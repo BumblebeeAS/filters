@@ -121,6 +121,8 @@ class ClusterTfMultiActionServer(Node):
         while self.get_clock().now() < end_time:
             if goal_handle.is_cancel_requested:
                 self.get_logger().info("Goal canceled during TF collection.")
+
+                self.destroy_rate(rate)
                 return "CANCEL"
 
             for input_child in tf_list_in:
@@ -134,6 +136,8 @@ class ClusterTfMultiActionServer(Node):
                 rate.sleep()
             except:
                 self.get_logger().info("Interrupted during TF collection.")
+
+                self.destroy_rate(rate)
                 return "ABORT"
 
         for input_child in tf_list_in:
@@ -143,6 +147,8 @@ class ClusterTfMultiActionServer(Node):
 
         self.get_logger().warn(f"{num_old_tfs} old TFs collected")
         self.get_logger().warn(f"{num_duplicated_tfs} duplicate TFs collected")
+
+        self.destroy_rate(rate)
         return "SUCCESS"
 
     def cluster_transforms(self, tfs, min_cluster_size, min_samples) -> list[list[int]]:
@@ -256,7 +262,7 @@ class ClusterTfMultiActionServer(Node):
             for out in tf_list_out
         ]
 
-        feedback_msg = ClusterTfAction.Feedback()
+        # feedback_msg = ClusterTfAction.Feedback()
         result = ClusterTfAction.Result()
 
         cache_key = (tuple(sorted(tf_list_in)), tuple(sorted(tf_list_out)))
@@ -288,9 +294,11 @@ class ClusterTfMultiActionServer(Node):
 
         if collection_result == "ABORT":
             goal_handle.abort()
+            self._clean_pubs(self.pub_list)
             return result
         elif collection_result == "CANCEL":
             goal_handle.canceled()
+            self._clean_pubs(self.pub_list)
             return result
 
         tfs, latest_time = cache.get_all()
@@ -313,6 +321,7 @@ class ClusterTfMultiActionServer(Node):
                 f"Traceback: {traceback.format_exc()}"
             )
             goal_handle.abort()
+            self._clean_pubs(self.pub_list)
             return result
 
         ordered_tfs = self.order_transforms(tfs, top_n_indices, curr_pos)
@@ -338,6 +347,7 @@ class ClusterTfMultiActionServer(Node):
             del self.caches[cache_key]
 
         goal_handle.succeed()
+        self._clean_pubs(self.pub_list)
         return result
 
     @staticmethod
@@ -351,6 +361,12 @@ class ClusterTfMultiActionServer(Node):
             )
 
         return d
+
+    def _clean_pubs(self, pub_list):
+        for pub in pub_list:
+            if pub is None:
+                continue
+            self.destroy_publisher(pub)
 
 
 def main(args=None):

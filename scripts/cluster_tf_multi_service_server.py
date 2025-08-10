@@ -101,6 +101,8 @@ class ClusterMultiServiceServer(Node):
 
             if len(tfs) == 0:
                 self.get_logger().warn("No transforms available in cache.")
+
+                self._clean_pubs(self.pub_list)
                 return response
 
             top_n_indices = self.cluster_transforms(
@@ -120,12 +122,16 @@ class ClusterMultiServiceServer(Node):
                     f"Failed to lookup transform from world to base link frame: {e}"
                     f"Traceback: {traceback.format_exc()}"
                 )
+
+                self._clean_pubs(self.pub_list)
                 return response
 
             ordered_tfs = self.order_transforms(tfs, top_n_indices, curr_pos)
 
             if len(ordered_tfs) == 0:
                 self.get_logger().warn("No valid transforms found.")
+
+                self._clean_pubs(self.pub_list)
                 return response
 
             # faithfully pub all tfs that we have collected + clustered + ordered dont do any post processing
@@ -142,6 +148,7 @@ class ClusterMultiServiceServer(Node):
             if not self.persistent:
                 self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
 
+            self._clean_pubs(self.pub_list)
             return response
 
         self.start_time = self.get_clock().now()
@@ -266,6 +273,12 @@ class ClusterMultiServiceServer(Node):
             )
 
         return d
+
+    def _clean_pubs(self, pub_list):
+        for pub in pub_list:
+            if pub is not None:
+                pub.destroy()
+        pub_list.clear()
 
 
 def main(args=None):

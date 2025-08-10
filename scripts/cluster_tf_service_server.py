@@ -110,6 +110,7 @@ class ClusterTfServiceServer(Node):
 
             pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
             self._pub_debug_poses(tfs, pub)
+            self.destroy_publisher(pub)  # clean publishers
 
             # Extract positions directly from transforms for clustering
             positions = np.array([get_position_from_transform(tf) for tf in tfs])
@@ -162,7 +163,9 @@ class ClusterTfServiceServer(Node):
                 response
             )  # pass by reference, modifies the reference
 
-            if not self.persistent:
+            if (
+                not self.persistent
+            ):  # persistent cache is based on the previous enabled request
                 for output_parent, input_child in zip(
                     self.output_parents, self.input_children
                 ):
@@ -184,9 +187,10 @@ class ClusterTfServiceServer(Node):
         self.persistent = request.persistent
 
         for output_parent, input_child in zip(self.output_parents, self.input_children):
-            if (output_parent, input_child) in self.caches:
+            key = (output_parent, input_child)
+            if self.persistent and key in self.caches:
                 continue
-            self.caches[(output_parent, input_child)] = TfLruCache(
+            self.caches[key] = TfLruCache(
                 size=self.PERSISTENT_CACHE_SIZE, logger=self.get_logger()
             )
 

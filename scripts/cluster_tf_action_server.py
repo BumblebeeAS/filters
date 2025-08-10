@@ -131,6 +131,8 @@ class ClusterTfActionServer(Node):
         while self.get_clock().now() < end_time:
             if goal_handle.is_cancel_requested:
                 self.get_logger().info("Goal canceled during TF collection.")
+
+                self.destroy_rate(rate=rate)  # destroy the rate
                 goal_handle.canceled()
                 return result
 
@@ -157,6 +159,8 @@ class ClusterTfActionServer(Node):
                 rate.sleep()
             except:
                 self.get_logger().info("Interrupted during TF collection.")
+
+                self.destroy_rate(rate=rate)  # destroy the rate
                 goal_handle.canceled()
                 return result
 
@@ -165,6 +169,7 @@ class ClusterTfActionServer(Node):
 
         min_num_poses = max(min_cluster_size, min_samples)
         worked = False
+        pub_list = []
 
         for output_parent, input_child, output_child in zip(
             output_parents, input_children, output_children
@@ -192,6 +197,8 @@ class ClusterTfActionServer(Node):
             tfs, latest_time = cache.get_all()
 
             pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
+            pub_list.append(pub)
+
             self._pub_debug_poses(tfs, pub)
 
             # Extract positions directly from transforms for clustering
@@ -232,17 +239,25 @@ class ClusterTfActionServer(Node):
 
             self.static_tf_broadcaster.sendTransform(clustered_transform)
 
+        ##### CLEANUP #####
+        if not goal.persistent:
+            for output_parent, input_child in zip(output_parents, input_children):
+                del self.caches[(output_parent, input_child)]
+
+        if not self.destroy_rate(rate=rate):
+            self.get_logger().warn(f"Failed to destroy rate: {rate}")
+
+        for pub in pub_list:
+            if not self.destroy_publisher(publisher=pub):
+                self.get_logger().warn(f"Failed to destroy publisher: {pub}")
+        ##################
+
         if not worked:
             self.get_logger().error(
                 "No clusters possible for all provided input transforms"
             )
             goal_handle.abort()
             return result
-
-        # clear non persistent caches
-        if not goal.persistent:
-            for output_parent, input_child in zip(output_parents, input_children):
-                del self.caches[(output_parent, input_child)]
 
         goal_handle.succeed()
         return result
