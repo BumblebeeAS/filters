@@ -161,7 +161,7 @@ class ClusterPosesNode(Node):
             return
         filtered_poses = [pose_msgs[i] for i in filtered_idxs]
 
-        avg_pose = get_average_pose(filtered_poses, self.get_logger())
+        avg_pose = get_average_pose(filtered_poses)
         latest_msg: PoseWithCovarianceStamped = self.pose_cache.getLast()
         avg_pose.header = latest_msg.header
         self.pose_publisher.publish(avg_pose)

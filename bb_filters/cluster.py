@@ -11,7 +11,7 @@ from geometry_msgs.msg import (
     TransformStamped,
     Vector3,
 )
-from rclpy.impl.rcutils_logger import RcutilsLogger
+from numpy.typing import ArrayLike
 from sklearn.cluster import HDBSCAN
 
 
@@ -94,7 +94,6 @@ def get_covariance_from_pose(
 
 def get_average_pose(
     pose_msgs: List[PoseWithCovarianceStamped],
-    logger: RcutilsLogger = None,
 ) -> PoseWithCovarianceStamped:
     """Get the average pose from a list of PoseWithCovarianceStamped messages.
 
@@ -106,6 +105,7 @@ def get_average_pose(
     Returns:
         PoseWithCovarianceStamped: The average pose message.
     """
+    # TODO: Return a flag indicating if quat averaging was successful
     avg_pose = PoseWithCovarianceStamped()
 
     positions = np.array([get_position_tuple_from_pose(pose) for pose in pose_msgs])
@@ -121,10 +121,6 @@ def get_average_pose(
         avg_quat = eigvecs[:, np.argmax(eigvals)]  # eigenvector with largest eigenvalue
     except np.linalg.LinAlgError:
         avg_quat = pose_msgs[-1].pose.pose.orientation
-        if logger:
-            logger.warning(
-                "Quaternion averaging failed, using the last pose's quaternion."
-            )
 
     avg_pose.pose.pose.orientation.x = avg_quat[0]
     avg_pose.pose.pose.orientation.y = avg_quat[1]
@@ -219,3 +215,19 @@ def average_transforms(tfs: List[TransformStamped]) -> tuple[Vector3, Quaternion
         Vector3(x=avg_translation[0], y=avg_translation[1], z=avg_translation[2]),
         Quaternion(x=avg_quat[0], y=avg_quat[1], z=avg_quat[2], w=avg_quat[3]),
     )
+
+
+def assign_to_centroids(data: ArrayLike, centroids: ArrayLike) -> np.ndarray:
+    """Assign each data point to the nearest centroid.
+
+    Args:
+        data (ArrayLike): (n_samples, n_features)
+        centroids (ArrayLike): (k, n_features)
+
+    Returns:
+        np.ndarray: (n_samples,) array of cluster indices
+    """
+    data = np.asarray(data)
+    centroids = np.asarray(centroids)
+    dists = np.linalg.norm(data[:, np.newaxis, :] - centroids[np.newaxis, :, :], axis=2)
+    return np.argmin(dists, axis=1)
