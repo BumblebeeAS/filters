@@ -41,6 +41,7 @@ def get_slalom_tfs(
         tf.transform.translation.y = x
         tf.transform.translation.z = 0.0
         tf.transform.rotation = quat
+
         tfs.append(tf)
 
     return tfs
@@ -72,7 +73,17 @@ class ClusterSlalomTfsNode(TFLookUpSrvNode):
         request: ClusterSlalomTfsStart.Request,
         response: ClusterSlalomTfsStart.Response,
     ) -> ClusterSlalomTfsStart.Response:
+        self.get_logger().info(
+            "Recevied start request for slalom TFs clustering."
+            f"input_child_frame_ids: {self.tf_list_in}, "
+            f"reset_cache: {request.reset_cache}"
+        )
+
         self.enabled = True
+        self.num_duplicated_tfs = 0
+        self.num_old_tfs = 0
+        self.start_time = self.get_clock().now()
+
         self.tf_list_in = request.input_child_frame_ids
         if request.reset_cache:
             self.cache = TfLruCache(size=self.cache.size, logger=self.get_logger())
@@ -84,8 +95,21 @@ class ClusterSlalomTfsNode(TFLookUpSrvNode):
         request: ClusterSlalomTfsStop.Request,
         response: ClusterSlalomTfsStop.Response,
     ) -> ClusterSlalomTfsStop.Response:
+        self.get_logger().info(
+            "Recevied stop request for slalom TFs clustering."
+            f"output_parent_frame_ids: {request.output_parent_frame_ids}, "
+            f"output_child_frame_ids: {request.output_child_frame_ids}, "
+            f"min_cluster_size: {request.min_cluster_size}, "
+            f"num_layers: {request.num_layers}"
+        )
+
         self.enabled = False
         tfs, latest_time = self.cache.get_all()
+
+        self.get_logger().info(
+            f"Collected {len(tfs)} transforms from cache."
+            f"{self.num_old_tfs}, {self.num_duplicated_tfs} old and duplicated TFs collected."
+        )
 
         if len(tfs) == 0:
             self.get_logger().warn("No transforms available in cache.")
@@ -97,10 +121,23 @@ class ClusterSlalomTfsNode(TFLookUpSrvNode):
             data=positions, num_centroids=len(request.output_child_frame_ids)
         )
 
+        # Filter centroids with number of positions less than the minimum cluster size
+        assigned = assign_to_centroids(positions, centroids)
+        counts = np.bincount(assigned, minlength=len(centroids))
+        self.get_logger().info(
+            f"Assigned positions of shape {positions.shape} to centroids of shape {counts.shape}"
+        )
+        self.get_logger().info(
+            f"Centroids found: {len(centroids)}, "
+            f"Counts: {counts}, "
+            f"Min cluster size: {request.min_cluster_size}"
+        )
+        valid_centroids = centroids[counts >= request.min_cluster_size]
+
         # Get slalom Tfs in NED frame
         slalom_tfs = get_slalom_tfs(
             theta_enu=theta_enu,
-            centroids=centroids,
+            centroids=valid_centroids,
             frame_id=self.output_parent_frame,
             child_frame_ids=list(request.output_child_frame_ids),
         )
@@ -133,9 +170,7 @@ class ClusterSlalomTfsNode(TFLookUpSrvNode):
         ]
         self.pose_array_publisher_all.publish(pose_array_msg)
 
-        assigned = assign_to_centroids(positions, centroids)
-        counts = np.bincount(assigned, minlength=len(centroids))
-        if (counts < request.min_cluster_size).any():
+        if len(valid_centroids) < len(centroids):
             self.get_logger().warn("Some clusters are smaller than the minimum size.")
             response.success = False
             return response

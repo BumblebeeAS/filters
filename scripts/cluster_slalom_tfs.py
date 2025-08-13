@@ -26,7 +26,7 @@ def get_slalom_centroids(
         ds = params[3:]
         centroids = get_centroids(x_0, y_0, ds, theta)
         assigned = assign_to_centroids(data, centroids)
-        return np.sum(np.linalg.norm(data - centroids[assigned], axis=1))
+        return np.sum(np.linalg.norm(data - centroids[assigned], axis=1) ** 2)
 
     num_params = 3 + num_centroids - 1
     bounds = Bounds(
@@ -35,15 +35,26 @@ def get_slalom_centroids(
     )
 
     # TODO: Handle minimize failure
-    result = minimize(
-        objective_function,
-        x0=np.zeros(num_params),
-        args=[],
-        bounds=bounds,
-        method="Nelder-Mead",
-    )
-    x_0, y_0, theta = result.x[:3]
-    ds = result.x[3:]
+    best_result = None
+    best_objective = np.inf
+
+    data_array = np.array(data)
+    for _ in range(50):
+        x_0 = data_array[np.random.choice(np.arange(len(data_array)))]
+        result = minimize(
+            objective_function,
+            x0=np.hstack([x_0, np.zeros(num_params - 2)]),
+            args=[],
+            bounds=bounds,
+            method="Nelder-Mead",
+        )
+        curr_objective = objective_function(result.x, [])
+        if best_result is None or curr_objective < best_objective:
+            best_result = result
+            best_objective = curr_objective
+
+    x_0, y_0, theta = best_result.x[:3]
+    ds = best_result.x[3:]
     centroids = get_centroids(x_0, y_0, ds, theta)
 
     return theta, centroids

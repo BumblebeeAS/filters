@@ -42,10 +42,13 @@ class TFLookUpSrvNode(Node):
 
         self.cache = TfLruCache(size=cache_size, logger=self.get_logger())
         self.enabled = False
+        self.start_time = None
+        self.num_duplicated_tfs = 0
+        self.num_old_tfs = 0
         self.tf_list_in = []
 
     def collect_tfs(self):
-        if not self.enabled:
+        if not self.enabled or self.start_time is None:
             return
 
         for input_child in self.tf_list_in:
@@ -55,9 +58,14 @@ class TFLookUpSrvNode(Node):
                     source_frame=input_child,
                     time=Time(),
                 )
-                self.cache.add(tf)
+                success, is_duplicated, is_old = self.cache.add(tf, self.start_time)
+
+                self.num_old_tfs += int(is_old)
+                self.num_duplicated_tfs += int(is_duplicated)
+
             except Exception as e:
-                self.get_logger().warn(
-                    f"Failed to lookup transform for {input_child}: {e}"
-                )
-                self.get_logger().warn(f"Traceback: {traceback.format_exc()}")
+                pass
+                # self.get_logger().warn(
+                #     f"Failed to lookup transform for {input_child}: {e}"
+                # )
+                # self.get_logger().warn(f"Traceback: {traceback.format_exc()}")

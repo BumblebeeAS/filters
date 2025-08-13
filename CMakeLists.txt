@@ -14,6 +14,7 @@ find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(bb_msgs REQUIRED)
 find_package(bb_perception_msgs REQUIRED)
+find_package(bb_robosub_msgs REQUIRED)
 find_package(bb_robotx_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -114,6 +115,8 @@ install(PROGRAMS
   scripts/cluster_tf_service_server.py
   scripts/cluster_tf_multi_action_server.py
   scripts/cluster_tf_multi_service_server.py
+  scripts/cluster_slalom_tfs.py
+  scripts/cluster_slalom_tfs_node.py
   scripts/ml_color_relabel_node.py
 
   scripts/robotx/robotx_ftp_start_detector.py
