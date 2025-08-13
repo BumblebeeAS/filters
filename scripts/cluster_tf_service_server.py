@@ -4,13 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.srv import ClusterTfSrv
-from geometry_msgs.msg import PoseArray, TransformStamped
-from rclpy.node import Node
-from rclpy.publisher import Publisher
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN  # type: ignore
-
 from bb_filters.cluster import (
     average_transforms,
     get_idxs_in_largest_cluster,
@@ -18,6 +11,13 @@ from bb_filters.cluster import (
     tf_to_pose,
 )
 from bb_filters.tf_lru_cache import TfLruCache
+from bb_perception_msgs.srv import ClusterTfSrv
+from geometry_msgs.msg import PoseArray, TransformStamped
+from rclpy.node import Node
+from rclpy.publisher import Publisher
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN  # type: ignore
+from std_srvs.srv import Trigger
 
 
 class ClusterTfServiceServer(Node):
@@ -39,6 +39,12 @@ class ClusterTfServiceServer(Node):
             self.cluster_srv_callback,
         )
 
+        self.reset_cache_srv = self.create_service(
+            srv_type=Trigger,
+            srv_name="/auv4/cluster_tf_srv/reset_caches",
+            callback=self.reset_callback,
+        )
+
         self.caches = dict()
         self.timer = self.create_timer(
             0.083, self.collect_tfs
@@ -50,6 +56,15 @@ class ClusterTfServiceServer(Node):
         self.num_old_tfs = 0
 
         self.get_logger().info("Cluster TFs service server initialized")
+
+    def reset_callback(self, request: Trigger.Request, response: Trigger.Response):
+        response = Trigger.Response()
+        self.caches = dict()
+        response.success = True
+        response.message = "Caches resetted"
+        self.get_logger().info(response.message)
+
+        return response
 
     def collect_tfs(self):
         if not self.enabled:

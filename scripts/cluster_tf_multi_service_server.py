@@ -4,19 +4,19 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.srv import ClusterTfSrv
-from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
-from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN  # type: ignore
-
 from bb_filters.cluster import (
     average_transforms,
     get_position_from_transform,
     tf_to_pose_stamped,
 )
 from bb_filters.tf_lru_cache import TfLruCache
+from bb_perception_msgs.srv import ClusterTfSrv
+from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN  # type: ignore
+from std_srvs.srv import Trigger
 
 
 class ClusterMultiServiceServer(Node):
@@ -58,11 +58,26 @@ class ClusterMultiServiceServer(Node):
             PoseArray, "/auv4/cluster_multi_srv/poses", 10
         )
 
+        self.reset_cache_srv = self.create_service(
+            srv_type=Trigger,
+            srv_name="/auv4/cluster_multi_tf_srv/reset_caches",
+            callback=self.reset_callback,
+        )
+
         self.cache = TfLruCache(size=self.cache_size, logger=self.get_logger())
         self.enabled = False
         self.start_time = None
 
         self.get_logger().info("Multi cluster service server initialized")
+
+    def reset_callback(self, request: Trigger.Request, response: Trigger.Response):
+        response = Trigger.Response()
+        self.caches = dict()
+        response.success = True
+        response.message = "Caches resetted"
+        self.get_logger().info(response.message)
+
+        return response
 
     def collect_tfs(self):
         if not self.enabled:

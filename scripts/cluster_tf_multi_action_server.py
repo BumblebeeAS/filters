@@ -4,6 +4,12 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -12,13 +18,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
-
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose_stamped,
-)
-from bb_filters.tf_lru_cache import TfLruCache
+from std_srvs.srv import Trigger
 
 
 class ClusterTfMultiActionServer(Node):
@@ -60,6 +60,12 @@ class ClusterTfMultiActionServer(Node):
             PoseArray, "/auv4/cluster_multi/poses", 10
         )
 
+        self.reset_cache_srv = self.create_service(
+            srv_type=Trigger,
+            srv_name="/auv4/cluster_multi_tf_action/reset_caches",
+            callback=self.reset_callback,
+        )
+
         self.caches = dict()
 
         # the below two vars will be created every time action is called
@@ -67,6 +73,15 @@ class ClusterTfMultiActionServer(Node):
         self.pub_list = []
 
         self.get_logger().info("Multi cluster action server initialized")
+
+    def reset_callback(self, request: Trigger.Request, response: Trigger.Response):
+        response = Trigger.Response()
+        self.caches = dict()
+        response.success = True
+        response.message = "Caches resetted"
+        self.get_logger().info(response.message)
+
+        return response
 
     def goal_callback(self, goal_request):
         self.get_logger().info("Received goal request, accepting")
