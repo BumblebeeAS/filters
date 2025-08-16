@@ -188,6 +188,13 @@ def tf_to_pose(tf: TransformStamped) -> Pose:
     pose.orientation = tf_copy.transform.rotation
     return pose
 
+def get_tfs_spread(tfs: List[TransformStamped]):
+    translations = np.array([get_position_from_transform(tf) for tf in tfs]) # np array of (float, float, float)
+    avg_translation = translations.mean(axis=0)
+
+    distances = np.linalg.norm(translations - avg_translation, axis=1)
+    return np.mean(distances)
+
 
 def average_transforms(tfs: List[TransformStamped]) -> tuple[Vector3, Quaternion]:
     """Average a list of TransformStamped messages into a PoseWithCovarianceStamped message.
