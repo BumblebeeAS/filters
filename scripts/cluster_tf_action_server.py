@@ -4,12 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -20,6 +14,13 @@ from rclpy.publisher import Publisher
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from std_srvs.srv import Trigger
+
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 
 
 class ClusterTfActionServer(Node):
@@ -52,7 +53,7 @@ class ClusterTfActionServer(Node):
 
         self.reset_cache_srv = self.create_service(
             srv_type=Trigger,
-            srv_name="/auv4/cluster_tf_srv/reset_caches",
+            srv_name="/auv4/cluster_tf/reset_caches",
             callback=self.reset_callback,
         )
 
@@ -195,6 +196,10 @@ class ClusterTfActionServer(Node):
                 f"Collected {cache.get_count()} valid transforms from {output_parent} to {input_child}"
             )
 
+            self.get_logger().warn(
+                f"Clustering transforms: {[((tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z) if tf is not None else 0) for tf in cache.cache]}",
+            )
+
             # Perform clustering
             if cache.is_empty():
                 self.get_logger().warn(
@@ -262,9 +267,9 @@ class ClusterTfActionServer(Node):
         if not self.destroy_rate(rate=rate):
             self.get_logger().warn(f"Failed to destroy rate: {rate}")
 
-        for pub in pub_list:
-            if not self.destroy_publisher(publisher=pub):
-                self.get_logger().warn(f"Failed to destroy publisher: {pub}")
+        # for pub in pub_list:
+        #     if not self.destroy_publisher(publisher=pub):
+        #         self.get_logger().warn(f"Failed to destroy publisher: {pub}")
         ##################
 
         if not worked:

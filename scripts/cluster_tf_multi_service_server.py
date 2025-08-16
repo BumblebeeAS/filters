@@ -4,12 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose_stamped,
-)
-from bb_filters.tf_lru_cache import TfLruCache
 from bb_perception_msgs.srv import ClusterTfSrv
 from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.executors import MultiThreadedExecutor
@@ -17,6 +11,13 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN  # type: ignore
 from std_srvs.srv import Trigger
+
+from bb_filters.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose_stamped,
+)
+from bb_filters.tf_lru_cache import TfLruCache
 
 
 class ClusterMultiServiceServer(Node):
@@ -60,7 +61,7 @@ class ClusterMultiServiceServer(Node):
 
         self.reset_cache_srv = self.create_service(
             srv_type=Trigger,
-            srv_name="/auv4/cluster_multi_tf_srv/reset_caches",
+            srv_name="/auv4/cluster_tfs_multi_srv/reset_caches",
             callback=self.reset_callback,
         )
 

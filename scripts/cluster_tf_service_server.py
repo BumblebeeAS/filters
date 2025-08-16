@@ -8,6 +8,7 @@ from bb_filters.cluster import (
     average_transforms,
     get_idxs_in_largest_cluster,
     get_position_from_transform,
+    get_tfs_spread,
     tf_to_pose,
 )
 from bb_filters.tf_lru_cache import TfLruCache
@@ -41,7 +42,7 @@ class ClusterTfServiceServer(Node):
 
         self.reset_cache_srv = self.create_service(
             srv_type=Trigger,
-            srv_name="/auv4/cluster_tf_srv/reset_caches",
+            srv_name="/auv4/cluster_tfs_srv/reset_caches",
             callback=self.reset_callback,
         )
 
@@ -97,6 +98,7 @@ class ClusterTfServiceServer(Node):
     ):
         min_num_poses = max(self.min_cluster_size, self.min_samples)
         worked = False
+        spread = 10000.0
 
         for output_parent, input_child, output_child in zip(
             self.output_parents, self.input_children, self.output_children
@@ -125,7 +127,7 @@ class ClusterTfServiceServer(Node):
 
             pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
             self._pub_debug_poses(tfs, pub)
-            self.destroy_publisher(pub)  # clean publishers
+            # self.destroy_publisher(pub)  # clean publishers
 
             # Extract positions directly from transforms for clustering
             positions = np.array([get_position_from_transform(tf) for tf in tfs])
@@ -148,6 +150,7 @@ class ClusterTfServiceServer(Node):
             # Calculate average transform from largest cluster
             filtered_tfs = [tfs[i] for i in filtered_idxs]
             avg_translation, avg_rotation = average_transforms(filtered_tfs)
+            spread = get_tfs_spread(filtered_tfs)
 
             # Create the clustered transform
             clustered_transform = TransformStamped()
@@ -166,8 +169,10 @@ class ClusterTfServiceServer(Node):
 
             self.static_tf_broadcaster.sendTransform(clustered_transform)
 
+        self.get_logger().info(f"CLUSTER SPREAD: {spread}")
         response.is_enabled = False
         response.is_cluster_success = worked
+        response.cluster_spread = spread
 
     def cluster_srv_callback(
         self, request: ClusterTfSrv.Request, response: ClusterTfSrv.Response
