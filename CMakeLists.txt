@@ -113,8 +113,10 @@ install(PROGRAMS
   scripts/cluster_poses_node.py
   scripts/cluster_tf_action_server.py
   scripts/cluster_tf_service_server.py
+  scripts/cluster_tf_action.py
   scripts/cluster_tf_multi_action_server.py
   scripts/cluster_tf_multi_service_server.py
+  scripts/cluster_tf_multi_action.py
   scripts/cluster_slalom_tfs.py
   scripts/cluster_slalom_tfs_node.py
   scripts/ml_color_relabel_node.py
