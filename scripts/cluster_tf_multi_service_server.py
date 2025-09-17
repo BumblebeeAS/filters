@@ -12,12 +12,12 @@ from rclpy.time import Time
 from sklearn.cluster import HDBSCAN  # type: ignore
 from std_srvs.srv import Trigger
 
-from bb_filters.cluster import (
+from bb_filters.clustering.cluster import (
     average_transforms,
     get_position_from_transform,
     tf_to_pose_stamped,
 )
-from bb_filters.tf_lru_cache import TfLruCache
+from bb_filters.utils.tf_lru_cache import TfLruCache
 
 
 class ClusterMultiServiceServer(Node):

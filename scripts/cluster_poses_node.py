@@ -5,11 +5,6 @@ from typing import List
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.cluster import (
-    get_average_pose,
-    get_idxs_in_largest_cluster,
-    get_position_tuple_from_pose,
-)
 from geometry_msgs.msg import (
     PoseArray,
     PoseWithCovarianceStamped,
@@ -21,6 +16,12 @@ from message_filters import Cache, Subscriber
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from sklearn.cluster import HDBSCAN
+
+from bb_filters.clustering.cluster import (
+    get_average_pose,
+    get_idxs_in_largest_cluster,
+    get_position_tuple_from_pose,
+)
 
 
 class ClusterPosesNode(Node):

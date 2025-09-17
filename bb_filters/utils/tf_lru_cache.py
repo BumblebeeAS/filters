@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from typing import TypeAlias
+
 from geometry_msgs.msg import TransformStamped
 from rclpy.time import Time
 
@@ -82,3 +84,6 @@ class TfLruCache:
 
     def get_count(self) -> int:
         return self.count
+
+
+TfCacheDict: TypeAlias = dict[tuple, TfLruCache]

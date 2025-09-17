@@ -15,6 +15,13 @@ from numpy.typing import ArrayLike
 from sklearn.cluster import HDBSCAN
 
 
+def euclidean_metric(v: tuple[Vector3, Quaternion], w: tuple[Vector3, Quaternion]):
+    v_t = v[0]
+    w_t = w[0]
+
+    return ((v_t.x - w_t.x) ** 2) + ((v_t.y - w_t.y) ** 2) + ((v_t.z - w_t.z) ** 2)
+
+
 def get_position_from_transform(tf: TransformStamped) -> Tuple[float, float, float]:
     """Get the position tuple from a TransformStamped message.
 
@@ -134,6 +141,24 @@ def get_average_pose(
     return avg_pose
 
 
+def get_top_k_clusters(
+    hdbscan: HDBSCAN, tfs: list[TransformStamped], k: int
+) -> list[list[TransformStamped]]:
+    positions = np.array([get_position_from_transform(tf) for tf in tfs])
+
+    labels = hdbscan.fit_predict(positions)
+    non_noise_labels = labels[labels >= 0]
+
+    cluster_sizes = np.bincount(non_noise_labels)
+
+    top_k_labels = np.argsort(-cluster_sizes)[:k]
+
+    return [
+        [tfs[i] for i in np.asarray(labels == label).nonzero()[0]]
+        for label in top_k_labels
+    ]
+
+
 def get_idxs_in_largest_cluster(
     hdbscan: HDBSCAN,
     positions: np.ndarray,
@@ -179,7 +204,15 @@ def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
 
 
 def tf_to_pose(tf: TransformStamped) -> Pose:
-    """Convert TransformStamped to Pose (without covariance or header)."""
+    """
+    Convert a TransformStamped message to a Pose message.
+
+    Args:
+        tf (TransformStamped): The TransformStamped message.
+
+    Returns:
+        Pose: The converted Pose message.
+    """
     pose = Pose()
     tf_copy = copy.deepcopy(tf)
     pose.position.x = tf_copy.transform.translation.x
@@ -188,8 +221,11 @@ def tf_to_pose(tf: TransformStamped) -> Pose:
     pose.orientation = tf_copy.transform.rotation
     return pose
 
+
 def get_tfs_spread(tfs: List[TransformStamped]):
-    translations = np.array([get_position_from_transform(tf) for tf in tfs]) # np array of (float, float, float)
+    translations = np.array(
+        [get_position_from_transform(tf) for tf in tfs]
+    )  # np array of (float, float, float)
     avg_translation = translations.mean(axis=0)
 
     distances = np.linalg.norm(translations - avg_translation, axis=1)

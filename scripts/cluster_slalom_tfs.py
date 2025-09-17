@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import numpy as np
-from bb_filters.cluster import assign_to_centroids
 from numpy.typing import ArrayLike
 from scipy.optimize import Bounds, minimize
+
+from bb_filters.clustering.cluster import assign_to_centroids
 
 
 def get_slalom_centroids(
