@@ -4,14 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.srv import ClusterTfSrv
-from geometry_msgs.msg import PoseArray, TransformStamped
-from rclpy.node import Node
-from rclpy.publisher import Publisher
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN  # type: ignore
-from std_srvs.srv import Trigger
-
 from bb_filters.clustering.cluster import (
     average_transforms,
     get_idxs_in_largest_cluster,
@@ -20,6 +12,13 @@ from bb_filters.clustering.cluster import (
     tf_to_pose,
 )
 from bb_filters.utils.tf_lru_cache import TfLruCache
+from bb_perception_msgs.srv import ClusterTfSrv
+from geometry_msgs.msg import PoseArray, TransformStamped
+from rclpy.node import Node
+from rclpy.publisher import Publisher
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN  # type: ignore
+from std_srvs.srv import Trigger
 
 
 class ClusterTfServiceServer(Node):
@@ -37,13 +36,13 @@ class ClusterTfServiceServer(Node):
 
         self.service_server = self.create_service(
             ClusterTfSrv,
-            "/auv4/cluster_tfs_srv",
+            "cluster_tfs_srv",
             self.cluster_srv_callback,
         )
 
         self.reset_cache_srv = self.create_service(
             srv_type=Trigger,
-            srv_name="/auv4/cluster_tfs_srv/reset_caches",
+            srv_name="cluster_tfs_srv/reset_caches",
             callback=self.reset_callback,
         )
 
@@ -126,7 +125,7 @@ class ClusterTfServiceServer(Node):
 
             tfs, latest_time = cache.get_all()
 
-            pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
+            pub = self.create_publisher(PoseArray, f"{output_child}/poses", 10)
             self._pub_debug_poses(tfs, pub)
             # self.destroy_publisher(pub)  # clean publishers
 

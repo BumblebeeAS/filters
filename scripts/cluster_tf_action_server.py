@@ -4,6 +4,12 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.clustering.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose,
+)
+from bb_filters.utils.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -14,13 +20,6 @@ from rclpy.publisher import Publisher
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from std_srvs.srv import Trigger
-
-from bb_filters.clustering.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose,
-)
-from bb_filters.utils.tf_lru_cache import TfLruCache
 
 
 class ClusterTfActionServer(Node):
@@ -45,7 +44,7 @@ class ClusterTfActionServer(Node):
         self._action_server = ActionServer(
             self,
             ClusterTfAction,
-            "/auv4/cluster_tf",
+            "cluster_tf",
             self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
@@ -53,7 +52,7 @@ class ClusterTfActionServer(Node):
 
         self.reset_cache_srv = self.create_service(
             srv_type=Trigger,
-            srv_name="/auv4/cluster_tf/reset_caches",
+            srv_name="cluster_tf/reset_caches",
             callback=self.reset_callback,
         )
 
@@ -216,7 +215,7 @@ class ClusterTfActionServer(Node):
 
             tfs, latest_time = cache.get_all()
 
-            pub = self.create_publisher(PoseArray, f"/auv4/{output_child}/poses", 10)
+            pub = self.create_publisher(PoseArray, f"{output_child}/poses", 10)
             pub_list.append(pub)
 
             self._pub_debug_poses(tfs, pub)
