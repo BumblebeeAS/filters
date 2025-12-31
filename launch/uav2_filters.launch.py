@@ -8,8 +8,8 @@ def generate_launch_description():
             PushRosNamespace("uav2"),
             Node(
                 package="bb_filters",
-                executable="cluster_tf_action_server.py",
-                name="cluster_tf_action_server",
+                executable="cluster_poses_node.py",
+                name="cluster_poses_node",
                 output="screen",
             ),
         ]
