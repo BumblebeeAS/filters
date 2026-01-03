@@ -25,9 +25,16 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sklearn.cluster import HDBSCAN
 from tf2_geometry_msgs import do_transform_pose
+from tf2_msgs.msg import TFMessage
 
 
 def transform_pose_to_odom(
@@ -72,8 +79,23 @@ class ClusterPosesNode(Node):
     def __init__(self):
         super().__init__("cluster_poses_node")
 
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.tf_buffer = tf2_ros.Buffer(
+            cache_time=rclpy.duration.Duration(seconds=10.0)
+        )
+
+        # Subscribe only to /tf_static to avoid processing dynamic TF
+        static_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self._tf_static_sub = self.create_subscription(
+            TFMessage,
+            "/tf_static",
+            self._handle_tf_static,
+            qos_profile=static_qos,
+        )
 
         # Callback group for action server
         self.action_callback_group = ReentrantCallbackGroup()
@@ -105,6 +127,16 @@ class ClusterPosesNode(Node):
             )
             .get_parameter_value()
             .string_value
+        )
+        self.sync_queue_size = (
+            self.declare_parameter("sync_queue_size", 100)
+            .get_parameter_value()
+            .integer_value
+        )
+        self.feedback_rate = (
+            self.declare_parameter("feedback_rate_hz", 10)
+            .get_parameter_value()
+            .integer_value
         )
 
         # Publishers
@@ -158,7 +190,7 @@ class ClusterPosesNode(Node):
 
             self._time_synchronizer = ApproximateTimeSynchronizer(
                 [self._odom_subscriber, self._pose_subscriber],
-                queue_size=100,
+                queue_size=self.sync_queue_size,
                 slop=goal.sync_tolerance,
             )
             self._time_synchronizer.registerCallback(self.synchronized_callback)
@@ -172,7 +204,7 @@ class ClusterPosesNode(Node):
                 seconds=goal.collection_duration
             )
 
-            rate = self.create_rate(10)  # 10 Hz feedback update
+            rate = self.create_rate(self.feedback_rate)
             while rclpy.ok():
                 elapsed_time = self.get_clock().now() - collection_start_time
 
@@ -241,15 +273,10 @@ class ClusterPosesNode(Node):
             feedback_msg.collection_progress = 1.0
             goal_handle.publish_feedback(feedback_msg)
 
-            # Use map to transform all poses
-            transformed_poses = list(
-                map(
-                    lambda data: transform_pose_to_odom(
-                        data, self._camera_to_odom_transform
-                    ),
-                    self._synchronized_data,
-                )
-            )
+            transformed_poses = [
+                transform_pose_to_odom(data, self._camera_to_odom_transform)
+                for data in self._synchronized_data
+            ]
 
             self.get_logger().info("Trying to cluster...")
             # Cluster the transformed poses
@@ -366,14 +393,25 @@ class ClusterPosesNode(Node):
     def _cleanup_subscribers(self):
         """Clean up subscribers after goal completion."""
         if self._time_synchronizer is not None:
-            # Unregister callback
             self._time_synchronizer = None
+        # try-excepts are needed as unused subscriptions may already be destroyed
         if self._odom_subscriber is not None:
-            self.destroy_subscription(self._odom_subscriber.sub)
+            try:
+                self.destroy_subscription(self._odom_subscriber.sub)
+            except Exception as e:
+                self.get_logger().warning(f"Error destroying odom subscriber: {e}")
             self._odom_subscriber = None
         if self._pose_subscriber is not None:
-            self.destroy_subscription(self._pose_subscriber.sub)
+            try:
+                self.destroy_subscription(self._pose_subscriber.sub)
+            except Exception as e:
+                self.get_logger().warning(f"Error destroying pose subscriber: {e}")
             self._pose_subscriber = None
+
+    def _handle_tf_static(self, msg: TFMessage) -> None:
+        """Store static transforms without subscribing to dynamic TF."""
+        for transform in msg.transforms:
+            self.tf_buffer.set_transform_static(transform, "default_authority")
 
 
 def main(args=None):
