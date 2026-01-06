@@ -44,7 +44,7 @@ class ClusterTfActionServer(Node):
         self._action_server = ActionServer(
             self,
             ClusterTfAction,
-            "cluster_tf",
+            "/auv4/cluster_tf",
             self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
