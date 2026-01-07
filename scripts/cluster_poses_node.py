@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 from operator import attrgetter
-from typing import List, Optional
 
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.clustering.cluster import (
-    get_average_pose,
-    get_idxs_in_largest_cluster,
-    get_position_tuple_from_pose,
-)
+from bb_filters.clustering.cluster import get_idxs_in_largest_cluster
+from bb_filters.clustering.pose import get_average_pose
 from bb_perception_msgs.action import ClusterPosesAction
+from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from geometry_msgs.msg import (
     PoseArray,
     PoseStamped,
-    PoseWithCovarianceStamped,
     Quaternion,
     TransformStamped,
     Vector3,
@@ -33,46 +29,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from sklearn.cluster import HDBSCAN
-from tf2_geometry_msgs import do_transform_pose
 from tf2_msgs.msg import TFMessage
-
-
-def transform_pose_to_odom(
-    data: tuple[Odometry, PoseStamped],
-    camera_to_odom_transform: tf2_ros.TransformStamped,
-) -> PoseWithCovarianceStamped:
-    """Transform a pose from camera frame to odom parent frame.
-
-    Args:
-        data: Tuple of (odom_msg, pose_msg) from synchronized callback
-        camera_to_odom_transform: Static transform from camera to odom_child frame
-
-    Returns:
-        PoseWithCovarianceStamped in odom parent frame
-    """
-    odom_msg, pose_stamped_msg = data
-
-    # Transform pose from camera frame to odom child frame
-    pose_msg = pose_stamped_msg.pose
-    transformed_pose = do_transform_pose(pose_msg, camera_to_odom_transform)
-
-    # Create transform from odom child to odom parent using odometry
-    odom_transform = tf2_ros.TransformStamped()
-    odom_transform.transform.translation.x = odom_msg.pose.pose.position.x
-    odom_transform.transform.translation.y = odom_msg.pose.pose.position.y
-    odom_transform.transform.translation.z = odom_msg.pose.pose.position.z
-    odom_transform.transform.rotation = odom_msg.pose.pose.orientation
-
-    # Apply odom transform to get final pose in odom parent frame
-    final_pose = do_transform_pose(transformed_pose, odom_transform)
-
-    # Convert to PoseWithCovarianceStamped
-    pose_with_cov = PoseWithCovarianceStamped()
-    pose_with_cov.header.frame_id = odom_msg.header.frame_id
-    pose_with_cov.header.stamp = odom_msg.header.stamp
-    pose_with_cov.pose.pose = final_pose
-
-    return pose_with_cov
 
 
 class ClusterPosesNode(Node):
@@ -113,11 +70,11 @@ class ClusterPosesNode(Node):
 
         # State for current goal execution
         self._current_goal_handle = None
-        self._synchronized_data: List[tuple] = []
-        self._camera_to_odom_transform: Optional[tf2_ros.TransformStamped] = None
-        self._odom_subscriber: Optional[Subscriber] = None
-        self._pose_subscriber: Optional[Subscriber] = None
-        self._time_synchronizer: Optional[ApproximateTimeSynchronizer] = None
+        self._synchronized_data: list[tuple] = []
+        self._camera_to_odom_transform: tf2_ros.TransformStamped | None = None
+        self._odom_subscriber: Subscriber | None = None
+        self._pose_subscriber: Subscriber | None = None
+        self._time_synchronizer: ApproximateTimeSynchronizer | None = None
 
         # Declare parameters
         output_pose_array_topic = (
@@ -274,8 +231,10 @@ class ClusterPosesNode(Node):
             goal_handle.publish_feedback(feedback_msg)
 
             transformed_poses = [
-                transform_pose_to_odom(data, self._camera_to_odom_transform)
-                for data in self._synchronized_data
+                transform_pose_to_odom(
+                    odom_msg, pose_msg, self._camera_to_odom_transform
+                )
+                for odom_msg, pose_msg in self._synchronized_data
             ]
 
             self.get_logger().info("Trying to cluster...")
@@ -318,10 +277,8 @@ class ClusterPosesNode(Node):
             return ClusterPosesAction.Result()
 
     def _cluster_poses(
-        self,
-        transformed_poses: List[PoseWithCovarianceStamped],
-        goal,
-    ) -> tuple[Optional[PoseWithCovarianceStamped], int]:
+        self, transformed_poses: list[PoseStamped], goal: ClusterPosesAction.Goal
+    ) -> tuple[PoseStamped | None, int]:
         """Cluster transformed poses using HDBSCAN and return the average pose.
 
         Args:
@@ -347,7 +304,10 @@ class ClusterPosesNode(Node):
 
         # Extract positions and cluster
         positions = np.array(
-            [get_position_tuple_from_pose(pose) for pose in transformed_poses]
+            [
+                attrgetter("x", "y", "z")(pose.pose.position)
+                for pose in transformed_poses
+            ]
         )
         filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
 
@@ -356,15 +316,18 @@ class ClusterPosesNode(Node):
             return None, 0
 
         # Get average pose from filtered poses
-        filtered_poses = [transformed_poses[i] for i in filtered_idxs]
-        avg_pose = get_average_pose(filtered_poses)
+        filtered_pose_msgs = [transformed_poses[i].pose for i in filtered_idxs]
+        avg_pose = get_average_pose(filtered_pose_msgs)
+        avg_pose_stamped = PoseStamped()
+        avg_pose_stamped.pose = avg_pose
+        avg_pose_stamped.header = transformed_poses[filtered_idxs[0]].header
 
-        return avg_pose, len(filtered_idxs)
+        return avg_pose_stamped, len(filtered_idxs)
 
     def _publish_results(
         self,
-        avg_pose: PoseWithCovarianceStamped,
-        transformed_poses: List[PoseWithCovarianceStamped],
+        avg_pose: PoseStamped,
+        transformed_poses: list[PoseStamped],
         clustered_child_frame_id: str,
     ) -> None:
         """Publish clustered results as pose array and static transform.
@@ -377,15 +340,15 @@ class ClusterPosesNode(Node):
         # Publish pose array of all transformed poses
         pose_array_msg = PoseArray()
         pose_array_msg.header = avg_pose.header
-        pose_array_msg.poses = [pose.pose.pose for pose in transformed_poses]
+        pose_array_msg.poses = [pose.pose for pose in transformed_poses]
         self.pose_array_publisher.publish(pose_array_msg)
 
         # Publish clustered pose as a static transform
         transform_stamped = TransformStamped()
         transform_stamped.header = avg_pose.header
         transform_stamped.child_frame_id = clustered_child_frame_id
-        t = attrgetter("x", "y", "z")(avg_pose.pose.pose.position)
-        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.pose.orientation)
+        t = attrgetter("x", "y", "z")(avg_pose.pose.position)
+        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
         transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
         transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
         self._static_tf_broadcaster.sendTransform(transform_stamped)

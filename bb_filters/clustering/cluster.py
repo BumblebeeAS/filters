@@ -1,16 +1,7 @@
 import copy
-from operator import attrgetter
-from typing import List, Tuple
 
 import numpy as np
-from geometry_msgs.msg import (
-    Pose,
-    PoseStamped,
-    PoseWithCovarianceStamped,
-    Quaternion,
-    TransformStamped,
-    Vector3,
-)
+from geometry_msgs.msg import Pose, PoseStamped, Quaternion, TransformStamped, Vector3
 from numpy.typing import ArrayLike
 from sklearn.cluster import HDBSCAN
 
@@ -22,7 +13,7 @@ def euclidean_metric(v: tuple[Vector3, Quaternion], w: tuple[Vector3, Quaternion
     return ((v_t.x - w_t.x) ** 2) + ((v_t.y - w_t.y) ** 2) + ((v_t.z - w_t.z) ** 2)
 
 
-def get_position_from_transform(tf: TransformStamped) -> Tuple[float, float, float]:
+def get_position_from_transform(tf: TransformStamped) -> tuple[float, float, float]:
     """Get the position tuple from a TransformStamped message.
 
     Args:
@@ -40,7 +31,7 @@ def get_position_from_transform(tf: TransformStamped) -> Tuple[float, float, flo
 
 def get_orientation_from_transform(
     tf: TransformStamped,
-) -> Tuple[float, float, float, float]:
+) -> tuple[float, float, float, float]:
     """Get the orientation tuple from a TransformStamped message.
 
     Args:
@@ -55,90 +46,6 @@ def get_orientation_from_transform(
         tf.transform.rotation.z,
         tf.transform.rotation.w,
     )
-
-
-def get_position_tuple_from_pose(
-    pose: PoseWithCovarianceStamped,
-) -> Tuple[float, float, float]:
-    """Get the position tuple from a PoseWithCovarianceStamped message.
-
-    Args:
-        pose (PoseWithCovarianceStamped): The pose message.
-
-    Returns:
-        tuple(float, float, float): The position tuple.
-    """
-    return attrgetter("x", "y", "z")(pose.pose.pose.position)
-
-
-def get_orientation_tuple_from_pose(
-    pose: PoseWithCovarianceStamped,
-) -> Tuple[float, float, float, float]:
-    """Get the orientation tuple from a PoseWithCovarianceStamped message.
-
-    Args:
-        pose (PoseWithCovarianceStamped): The pose message.
-
-    Returns:
-        tuple(float, float, float, float): The orientation tuple.
-    """
-    return attrgetter("x", "y", "z", "w")(pose.pose.pose.orientation)
-
-
-def get_covariance_from_pose(
-    pose: PoseWithCovarianceStamped,
-) -> np.ndarray:
-    """Get the covariance matrix from a PoseWithCovarianceStamped message.
-
-    Args:
-        pose (PoseWithCovarianceStamped): The pose message.
-
-    Returns:
-        np.ndarray: The covariance matrix.
-    """
-    return np.array(pose.pose.covariance).reshape(6, 6)
-
-
-def get_average_pose(
-    pose_msgs: List[PoseWithCovarianceStamped],
-) -> PoseWithCovarianceStamped:
-    """Get the average pose from a list of PoseWithCovarianceStamped messages.
-
-    Warning! The quaternion of the last pose is returned if orientation averaging fails.
-
-    Args:
-        pose_msgs (List[PoseWithCovarianceStamped]): The list of pose messages.
-
-    Returns:
-        PoseWithCovarianceStamped: The average pose message.
-    """
-    # TODO: Return a flag indicating if quat averaging was successful
-    avg_pose = PoseWithCovarianceStamped()
-
-    positions = np.array([get_position_tuple_from_pose(pose) for pose in pose_msgs])
-    centroid = positions.mean(axis=0)
-    avg_pose.pose.pose.position.x = centroid[0]
-    avg_pose.pose.pose.position.y = centroid[1]
-    avg_pose.pose.pose.position.z = centroid[2]
-
-    try:
-        quats = np.array([get_orientation_tuple_from_pose(pose) for pose in pose_msgs])
-        quat_matrix = np.dot(quats.T, quats)
-        eigvals, eigvecs = np.linalg.eigh(quat_matrix)
-        avg_quat = eigvecs[:, np.argmax(eigvals)]  # eigenvector with largest eigenvalue
-    except np.linalg.LinAlgError:
-        avg_quat = pose_msgs[-1].pose.pose.orientation
-
-    avg_pose.pose.pose.orientation.x = avg_quat[0]
-    avg_pose.pose.pose.orientation.y = avg_quat[1]
-    avg_pose.pose.pose.orientation.z = avg_quat[2]
-    avg_pose.pose.pose.orientation.w = avg_quat[3]
-
-    covariances = np.array([get_covariance_from_pose(pose) for pose in pose_msgs])
-    avg_covariance = np.mean(covariances, axis=0)
-    avg_pose.pose.covariance = avg_covariance.flatten().tolist()
-
-    return avg_pose
 
 
 def get_top_k_clusters(
@@ -222,7 +129,7 @@ def tf_to_pose(tf: TransformStamped) -> Pose:
     return pose
 
 
-def get_tfs_spread(tfs: List[TransformStamped]):
+def get_tfs_spread(tfs: list[TransformStamped]):
     translations = np.array(
         [get_position_from_transform(tf) for tf in tfs]
     )  # np array of (float, float, float)
@@ -232,14 +139,14 @@ def get_tfs_spread(tfs: List[TransformStamped]):
     return np.mean(distances)
 
 
-def average_transforms(tfs: List[TransformStamped]) -> tuple[Vector3, Quaternion]:
+def average_transforms(tfs: list[TransformStamped]) -> tuple[Vector3, Quaternion]:
     """Average a list of TransformStamped messages into a PoseWithCovarianceStamped message.
 
     Args:
-        tfs (List[TransformStamped]): The list of TransformStamped messages.
+        tfs (list[TransformStamped]): The list of TransformStamped messages.
 
     Returns:
-        PoseWithCovarianceStamped: The averaged pose message.
+        tuple[Vector3, Quaternion]: The averaged position and orientation.
     """
     translations = np.array([get_position_from_transform(tf) for tf in tfs])
     avg_translation = translations.mean(axis=0)
