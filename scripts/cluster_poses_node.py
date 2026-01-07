@@ -18,7 +18,9 @@ from geometry_msgs.msg import (
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
@@ -28,17 +30,22 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
+from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
+
+
+def seconds_to_duration(seconds: float) -> Duration:
+    """Convert float seconds to rclpy Duration."""
+    sec_int, sec_frac = divmod(seconds, 1)
+    return Duration(seconds=int(sec_int), nanoseconds=int(round(sec_frac * 1e9)))
 
 
 class ClusterPosesNode(Node):
     def __init__(self):
         super().__init__("cluster_poses_node")
 
-        self.tf_buffer = tf2_ros.Buffer(
-            cache_time=rclpy.duration.Duration(seconds=10.0)
-        )
+        self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10))
 
         # Subscribe only to /tf_static to avoid processing dynamic TF
         static_qos = QoSProfile(
@@ -69,7 +76,7 @@ class ClusterPosesNode(Node):
         )
 
         # State for current goal execution
-        self._current_goal_handle = None
+        self._current_goal_handle: ServerGoalHandle | None = None
         self._synchronized_data: list[tuple] = []
         self._camera_to_odom_transform: tf2_ros.TransformStamped | None = None
         self._odom_subscriber: Subscriber | None = None
@@ -104,12 +111,12 @@ class ClusterPosesNode(Node):
 
         self.get_logger().info("Cluster Poses Action Server initialized")
 
-    def goal_callback(self, goal_request):
+    def goal_callback(self, goal_request: ClusterPosesAction.Goal) -> GoalResponse:
         """Accept or reject a new goal."""
         self.get_logger().info("Received new goal request")
         return GoalResponse.ACCEPT
 
-    def cancel_callback(self, goal_handle):
+    def cancel_callback(self, goal_handle: ServerGoalHandle) -> CancelResponse:
         """Handle goal cancellation."""
         self.get_logger().info("Received cancel request")
         return CancelResponse.ACCEPT
@@ -118,13 +125,15 @@ class ClusterPosesNode(Node):
         """Callback for synchronized odom and pose messages."""
         self._synchronized_data.append((odom_msg, pose_msg))
 
-    async def execute_callback(self, goal_handle):
+    async def execute_callback(
+        self, goal_handle: ServerGoalHandle
+    ) -> ClusterPosesAction.Result:
         """Execute the clustering action."""
         self.get_logger().info("Executing goal...")
         self._current_goal_handle = goal_handle
         self._synchronized_data = []
 
-        goal = goal_handle.request
+        goal: ClusterPosesAction.Goal = goal_handle.request
         feedback_msg = ClusterPosesAction.Feedback()
 
         try:
@@ -157,9 +166,7 @@ class ClusterPosesNode(Node):
             goal_handle.publish_feedback(feedback_msg)
 
             collection_start_time = self.get_clock().now()
-            collection_duration = rclpy.duration.Duration(
-                seconds=goal.collection_duration
-            )
+            collection_duration = seconds_to_duration(goal.collection_duration)
 
             rate = self.create_rate(self.feedback_rate)
             while rclpy.ok():
@@ -209,8 +216,8 @@ class ClusterPosesNode(Node):
                 self._camera_to_odom_transform = self.tf_buffer.lookup_transform(
                     odom_child_frame,
                     camera_frame_id,
-                    rclpy.time.Time(),
-                    timeout=rclpy.duration.Duration(seconds=5.0),
+                    Time(),
+                    timeout=Duration(seconds=5),
                 )
                 self.get_logger().info(
                     f"Found transform from {camera_frame_id} to {odom_child_frame}"
@@ -357,6 +364,7 @@ class ClusterPosesNode(Node):
         """Clean up subscribers after goal completion."""
         if self._time_synchronizer is not None:
             self._time_synchronizer = None
+
         # try-excepts are needed as unused subscriptions may already be destroyed
         if self._odom_subscriber is not None:
             try:
