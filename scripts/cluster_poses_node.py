@@ -394,6 +394,9 @@ def main(args=None):
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        # https://github.com/ros2/rclpy/issues/1206
+        node.get_logger().error(f"Exception in main: {e}")
     finally:
         executor.shutdown()
         node.destroy_node()
