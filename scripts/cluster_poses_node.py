@@ -390,13 +390,24 @@ def main(args=None):
     node = ClusterPosesNode()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
+
+    # https://github.com/CMU-cabot/cabot-navigation/commit/18fe9330c6b0c02c1e52344b7ed6df32bfaf01e7
     try:
-        executor.spin()
+        while rclpy.ok():
+            try:
+                executor.spin_once()
+            except KeyboardInterrupt:
+                raise
+            except rclpy._rclpy_pybind11.InvalidHandle as e:  # type: ignore
+                node.get_logger().error(f"Invalid handle rclpy bug: {e}\nignoring...")
+            except Exception as e:
+                # https://github.com/ros2/rclpy/issues/1206
+                node.get_logger().error(f"Exception in main: {e}")
+                raise
     except KeyboardInterrupt:
         pass
     except Exception as e:
-        # https://github.com/ros2/rclpy/issues/1206
-        node.get_logger().error(f"Exception in main: {e}")
+        node.get_logger().error(f"Unhandled exception in main: {e}")
     finally:
         executor.shutdown()
         node.destroy_node()
