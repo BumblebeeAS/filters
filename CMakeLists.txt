@@ -88,42 +88,18 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/detected_object_3d_filter.py
-  scripts/detected_object_3d_composite_filter.py
   scripts/detected_object_3d_labelling.py
-  scripts/lidar_backproject_ml.py
-  scripts/lidar_backproject.py
-  scripts/UKF_Tracker.py
-  scripts/lidar_detected_object_2d_filter.py
-  scripts/lidar_bbox_extractor.py
-  scripts/detected_object_2d_array_vis.py
-  scripts/detected_object_3d_array_vis.py
   scripts/detected_object_2d_filter_projection.py
-  scripts/lidar_bbox_extractor.py
-  scripts/detect_red_buoy.py
-  scripts/obstacles_management_server.py
-  scripts/detected_object_2d_filter_projection_bottom_facing.py
-  scripts/cluster_poses_node.py
-  scripts/cluster_tf_action_server.py
-  scripts/cluster_tf_service_server.py
-  scripts/cluster_tf_action.py
-  scripts/cluster_tf_multi_action_server.py
-  scripts/cluster_tf_multi_service_server.py
-  scripts/cluster_tf_multi_action.py
-  scripts/cluster_slalom_tfs.py
-  scripts/cluster_slalom_tfs_node.py
-  scripts/ml_color_relabel_node.py
 
-  scripts/robotx/robotx_ftp_start_detector.py
-  scripts/robotx/robotx_placard_detection.py
-  scripts/robotx/robotx_prequali_gate_detection.py
-  scripts/robotx/robotx_red_green_gate_detection.py
-  scripts/robotx/robotx_gate_detection.py
-  scripts/robotx/robotx_light_tower_detection.py
-  scripts/robotx/robotx_wildlife_detection.py
-  scripts/robotx/robotx_wildlife_completion.py
-  scripts/robotx/robotx_sim_obstacles_converter.py
-  scripts/robotx/zed_detector.py
-  scripts/robotx/pinger_gate_detection.py
+  scripts/cluster/cluster_poses_node.py
+  scripts/cluster/cluster_tf_action.py
+  scripts/cluster/cluster_tf_action_server.py
+  scripts/cluster/cluster_tf_service_server.py
+  scripts/cluster/cluster_tf_multi_action.py
+  scripts/cluster/cluster_tf_multi_action_server.py
+  scripts/cluster/cluster_tf_multi_service_server.py
+  scripts/cluster/cluster_slalom_tfs.py
+  scripts/cluster/cluster_slalom_tfs_node.py
 
   DESTINATION lib/${PROJECT_NAME}
 )
