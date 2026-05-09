@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
+import threading
 from operator import attrgetter
 
-import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.clustering.cluster import get_idxs_in_largest_cluster
-from bb_filters.clustering.pose import get_average_pose
 from bb_perception_msgs.action import ClusterPosesAction
-from frames.utils.transform_ros_msgs import transform_pose_to_odom
+from bb_perception_msgs.msg import ClusterSpikeStatus
 from geometry_msgs.msg import (
     PoseArray,
     PoseStamped,
@@ -15,7 +13,6 @@ from geometry_msgs.msg import (
     TransformStamped,
     Vector3,
 )
-from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.action.server import ServerGoalHandle
@@ -28,11 +25,18 @@ from rclpy.qos import (
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
-    qos_profile_sensor_data,
 )
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
+
+from bb_filters.utils.goal_sync import GoalSynchronizer
+from bb_filters.utils.pipeline import (
+    ClusterParams,
+    fill_spike_status,
+    lookup_camera_to_odom,
+    select_primary_confidence,
+    transform_and_cluster,
+)
+from bb_filters.utils.spike import SpikeDetector, ThrottledTrigger
 
 
 def seconds_to_duration(seconds: float) -> Duration:
@@ -77,11 +81,12 @@ class ClusterPosesNode(Node):
 
         # State for current goal execution
         self._current_goal_handle: ServerGoalHandle | None = None
-        self._synchronized_data: list[tuple] = []
-        self._camera_to_odom_transform: tf2_ros.TransformStamped | None = None
-        self._odom_subscriber: Subscriber | None = None
-        self._pose_subscriber: Subscriber | None = None
-        self._time_synchronizer: ApproximateTimeSynchronizer | None = None
+        self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
+        self._data_lock = threading.Lock()
+        self._camera_to_odom_transform: TransformStamped | None = None
+        self._channel: GoalSynchronizer | None = None
+        self._spike_detector: SpikeDetector | None = None
+        self._spike_throttle: ThrottledTrigger | None = None
 
         # Declare parameters
         output_pose_array_topic = (
@@ -89,6 +94,11 @@ class ClusterPosesNode(Node):
                 "output_pose_array_topic",
                 "clustered_poses",
             )
+            .get_parameter_value()
+            .string_value
+        )
+        spike_status_topic = (
+            self.declare_parameter("spike_status_topic", "cluster_spike_status")
             .get_parameter_value()
             .string_value
         )
@@ -107,61 +117,106 @@ class ClusterPosesNode(Node):
         self.pose_array_publisher = self.create_publisher(
             PoseArray, output_pose_array_topic, 10
         )
+        self.spike_status_publisher = self.create_publisher(
+            ClusterSpikeStatus, spike_status_topic, 10
+        )
         self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         self.get_logger().info("Cluster Poses Action Server initialized")
 
     def goal_callback(self, goal_request: ClusterPosesAction.Goal) -> GoalResponse:
-        """Accept or reject a new goal."""
         self.get_logger().info("Received new goal request")
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle: ServerGoalHandle) -> CancelResponse:
-        """Handle goal cancellation."""
         self.get_logger().info("Received cancel request")
         return CancelResponse.ACCEPT
 
     def synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped):
-        """Callback for synchronized odom and pose messages."""
-        self._synchronized_data.append((odom_msg, pose_msg))
+        with self._data_lock:
+            self._synchronized_data.append((odom_msg, pose_msg))
+
+    def _now_sec(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _ensure_camera_to_odom(self, snapshot: list[tuple]) -> bool:
+        if self._camera_to_odom_transform is not None:
+            return True
+        tf = lookup_camera_to_odom(self.tf_buffer, snapshot, timeout_sec=5.0)
+        if tf is None:
+            return False
+        self._camera_to_odom_transform = tf
+        self.get_logger().info(
+            f"Found transform from {snapshot[0][1].header.frame_id} to "
+            f"{snapshot[0][0].child_frame_id}"
+        )
+        return True
+
+    def _publish_spike_status(
+        self,
+        *,
+        spike: bool,
+        rate: float,
+        outcome,
+        total_poses: int,
+        primary_metric: int,
+        stamp_header,
+    ) -> None:
+        msg = ClusterSpikeStatus()
+        if stamp_header is not None:
+            msg.header = stamp_header
+        else:
+            msg.header.stamp = self.get_clock().now().to_msg()
+        fill_spike_status(
+            msg,
+            spike_detected=spike,
+            detection_rate=rate,
+            outcome=outcome,
+            total_poses=total_poses,
+            primary_metric=primary_metric,
+        )
+        self.spike_status_publisher.publish(msg)
 
     async def execute_callback(
         self, goal_handle: ServerGoalHandle
     ) -> ClusterPosesAction.Result:
-        """Execute the clustering action."""
         self.get_logger().info("Executing goal...")
         self._current_goal_handle = goal_handle
         self._synchronized_data = []
+        self._camera_to_odom_transform = None
 
         goal: ClusterPosesAction.Goal = goal_handle.request
         feedback_msg = ClusterPosesAction.Feedback()
 
+        cluster_params = ClusterParams(
+            min_cluster_size=int(goal.min_cluster_size),
+            min_samples=int(goal.min_samples),
+            cluster_selection_epsilon=float(goal.cluster_selection_epsilon),
+        )
+        self._spike_detector = SpikeDetector(
+            window_sec=float(goal.spike_window_sec),
+            rate_threshold=float(goal.spike_rate_threshold),
+        )
+        self._spike_throttle = ThrottledTrigger(
+            min_interval_sec=float(goal.min_seconds_between_spike_clusters)
+        )
+
+        rate = None
         try:
-            # Set up subscribers with time synchronization
             feedback_msg.current_status = "Setting up subscribers"
             feedback_msg.collection_progress = 0.0
             feedback_msg.poses_collected_so_far = 0
             goal_handle.publish_feedback(feedback_msg)
 
-            # Set up subscribers with time synchronization
-            self._odom_subscriber = Subscriber(
-                self, Odometry, goal.odom_topic, qos_profile=qos_profile_sensor_data
-            )
-            self._pose_subscriber = Subscriber(
+            self._channel = GoalSynchronizer(
                 self,
-                PoseStamped,
-                goal.pose_stamped_topic,
-                qos_profile=qos_profile_sensor_data,
-            )
-
-            self._time_synchronizer = ApproximateTimeSynchronizer(
-                [self._odom_subscriber, self._pose_subscriber],
-                queue_size=self.sync_queue_size,
+                odom_topic=goal.odom_topic,
+                pose_topic=goal.pose_stamped_topic,
                 slop=goal.sync_tolerance,
+                queue_size=self.sync_queue_size,
+                on_synchronized=self.synchronized_callback,
             )
-            self._time_synchronizer.registerCallback(self.synchronized_callback)
 
-            # Collect synchronized messages for the specified duration
             feedback_msg.current_status = "Collecting synchronized messages"
             goal_handle.publish_feedback(feedback_msg)
 
@@ -171,27 +226,61 @@ class ClusterPosesNode(Node):
             rate = self.create_rate(self.feedback_rate)
             while rclpy.ok():
                 elapsed_time = self.get_clock().now() - collection_start_time
-
                 if elapsed_time >= collection_duration:
                     break
 
                 if goal_handle.is_cancel_requested:
                     goal_handle.canceled()
                     self.get_logger().info("Goal canceled")
-                    self._cleanup_subscribers()
                     return ClusterPosesAction.Result()
 
-                # Update feedback
+                with self._data_lock:
+                    poses_now = len(self._synchronized_data)
                 feedback_msg.collection_progress = min(
                     elapsed_time.nanoseconds / collection_duration.nanoseconds, 1.0
                 )
-                feedback_msg.poses_collected_so_far = len(self._synchronized_data)
+                feedback_msg.poses_collected_so_far = poses_now
                 goal_handle.publish_feedback(feedback_msg)
+
+                # Spike detection + optional partial cluster
+                now_sec = self._now_sec()
+                reading = self._spike_detector.update(now_sec, poses_now)
+
+                outcome = None
+                snapshot_len = poses_now
+                if (
+                    reading.is_spike
+                    and poses_now >= int(goal.spike_min_poses)
+                    and self._spike_throttle.test(now_sec)
+                ):
+                    with self._data_lock:
+                        snapshot = list(self._synchronized_data)
+                    snapshot_len = len(snapshot)
+                    if self._ensure_camera_to_odom(snapshot):
+                        outcome, _ = transform_and_cluster(
+                            snapshot,
+                            self._camera_to_odom_transform,
+                            cluster_params,
+                        )
+
+                self._publish_spike_status(
+                    spike=reading.is_spike,
+                    rate=reading.rate,
+                    outcome=outcome,
+                    total_poses=snapshot_len,
+                    primary_metric=int(goal.primary_confidence_metric),
+                    stamp_header=None,
+                )
 
                 rate.sleep()
 
-            # Check if we have enough data
-            total_collected = len(self._synchronized_data)
+            # Stop accepting new tuples and take a final snapshot. The channel
+            # is destroyed in `finally` via the cleanup-guard pattern.
+            if self._channel is not None:
+                self._channel._accepting = False
+            with self._data_lock:
+                final_snapshot = list(self._synchronized_data)
+            total_collected = len(final_snapshot)
             self.get_logger().info(
                 f"Collected {total_collected} synchronized pose pairs"
             )
@@ -201,135 +290,80 @@ class ClusterPosesNode(Node):
                     f"Not enough synchronized poses collected. Got {total_collected}, need {goal.min_poses}"
                 )
                 goal_handle.abort()
-                self._cleanup_subscribers()
                 return ClusterPosesAction.Result()
 
-            # Get odom child frame and camera frame from first message
-            odom_child_frame = self._synchronized_data[0][0].child_frame_id
-            camera_frame_id = self._synchronized_data[0][1].header.frame_id
-
-            # Lookup static transform from camera to odom child frame
             feedback_msg.current_status = "Looking up static transform"
             goal_handle.publish_feedback(feedback_msg)
 
-            try:
-                self._camera_to_odom_transform = self.tf_buffer.lookup_transform(
-                    odom_child_frame,
-                    camera_frame_id,
-                    Time(),
-                    timeout=Duration(seconds=5),
-                )
-                self.get_logger().info(
-                    f"Found transform from {camera_frame_id} to {odom_child_frame}"
-                )
-            except (
-                tf2_ros.LookupException,
-                tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException,
-            ) as e:
-                self.get_logger().error(f"Failed to lookup transform: {e}")
+            if not self._ensure_camera_to_odom(final_snapshot):
+                self.get_logger().error("Failed to lookup camera->odom transform")
                 goal_handle.abort()
-                self._cleanup_subscribers()
                 return ClusterPosesAction.Result()
 
-            # Transform poses to odom frame and cluster
+            assert self._camera_to_odom_transform is not None  # for mypy
+
             feedback_msg.current_status = "Transforming and clustering poses"
             feedback_msg.collection_progress = 1.0
             goal_handle.publish_feedback(feedback_msg)
 
-            transformed_poses = [
-                transform_pose_to_odom(
-                    odom_msg, pose_msg, self._camera_to_odom_transform
-                )
-                for odom_msg, pose_msg in self._synchronized_data
-            ]
-
-            self.get_logger().info("Trying to cluster...")
-            # Cluster the transformed poses
-            avg_pose, num_poses_in_cluster = self._cluster_poses(
-                transformed_poses, goal
+            outcome, transformed_poses = transform_and_cluster(
+                final_snapshot,
+                self._camera_to_odom_transform,
+                cluster_params,
             )
-            if avg_pose is None:
+            if outcome is None:
+                self.get_logger().error("No clusters found")
                 goal_handle.abort()
-                self._cleanup_subscribers()
                 return ClusterPosesAction.Result()
 
-            self.get_logger().info("Finished clustering...")
-            # Use the latest timestamp
-            avg_pose.header = transformed_poses[-1].header
+            outcome.avg_pose.header = transformed_poses[-1].header
 
-            # Publish results
             self._publish_results(
-                avg_pose, transformed_poses, goal.clustered_child_frame_id
+                outcome.avg_pose, transformed_poses, goal.clustered_child_frame_id
             )
 
-            # Return result
             result = ClusterPosesAction.Result()
-            result.clustered_pose = avg_pose
+            result.clustered_pose = outcome.avg_pose
             result.total_poses_collected = total_collected
-            result.poses_in_cluster = num_poses_in_cluster
+            result.poses_in_cluster = outcome.num_in_cluster
+            result.mean_probability = outcome.confidence["mean_probability"]
+            result.cluster_persistence = outcome.confidence["cluster_persistence"]
+            result.inlier_ratio = outcome.confidence["inlier_ratio"]
+            result.position_std = outcome.confidence["position_std"]
+            result.primary_confidence = select_primary_confidence(
+                outcome.confidence, int(goal.primary_confidence_metric)
+            )
 
             self.get_logger().info(
                 f"Clustering complete: {result.poses_in_cluster}/{result.total_poses_collected} poses in cluster"
             )
 
             goal_handle.succeed()
-            self._cleanup_subscribers()
             return result
 
         except Exception as e:
             self.get_logger().error(f"Error during execution: {e}")
             goal_handle.abort()
-            self._cleanup_subscribers()
             return ClusterPosesAction.Result()
-
-    def _cluster_poses(
-        self, transformed_poses: list[PoseStamped], goal: ClusterPosesAction.Goal
-    ) -> tuple[PoseStamped | None, int]:
-        """Cluster transformed poses using HDBSCAN and return the average pose.
-
-        Args:
-            transformed_poses: List of transformed poses to cluster
-            goal: Goal request containing clustering parameters
-
-        Returns:
-            Tuple of (average_pose, num_poses_in_cluster) or (None, 0) if clustering fails
-        """
-        # Check if there are enough poses for clustering
-        if len(transformed_poses) < max(goal.min_cluster_size, goal.min_samples):
-            self.get_logger().error("Not enough poses for clustering")
-            return None, 0
-
-        # Create HDBSCAN clustering instance
-        hdbscan = HDBSCAN(
-            min_cluster_size=goal.min_cluster_size,
-            min_samples=goal.min_samples,
-            cluster_selection_epsilon=goal.cluster_selection_epsilon,
-            allow_single_cluster=True,
-            store_centers="centroid",
-        )
-
-        # Extract positions and cluster
-        positions = np.array(
-            [
-                attrgetter("x", "y", "z")(pose.pose.position)
-                for pose in transformed_poses
-            ]
-        )
-        filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
-
-        if len(filtered_idxs) == 0:
-            self.get_logger().error("No clusters found")
-            return None, 0
-
-        # Get average pose from filtered poses
-        filtered_pose_msgs = [transformed_poses[i].pose for i in filtered_idxs]
-        avg_pose = get_average_pose(filtered_pose_msgs)
-        avg_pose_stamped = PoseStamped()
-        avg_pose_stamped.pose = avg_pose
-        avg_pose_stamped.header = transformed_poses[filtered_idxs[0]].header
-
-        return avg_pose_stamped, len(filtered_idxs)
+        finally:
+            # Tear down the per-goal channel via the cleanup-guard pattern.
+            # shutdown() returns immediately; destruction runs on the executor
+            # serialized against any in-flight take by the channel's mutex group.
+            if self._channel is not None:
+                channel, self._channel = self._channel, None
+                channel.shutdown()
+                # Bounded wait so the next goal doesn't see lingering subs on
+                # the same topics. Not required for correctness.
+                channel.wait_destroyed(timeout=1.0)
+            with self._data_lock:
+                self._synchronized_data = []
+            self._camera_to_odom_transform = None
+            self._current_goal_handle = None
+            if rate is not None:
+                try:
+                    self.destroy_rate(rate)
+                except Exception as e:
+                    self.get_logger().warning(f"Error destroying rate: {e}")
 
     def _publish_results(
         self,
@@ -337,20 +371,11 @@ class ClusterPosesNode(Node):
         transformed_poses: list[PoseStamped],
         clustered_child_frame_id: str,
     ) -> None:
-        """Publish clustered results as pose array and static transform.
-
-        Args:
-            avg_pose: The averaged clustered pose
-            transformed_poses: List of all transformed poses for publishing as array
-                    clustered_child_frame_id: Frame ID for the clustered transform
-        """
-        # Publish pose array of all transformed poses
         pose_array_msg = PoseArray()
         pose_array_msg.header = avg_pose.header
         pose_array_msg.poses = [pose.pose for pose in transformed_poses]
         self.pose_array_publisher.publish(pose_array_msg)
 
-        # Publish clustered pose as a static transform
         transform_stamped = TransformStamped()
         transform_stamped.header = avg_pose.header
         transform_stamped.child_frame_id = clustered_child_frame_id
@@ -360,27 +385,7 @@ class ClusterPosesNode(Node):
         transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
         self._static_tf_broadcaster.sendTransform(transform_stamped)
 
-    def _cleanup_subscribers(self):
-        """Clean up subscribers after goal completion."""
-        if self._time_synchronizer is not None:
-            self._time_synchronizer = None
-
-        # try-excepts are needed as unused subscriptions may already be destroyed
-        if self._odom_subscriber is not None:
-            try:
-                self.destroy_subscription(self._odom_subscriber.sub)
-            except Exception as e:
-                self.get_logger().warning(f"Error destroying odom subscriber: {e}")
-            self._odom_subscriber = None
-        if self._pose_subscriber is not None:
-            try:
-                self.destroy_subscription(self._pose_subscriber.sub)
-            except Exception as e:
-                self.get_logger().warning(f"Error destroying pose subscriber: {e}")
-            self._pose_subscriber = None
-
     def _handle_tf_static(self, msg: TFMessage) -> None:
-        """Store static transforms without subscribing to dynamic TF."""
         for transform in msg.transforms:
             self.tf_buffer.set_transform_static(transform, "default_authority")
 
@@ -391,19 +396,8 @@ def main(args=None):
     executor = MultiThreadedExecutor()
     executor.add_node(node)
 
-    # https://github.com/CMU-cabot/cabot-navigation/commit/18fe9330c6b0c02c1e52344b7ed6df32bfaf01e7
     try:
-        while rclpy.ok():
-            try:
-                executor.spin_once()
-            except KeyboardInterrupt:
-                raise
-            except rclpy._rclpy_pybind11.InvalidHandle as e:  # type: ignore
-                node.get_logger().error(f"Invalid handle rclpy bug: {e}\nignoring...")
-            except Exception as e:
-                # https://github.com/ros2/rclpy/issues/1206
-                node.get_logger().error(f"Exception in main: {e}")
-                raise
+        executor.spin()
     except KeyboardInterrupt:
         pass
     except Exception as e:

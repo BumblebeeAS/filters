@@ -10,13 +10,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 
-from bb_filters.clustering.cluster import (
+from bb_filters.utils.cluster import (
     average_transforms,
     euclidean_metric,
     get_top_k_clusters,
     tf_to_pose,
 )
-from bb_filters.clustering.cluster_tf_action_base import ClusterTfActionBase
+from bb_filters.utils.cluster_tf_action_base import ClusterTfActionBase
 from bb_filters.utils.tf_lru_cache import TfCacheDict, TfLruCache
 
 

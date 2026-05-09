@@ -11,7 +11,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.time import Time
 from transforms3d.euler import euler2quat
 
-from bb_filters.clustering.cluster import (
+from bb_filters.utils.cluster import (
     assign_to_centroids,
     get_position_from_transform,
     tf_to_pose_stamped,
