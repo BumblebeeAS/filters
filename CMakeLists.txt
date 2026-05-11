@@ -92,6 +92,7 @@ install(PROGRAMS
   scripts/detected_object_2d_filter_projection.py
 
   scripts/cluster/cluster_poses_node.py
+  scripts/cluster/cluster_poses_service_node.py
   scripts/cluster/cluster_tf_action.py
   scripts/cluster/cluster_tf_action_server.py
   scripts/cluster/cluster_tf_service_server.py

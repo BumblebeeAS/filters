@@ -117,17 +117,17 @@ class ClusterPosesServiceNode(Node):
             .string_value
         )
         self.spike_status_topic = (
-            self.declare_parameter("spike_status_topic", "cluster_spike_status")
+            self.declare_parameter("spike_status_topic", "cluster_spike_status2")
             .get_parameter_value()
             .string_value
         )
         self.odom_topic = (
-            self.declare_parameter("odom_topic", "/odom")
+            self.declare_parameter("odom_topic", "/auv4/nav/odom_ned")
             .get_parameter_value()
             .string_value
         )
         self.pose_stamped_topic = (
-            self.declare_parameter("pose_stamped_topic", "/pose")
+            self.declare_parameter("pose_stamped_topic", "/auv4/bin/bin/yolo/pose")
             .get_parameter_value()
             .string_value
         )
@@ -213,7 +213,10 @@ class ClusterPosesServiceNode(Node):
         self._channel: GoalSynchronizer | None = None
         self._spike_detector: SpikeDetector | None = None
         self._spike_throttle: ThrottledTrigger | None = None
-        self._spike_timer = None
+        self._spike_timer = self.create_timer(
+            1.0 / self.spike_tick_hz, self._spike_tick
+        )
+        self._spike_timer.cancel()  # start disabled
 
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
@@ -319,7 +322,6 @@ class ClusterPosesServiceNode(Node):
 
             try:
                 self.enabled = False
-                self._stop_spike_timer()
 
                 # Stop accepting new tuples and take a final snapshot. The
                 # channel itself is destroyed in `finally`.
@@ -373,8 +375,10 @@ class ClusterPosesServiceNode(Node):
                 with self._data_lock:
                     self._synchronized_data = []
                 self._camera_to_odom_transform = None
+                self._spike_timer.cancel()
 
         # Start accumulating
+        self._spike_timer.reset()
         with self._data_lock:
             self._synchronized_data = []
         self._camera_to_odom_transform = None
@@ -396,22 +400,10 @@ class ClusterPosesServiceNode(Node):
         )
 
         self.enabled = True
-        self._start_spike_timer()
-
         response.is_enabled = True
         response.is_cluster_success = False
         response.cluster_spread = 0.0
         return response
-
-    def _start_spike_timer(self) -> None:
-        self._stop_spike_timer()
-        period = 1.0 / max(float(self.spike_tick_hz), 1e-3)
-        self._spike_timer = self.create_timer(period, self._spike_tick)
-
-    def _stop_spike_timer(self) -> None:
-        if self._spike_timer is not None:
-            self.destroy_timer(self._spike_timer)
-            self._spike_timer = None
 
     def _spike_tick(self) -> None:
         if (
