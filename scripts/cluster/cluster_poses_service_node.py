@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import threading
 from operator import attrgetter
 from typing import Optional
 
@@ -15,21 +16,21 @@ from geometry_msgs.msg import (
     TransformStamped,
     Vector3,
 )
-from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
-    qos_profile_sensor_data,
 )
 from tf2_msgs.msg import TFMessage
 
+from bb_filters.utils.goal_sync import GoalSynchronizer
 from bb_filters.utils.pipeline import (
     ClusterParams,
     fill_spike_status,
@@ -46,6 +47,45 @@ def seconds_to_duration(seconds: float) -> Duration:
 
 
 class ClusterPosesServiceNode(Node):
+    _SPIKE_PARAM_NAMES = frozenset(
+        {
+            "spike_tick_hz",
+            "spike_window_sec",
+            "spike_rate_threshold",
+            "min_seconds_between_spike_clusters",
+            "spike_min_poses",
+            "primary_confidence_metric",
+        }
+    )
+    _CLUSTER_PARAM_NAMES = frozenset(
+        {
+            "min_poses",
+            "min_cluster_size",
+            "min_samples",
+            "cluster_selection_epsilon",
+            "clustered_child_frame_id",
+        }
+    )
+
+    # Baked into subscribers at service-enable; can only change while idle.
+    _SUB_PARAM_NAMES = frozenset(
+        {
+            "odom_topic",
+            "pose_stamped_topic",
+            "sync_queue_size",
+            "sync_tolerance",
+        }
+    )
+
+    _POSITIVE_FLOAT_PARAMS = frozenset(
+        {"spike_window_sec", "min_seconds_between_spike_clusters", "spike_tick_hz"}
+    )
+    _NON_NEGATIVE_INT_PARAMS = frozenset({"spike_min_poses"})
+    _POSITIVE_INT_PARAMS = frozenset(
+        {"min_poses", "min_cluster_size", "min_samples", "sync_queue_size"}
+    )
+    _NON_NEGATIVE_FLOAT_PARAMS = frozenset({"cluster_selection_epsilon"})
+
     def __init__(self) -> None:
         super().__init__("cluster_poses_service_node")
 
@@ -64,13 +104,10 @@ class ClusterPosesServiceNode(Node):
             qos_profile=static_qos,
         )
 
-        self._service_group = ReentrantCallbackGroup()
-
         self._service_server = self.create_service(
             ClusterTfSrv,
             "cluster_poses_srv",
             self.cluster_srv_callback,
-            callback_group=self._service_group,
         )
 
         # --------------------- Topics and synchronization parameters --------------------
@@ -171,15 +208,77 @@ class ClusterPosesServiceNode(Node):
         # State
         self.enabled: bool = False
         self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
+        self._data_lock = threading.Lock()
         self._camera_to_odom_transform: Optional[TransformStamped] = None
-        self._odom_subscriber: Optional[Subscriber] = None
-        self._pose_subscriber: Optional[Subscriber] = None
-        self._time_synchronizer: Optional[ApproximateTimeSynchronizer] = None
+        self._channel: GoalSynchronizer | None = None
         self._spike_detector: SpikeDetector | None = None
         self._spike_throttle: ThrottledTrigger | None = None
         self._spike_timer = None
 
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+
         self.get_logger().info("Cluster Poses Service Node initialized")
+
+    def _on_set_parameters(self, params: list[Parameter]) -> SetParametersResult:
+        # Validate first so we either apply all or none.
+        handled = (
+            self._SPIKE_PARAM_NAMES | self._CLUSTER_PARAM_NAMES | self._SUB_PARAM_NAMES
+        )
+        pending: dict[str, object] = {}
+        for p in params:
+            if p.name not in handled:
+                continue
+            if p.name in self._SUB_PARAM_NAMES and self.enabled:
+                return SetParametersResult(
+                    successful=False,
+                    reason=(
+                        f"{p.name} is baked into subscribers; stop the service "
+                        "(call with enabled=False) before changing it"
+                    ),
+                )
+            value = p.value
+            if p.name == "sync_tolerance" and float(value) <= 0.0:
+                return SetParametersResult(
+                    successful=False, reason="sync_tolerance must be > 0"
+                )
+            if p.name in self._POSITIVE_FLOAT_PARAMS and float(value) <= 0.0:
+                return SetParametersResult(
+                    successful=False, reason=f"{p.name} must be > 0"
+                )
+            if p.name in self._NON_NEGATIVE_INT_PARAMS and int(value) < 0:
+                return SetParametersResult(
+                    successful=False, reason=f"{p.name} must be >= 0"
+                )
+            if p.name in self._POSITIVE_INT_PARAMS and int(value) <= 0:
+                return SetParametersResult(
+                    successful=False, reason=f"{p.name} must be > 0"
+                )
+            if p.name in self._NON_NEGATIVE_FLOAT_PARAMS and float(value) < 0.0:
+                return SetParametersResult(
+                    successful=False, reason=f"{p.name} must be >= 0"
+                )
+            pending[p.name] = value
+
+        if not pending:
+            return SetParametersResult(successful=True)
+
+        for name, value in pending.items():
+            setattr(self, name, value)
+
+        if self.enabled:
+            if {"spike_window_sec", "spike_rate_threshold"} & pending.keys():
+                self._spike_detector = SpikeDetector(
+                    window_sec=float(self.spike_window_sec),
+                    rate_threshold=float(self.spike_rate_threshold),
+                )
+            if "min_seconds_between_spike_clusters" in pending:
+                self._spike_throttle = ThrottledTrigger(
+                    min_interval_sec=float(self.min_seconds_between_spike_clusters)
+                )
+            if "spike_tick_hz" in pending:
+                self._start_spike_timer()
+
+        return SetParametersResult(successful=True)
 
     def _cluster_params(self) -> ClusterParams:
         return ClusterParams(
@@ -218,52 +317,66 @@ class ClusterPosesServiceNode(Node):
                 response.cluster_spread = 0.0
                 return response
 
-            self.enabled = False
-            self._stop_spike_timer()
+            try:
+                self.enabled = False
+                self._stop_spike_timer()
 
-            total_collected = len(self._synchronized_data)
-            if total_collected < int(self.min_poses):
-                self._cleanup_subscribers()
+                # Stop accepting new tuples and take a final snapshot. The
+                # channel itself is destroyed in `finally`.
+                if self._channel is not None:
+                    self._channel._accepting = False
+                with self._data_lock:
+                    final_snapshot = list(self._synchronized_data)
+                total_collected = len(final_snapshot)
+
+                if total_collected < int(self.min_poses):
+                    response.is_enabled = False
+                    response.is_cluster_success = False
+                    response.cluster_spread = 0.0
+                    return response
+
+                if not self._ensure_camera_to_odom(final_snapshot):
+                    self.get_logger().error("Failed to lookup camera->odom transform")
+                    response.is_enabled = False
+                    response.is_cluster_success = False
+                    response.cluster_spread = 0.0
+                    return response
+
+                outcome, transformed_poses = transform_and_cluster(
+                    final_snapshot,
+                    self._camera_to_odom_transform,
+                    self._cluster_params(),
+                )
+                if outcome is None:
+                    self.get_logger().error("No clusters found")
+                    response.is_enabled = False
+                    response.is_cluster_success = False
+                    response.cluster_spread = 0.0
+                    return response
+
+                outcome.avg_pose.header = transformed_poses[-1].header
+                self._publish_results(
+                    outcome.avg_pose, transformed_poses, self.clustered_child_frame_id
+                )
+
                 response.is_enabled = False
-                response.is_cluster_success = False
-                response.cluster_spread = 0.0
+                response.is_cluster_success = True
+                # Reuse cluster_spread to report the number of poses in the cluster.
+                response.cluster_spread = float(outcome.num_in_cluster)
                 return response
-
-            if not self._ensure_camera_to_odom(self._synchronized_data):
-                self.get_logger().error("Failed to lookup camera->odom transform")
-                self._cleanup_subscribers()
-                response.is_enabled = False
-                response.is_cluster_success = False
-                response.cluster_spread = 0.0
-                return response
-
-            outcome, transformed_poses = transform_and_cluster(
-                self._synchronized_data,
-                self._camera_to_odom_transform,
-                self._cluster_params(),
-            )
-            if outcome is None:
-                self.get_logger().error("No clusters found")
-                self._cleanup_subscribers()
-                response.is_enabled = False
-                response.is_cluster_success = False
-                response.cluster_spread = 0.0
-                return response
-
-            outcome.avg_pose.header = transformed_poses[-1].header
-            self._publish_results(
-                outcome.avg_pose, transformed_poses, self.clustered_child_frame_id
-            )
-            self._cleanup_subscribers()
-
-            response.is_enabled = False
-            response.is_cluster_success = True
-            # Reuse cluster_spread to report the number of poses in the cluster.
-            response.cluster_spread = float(outcome.num_in_cluster)
-            return response
+            finally:
+                # Tear down the per-goal channel. shutdown() removes the child
+                # node from the executor (fencing the wait loop) and destroys it.
+                if self._channel is not None:
+                    channel, self._channel = self._channel, None
+                    channel.shutdown()
+                with self._data_lock:
+                    self._synchronized_data = []
+                self._camera_to_odom_transform = None
 
         # Start accumulating
-        self._synchronized_data = []
+        with self._data_lock:
+            self._synchronized_data = []
         self._camera_to_odom_transform = None
         self._spike_detector = SpikeDetector(
             window_sec=float(self.spike_window_sec),
@@ -273,22 +386,14 @@ class ClusterPosesServiceNode(Node):
             min_interval_sec=float(self.min_seconds_between_spike_clusters)
         )
 
-        self._odom_subscriber = Subscriber(
-            self, Odometry, self.odom_topic, qos_profile=qos_profile_sensor_data
-        )
-        self._pose_subscriber = Subscriber(
+        self._channel = GoalSynchronizer(
             self,
-            PoseStamped,
-            self.pose_stamped_topic,
-            qos_profile=qos_profile_sensor_data,
+            odom_topic=self.odom_topic,
+            pose_topic=self.pose_stamped_topic,
+            slop=float(self.sync_tolerance),
+            queue_size=int(self.sync_queue_size),
+            on_synchronized=self._synchronized_callback,
         )
-
-        self._time_synchronizer = ApproximateTimeSynchronizer(
-            [self._odom_subscriber, self._pose_subscriber],
-            queue_size=self.sync_queue_size,
-            slop=self.sync_tolerance,
-        )
-        self._time_synchronizer.registerCallback(self._synchronized_callback)
 
         self.enabled = True
         self._start_spike_timer()
@@ -301,9 +406,7 @@ class ClusterPosesServiceNode(Node):
     def _start_spike_timer(self) -> None:
         self._stop_spike_timer()
         period = 1.0 / max(float(self.spike_tick_hz), 1e-3)
-        self._spike_timer = self.create_timer(
-            period, self._spike_tick, callback_group=self._service_group
-        )
+        self._spike_timer = self.create_timer(period, self._spike_tick)
 
     def _stop_spike_timer(self) -> None:
         if self._spike_timer is not None:
@@ -317,7 +420,8 @@ class ClusterPosesServiceNode(Node):
             or self._spike_throttle is None
         ):
             return
-        poses_now = len(self._synchronized_data)
+        with self._data_lock:
+            poses_now = len(self._synchronized_data)
         now_sec = self._now_sec()
         reading = self._spike_detector.update(now_sec, poses_now)
 
@@ -326,9 +430,10 @@ class ClusterPosesServiceNode(Node):
         if (
             reading.is_spike
             and poses_now >= int(self.spike_min_poses)
-            and self._spike_throttle.try_acquire(now_sec)
+            and self._spike_throttle.test(now_sec)
         ):
-            snapshot = list(self._synchronized_data)
+            with self._data_lock:
+                snapshot = list(self._synchronized_data)
             snapshot_len = len(snapshot)
             if self._ensure_camera_to_odom(snapshot):
                 outcome, _ = transform_and_cluster(
@@ -350,9 +455,8 @@ class ClusterPosesServiceNode(Node):
         self.spike_status_publisher.publish(msg)
 
     def _synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
-        if not self.enabled:
-            return
-        self._synchronized_data.append((odom_msg, pose_msg))
+        with self._data_lock:
+            self._synchronized_data.append((odom_msg, pose_msg))
 
     def _publish_results(
         self,
@@ -374,25 +478,6 @@ class ClusterPosesServiceNode(Node):
         transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
         self._static_tf_broadcaster.sendTransform(transform_stamped)
 
-    def _cleanup_subscribers(self) -> None:
-        self._stop_spike_timer()
-        if self._time_synchronizer is not None:
-            self._time_synchronizer = None
-
-        if self._odom_subscriber is not None:
-            try:
-                self.destroy_subscription(self._odom_subscriber.sub)
-            except Exception as e:
-                self.get_logger().warning(f"Error destroying odom subscriber: {e}")
-            self._odom_subscriber = None
-
-        if self._pose_subscriber is not None:
-            try:
-                self.destroy_subscription(self._pose_subscriber.sub)
-            except Exception as e:
-                self.get_logger().warning(f"Error destroying pose subscriber: {e}")
-            self._pose_subscriber = None
-
     def _handle_tf_static(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
             self.tf_buffer.set_transform_static(transform, "default_authority")
@@ -401,7 +486,7 @@ class ClusterPosesServiceNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = ClusterPosesServiceNode()
-    executor = MultiThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
 
     try:
