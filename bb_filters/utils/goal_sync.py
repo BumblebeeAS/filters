@@ -1,3 +1,4 @@
+import threading
 import uuid
 
 from geometry_msgs.msg import (
@@ -6,7 +7,7 @@ from geometry_msgs.msg import (
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import Executor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     qos_profile_sensor_data,
@@ -14,19 +15,20 @@ from rclpy.qos import (
 
 
 class GoalSynchronizer:
-    """Per-goal subscribers + synchronizer hosted on a dedicated child Node.
+    """Per-goal child Node spun on its own SingleThreadedExecutor.
 
-    Teardown uses Executor.remove_node + Node.destroy_node, which fences
-    against the executor's wait loop: after remove_node returns, no entity
-    on the child node can be dispatched, so destroying the subscriptions is
-    free of the stale-ready-list race that the previous guard-condition
-    pattern could not prevent.
+    Why a private executor: the parent's MultiThreadedExecutor can return a
+    batch from rcl_wait that already references the child's subscriptions,
+    so destroying those subs from any callback running on the parent races
+    the in-flight batch ("cannot use destroyable" on the next take).
+    Executor.shutdown() + thread join is a real synchronization point: once
+    the spin thread has exited, no rcl_wait is in flight on the child's
+    entities, so destroy_node() is safe.
     """
 
     def __init__(
         self,
         parent_node: Node,
-        executor: Executor,
         odom_topic: str,
         pose_topic: str,
         slop: float,
@@ -34,7 +36,6 @@ class GoalSynchronizer:
         on_synchronized,
     ):
         self._parent = parent_node
-        self._executor = executor
         self._on_synchronized = on_synchronized
         self._accepting = True
 
@@ -67,21 +68,33 @@ class GoalSynchronizer:
         )
         self.sync.registerCallback(self._gated_callback)
 
-        executor.add_node(self._child)
+        self._executor = SingleThreadedExecutor()
+        self._executor.add_node(self._child)
+        self._spin_thread = threading.Thread(
+            target=self._executor.spin,
+            name="goal_sync_spin",
+            daemon=True,
+        )
+        self._spin_thread.start()
 
     def _gated_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
         if not self._accepting:
             return
         self._on_synchronized(odom_msg, pose_msg)
 
-    def shutdown(self) -> None:
-        """Tear down the channel. remove_node fences the executor's wait
-        loop; destroy_node then reaps rcl handles without racing any take."""
+    def shutdown(self, join_timeout: float = 2.0) -> None:
         self._accepting = False
         try:
-            self._executor.remove_node(self._child)
+            self._executor.shutdown()
         except Exception as e:
-            self._parent.get_logger().warning(f"remove_node failed: {e}")
+            self._parent.get_logger().warning(f"executor shutdown failed: {e}")
+        self._spin_thread.join(timeout=join_timeout)
+        if self._spin_thread.is_alive():
+            self._parent.get_logger().warning(
+                "goal_sync spin thread did not exit within timeout; "
+                "skipping destroy_node to avoid racing a live wait loop"
+            )
+            return
         try:
             self._child.destroy_node()
         except Exception as e:

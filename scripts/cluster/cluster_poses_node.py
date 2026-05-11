@@ -84,7 +84,6 @@ class ClusterPosesNode(Node):
         self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
         self._data_lock = threading.Lock()
         self._camera_to_odom_transform: TransformStamped | None = None
-        self._executor: MultiThreadedExecutor | None = None
         self._channel: GoalSynchronizer | None = None
         self._spike_detector: SpikeDetector | None = None
         self._spike_throttle: ThrottledTrigger | None = None
@@ -209,13 +208,8 @@ class ClusterPosesNode(Node):
             feedback_msg.poses_collected_so_far = 0
             goal_handle.publish_feedback(feedback_msg)
 
-            if self._executor is None:
-                raise RuntimeError(
-                    "executor not attached; main() must set node._executor"
-                )
             self._channel = GoalSynchronizer(
                 self,
-                self._executor,
                 odom_topic=goal.odom_topic,
                 pose_topic=goal.pose_stamped_topic,
                 slop=goal.sync_tolerance,
@@ -401,7 +395,6 @@ def main(args=None):
     node = ClusterPosesNode()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-    node._executor = executor
 
     try:
         executor.spin()
