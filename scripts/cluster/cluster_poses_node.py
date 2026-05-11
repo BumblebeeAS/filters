@@ -84,6 +84,7 @@ class ClusterPosesNode(Node):
         self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
         self._data_lock = threading.Lock()
         self._camera_to_odom_transform: TransformStamped | None = None
+        self._executor: MultiThreadedExecutor | None = None
         self._channel: GoalSynchronizer | None = None
         self._spike_detector: SpikeDetector | None = None
         self._spike_throttle: ThrottledTrigger | None = None
@@ -208,8 +209,13 @@ class ClusterPosesNode(Node):
             feedback_msg.poses_collected_so_far = 0
             goal_handle.publish_feedback(feedback_msg)
 
+            if self._executor is None:
+                raise RuntimeError(
+                    "executor not attached; main() must set node._executor"
+                )
             self._channel = GoalSynchronizer(
                 self,
+                self._executor,
                 odom_topic=goal.odom_topic,
                 pose_topic=goal.pose_stamped_topic,
                 slop=goal.sync_tolerance,
@@ -240,6 +246,10 @@ class ClusterPosesNode(Node):
                     elapsed_time.nanoseconds / collection_duration.nanoseconds, 1.0
                 )
                 feedback_msg.poses_collected_so_far = poses_now
+                self.get_logger().info(
+                    f"Collecting... {poses_now} poses collected, "
+                    f"{feedback_msg.collection_progress * 100:.1f}% complete"
+                )
                 goal_handle.publish_feedback(feedback_msg)
 
                 # Spike detection + optional partial cluster
@@ -275,7 +285,7 @@ class ClusterPosesNode(Node):
                 rate.sleep()
 
             # Stop accepting new tuples and take a final snapshot. The channel
-            # is destroyed in `finally` via the cleanup-guard pattern.
+            # itself is destroyed in `finally`.
             if self._channel is not None:
                 self._channel._accepting = False
             with self._data_lock:
@@ -346,15 +356,11 @@ class ClusterPosesNode(Node):
             goal_handle.abort()
             return ClusterPosesAction.Result()
         finally:
-            # Tear down the per-goal channel via the cleanup-guard pattern.
-            # shutdown() returns immediately; destruction runs on the executor
-            # serialized against any in-flight take by the channel's mutex group.
+            # Tear down the per-goal channel. shutdown() removes the child
+            # node from the executor (fencing the wait loop) and destroys it.
             if self._channel is not None:
                 channel, self._channel = self._channel, None
                 channel.shutdown()
-                # Bounded wait so the next goal doesn't see lingering subs on
-                # the same topics. Not required for correctness.
-                channel.wait_destroyed(timeout=1.0)
             with self._data_lock:
                 self._synchronized_data = []
             self._camera_to_odom_transform = None
@@ -395,6 +401,7 @@ def main(args=None):
     node = ClusterPosesNode()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
+    node._executor = executor
 
     try:
         executor.spin()

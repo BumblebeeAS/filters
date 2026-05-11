@@ -1,4 +1,4 @@
-import threading
+import uuid
 
 from geometry_msgs.msg import (
     PoseStamped,
@@ -6,6 +6,7 @@ from geometry_msgs.msg import (
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import Executor
 from rclpy.node import Node
 from rclpy.qos import (
     qos_profile_sensor_data,
@@ -13,40 +14,47 @@ from rclpy.qos import (
 
 
 class GoalSynchronizer:
-    """Per-goal subscribers + synchronizer + cleanup guard, all on a private
-    MutuallyExclusiveCallbackGroup.
+    """Per-goal subscribers + synchronizer hosted on a dedicated child Node.
 
-    The guard's destroy callback shares the group with the subs, so the
-    executor's own scheduling serializes destroy against any in-flight take.
-    Bare destroy_subscription from another thread would race rcl_wait; this
-    pattern doesn't. Ensure that the on_synchronized callback is thread safe
+    Teardown uses Executor.remove_node + Node.destroy_node, which fences
+    against the executor's wait loop: after remove_node returns, no entity
+    on the child node can be dispatched, so destroying the subscriptions is
+    free of the stale-ready-list race that the previous guard-condition
+    pattern could not prevent.
     """
 
     def __init__(
         self,
-        node: Node,
+        parent_node: Node,
+        executor: Executor,
         odom_topic: str,
         pose_topic: str,
         slop: float,
         queue_size: int,
         on_synchronized,
     ):
-        self._node = node
+        self._parent = parent_node
+        self._executor = executor
         self._on_synchronized = on_synchronized
         self._accepting = True
-        self._destroyed = threading.Event()
+
+        self._child = Node(
+            f"_cluster_poses_channel_{uuid.uuid4().hex[:8]}",
+            namespace=parent_node.get_namespace(),
+            start_parameter_services=False,
+        )
 
         self.group = MutuallyExclusiveCallbackGroup()
 
         self.odom_sub = Subscriber(
-            node,
+            self._child,
             Odometry,
             odom_topic,
             qos_profile=qos_profile_sensor_data,
             callback_group=self.group,
         )
         self.pose_sub = Subscriber(
-            node,
+            self._child,
             PoseStamped,
             pose_topic,
             qos_profile=qos_profile_sensor_data,
@@ -59,9 +67,7 @@ class GoalSynchronizer:
         )
         self.sync.registerCallback(self._gated_callback)
 
-        self._cleanup_guard = node.create_guard_condition(
-            self._do_destroy, callback_group=self.group
-        )
+        executor.add_node(self._child)
 
     def _gated_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
         if not self._accepting:
@@ -69,30 +75,14 @@ class GoalSynchronizer:
         self._on_synchronized(odom_msg, pose_msg)
 
     def shutdown(self) -> None:
-        """Request destruction. Returns immediately; actual destroy runs on
-        the executor when the group is free."""
+        """Tear down the channel. remove_node fences the executor's wait
+        loop; destroy_node then reaps rcl handles without racing any take."""
         self._accepting = False
         try:
-            self._cleanup_guard.trigger()
+            self._executor.remove_node(self._child)
         except Exception as e:
-            self._node.get_logger().warning(f"cleanup trigger failed: {e}")
-
-    def wait_destroyed(self, timeout: float | None = None) -> bool:
-        return self._destroyed.wait(timeout)
-
-    def _do_destroy(self) -> None:
-        # Runs on an executor worker, holding this group's mutex slot.
-        # No sub take can be in flight while this runs.
-        for sub, name in (
-            (self.odom_sub.sub, "odom"),
-            (self.pose_sub.sub, "pose"),
-        ):
-            try:
-                self._node.destroy_subscription(sub)
-            except Exception as e:
-                self._node.get_logger().warning(f"{name} destroy failed: {e}")
+            self._parent.get_logger().warning(f"remove_node failed: {e}")
         try:
-            self._node.destroy_guard_condition(self._cleanup_guard)
+            self._child.destroy_node()
         except Exception as e:
-            self._node.get_logger().warning(f"cleanup guard destroy failed: {e}")
-        self._destroyed.set()
+            self._parent.get_logger().warning(f"destroy_node failed: {e}")
