@@ -18,7 +18,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -26,6 +26,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from rclpy.task import Future
 from tf2_msgs.msg import TFMessage
 
 from bb_filters.utils.goal_sync import GoalSynchronizer
@@ -120,9 +121,24 @@ class ClusterPosesNode(Node):
         self.spike_status_publisher = self.create_publisher(
             ClusterSpikeStatus, spike_status_topic, 10
         )
+        self._tick_fut: Future = Future()
         self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
+        self._tick_timer = self.create_timer(
+            1.0 / self.feedback_rate,
+            self._tick,
+            callback_group=self.action_callback_group,
+        )
+
         self.get_logger().info("Cluster Poses Action Server initialized")
+
+    def _tick(self):
+        fut, self._tick_fut = self._tick_fut, Future()
+        if not fut.done():
+            fut.set_result(None)
+
+    async def async_sleep(self):
+        await self._tick_fut
 
     def goal_callback(self, goal_request: ClusterPosesAction.Goal) -> GoalResponse:
         self.get_logger().info("Received new goal request")
@@ -201,7 +217,6 @@ class ClusterPosesNode(Node):
             min_interval_sec=float(goal.min_seconds_between_spike_clusters)
         )
 
-        rate = None
         try:
             feedback_msg.current_status = "Setting up subscribers"
             feedback_msg.collection_progress = 0.0
@@ -223,7 +238,6 @@ class ClusterPosesNode(Node):
             collection_start_time = self.get_clock().now()
             collection_duration = seconds_to_duration(goal.collection_duration)
 
-            rate = self.create_rate(self.feedback_rate)
             while rclpy.ok():
                 elapsed_time = self.get_clock().now() - collection_start_time
                 if elapsed_time >= collection_duration:
@@ -276,7 +290,7 @@ class ClusterPosesNode(Node):
                     stamp_header=None,
                 )
 
-                rate.sleep()
+                await self.async_sleep()
 
             # Stop accepting new tuples and take a final snapshot. The channel
             # itself is destroyed in `finally`.
@@ -359,11 +373,6 @@ class ClusterPosesNode(Node):
                 self._synchronized_data = []
             self._camera_to_odom_transform = None
             self._current_goal_handle = None
-            if rate is not None:
-                try:
-                    self.destroy_rate(rate)
-                except Exception as e:
-                    self.get_logger().warning(f"Error destroying rate: {e}")
 
     def _publish_results(
         self,
@@ -393,7 +402,7 @@ class ClusterPosesNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = ClusterPosesNode()
-    executor = MultiThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
 
     try:
@@ -401,7 +410,10 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     except Exception as e:
+        import traceback
+
         node.get_logger().error(f"Unhandled exception in main: {e}")
+        traceback.print_exc()
     finally:
         executor.shutdown()
         node.destroy_node()
