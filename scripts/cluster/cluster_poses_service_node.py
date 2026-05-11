@@ -122,12 +122,12 @@ class ClusterPosesServiceNode(Node):
             .string_value
         )
         self.odom_topic = (
-            self.declare_parameter("odom_topic", "/auv4/nav/odom_ned")
+            self.declare_parameter("odom_topic", "/odom")
             .get_parameter_value()
             .string_value
         )
         self.pose_stamped_topic = (
-            self.declare_parameter("pose_stamped_topic", "/auv4/bin/bin/yolo/pose")
+            self.declare_parameter("pose_stamped_topic", "/pose")
             .get_parameter_value()
             .string_value
         )
@@ -177,7 +177,7 @@ class ClusterPosesServiceNode(Node):
             .double_value
         )
         self.spike_rate_threshold = (
-            self.declare_parameter("spike_rate_threshold", 0.0)
+            self.declare_parameter("spike_rate_threshold", 3.0)
             .get_parameter_value()
             .double_value
         )
@@ -279,7 +279,8 @@ class ClusterPosesServiceNode(Node):
                     min_interval_sec=float(self.min_seconds_between_spike_clusters)
                 )
             if "spike_tick_hz" in pending:
-                self._start_spike_timer()
+                self._spike_timer.timer_period_ns = int(1e9 / float(self.spike_tick_hz))
+                self._spike_timer.reset()
 
         return SetParametersResult(successful=True)
 
@@ -416,6 +417,9 @@ class ClusterPosesServiceNode(Node):
             poses_now = len(self._synchronized_data)
         now_sec = self._now_sec()
         reading = self._spike_detector.update(now_sec, poses_now)
+        self.get_logger().info(
+            f"Spike tick: {poses_now} poses, rate={reading.rate:.2f}"
+        )
 
         outcome = None
         snapshot_len = poses_now
@@ -482,16 +486,7 @@ def main(args=None) -> None:
     executor.add_node(node)
 
     try:
-        while rclpy.ok():
-            try:
-                executor.spin_once()
-            except KeyboardInterrupt:
-                raise
-            except rclpy._rclpy_pybind11.InvalidHandle as e:  # type: ignore
-                node.get_logger().error(f"Invalid handle rclpy bug: {e}\nignoring...")
-            except Exception as e:
-                node.get_logger().error(f"Exception in main: {e}")
-                raise
+        executor.spin()
     except KeyboardInterrupt:
         pass
     except Exception as e:

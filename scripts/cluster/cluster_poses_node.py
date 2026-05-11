@@ -130,6 +130,8 @@ class ClusterPosesNode(Node):
             callback_group=self.action_callback_group,
         )
 
+        self._tick_timer.cancel()
+
         self.get_logger().info("Cluster Poses Action Server initialized")
 
     def _tick(self):
@@ -197,6 +199,7 @@ class ClusterPosesNode(Node):
         self, goal_handle: ServerGoalHandle
     ) -> ClusterPosesAction.Result:
         self.get_logger().info("Executing goal...")
+        self._tick_timer.reset()
         self._current_goal_handle = goal_handle
         self._synchronized_data = []
         self._camera_to_odom_transform = None
@@ -373,6 +376,7 @@ class ClusterPosesNode(Node):
                 self._synchronized_data = []
             self._camera_to_odom_transform = None
             self._current_goal_handle = None
+            self._tick_timer.cancel()
 
     def _publish_results(
         self,
