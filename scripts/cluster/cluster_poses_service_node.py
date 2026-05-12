@@ -7,6 +7,14 @@ from typing import Optional
 
 import rclpy
 import tf2_ros
+from bb_filters.utils.goal_sync import GoalSynchronizer
+from bb_filters.utils.pipeline import (
+    ClusterParams,
+    SpikeClusterMonitor,
+    fill_spike_status,
+    lookup_camera_to_odom,
+    transform_and_cluster,
+)
 from bb_perception_msgs.msg import ClusterSpikeStatus
 from bb_perception_msgs.srv import ClusterTfSrv
 from geometry_msgs.msg import (
@@ -30,15 +38,6 @@ from rclpy.qos import (
 )
 from tf2_msgs.msg import TFMessage
 
-from bb_filters.utils.goal_sync import GoalSynchronizer
-from bb_filters.utils.pipeline import (
-    ClusterParams,
-    SpikeClusterMonitor,
-    fill_spike_status,
-    lookup_camera_to_odom,
-    transform_and_cluster,
-)
-
 
 def seconds_to_duration(seconds: float) -> Duration:
     """Convert float seconds to rclpy Duration."""
@@ -55,6 +54,7 @@ class ClusterPosesServiceNode(Node):
             "min_seconds_between_spike_clusters",
             "spike_min_poses",
             "primary_confidence_metric",
+            "partial_cluster_max_size",
         }
     )
     _CLUSTER_PARAM_NAMES = frozenset(
@@ -117,7 +117,7 @@ class ClusterPosesServiceNode(Node):
             .string_value
         )
         self.spike_status_topic = (
-            self.declare_parameter("spike_status_topic", "cluster_spike_status2")
+            self.declare_parameter("spike_status_topic", "cluster_spike_status")
             .get_parameter_value()
             .string_value
         )
@@ -196,6 +196,11 @@ class ClusterPosesServiceNode(Node):
             .get_parameter_value()
             .integer_value
         )
+        self.partial_cluster_max_size = (
+            self.declare_parameter("partial_cluster_max_size", 100)
+            .get_parameter_value()
+            .integer_value
+        )
 
         self.pose_array_publisher = self.create_publisher(
             PoseArray, self.output_pose_array_topic, 10
@@ -259,6 +264,8 @@ class ClusterPosesServiceNode(Node):
                 return SetParametersResult(
                     successful=False, reason=f"{p.name} must be >= 0"
                 )
+            if p.name == "partial_cluster_max_size" and int(value) <= 0:
+                pending[p.name] = int(1e9)
             pending[p.name] = value
 
         if not pending:
@@ -291,7 +298,7 @@ class ClusterPosesServiceNode(Node):
 
     def _snapshot(self) -> list[tuple[Odometry, PoseStamped]]:
         with self._data_lock:
-            return list(self._synchronized_data)
+            return list(self._synchronized_data[-self.partial_cluster_max_size :])
 
     def _get_camera_to_odom(
         self, snapshot: list[tuple[Odometry, PoseStamped]]
@@ -377,7 +384,9 @@ class ClusterPosesServiceNode(Node):
 
                 outcome.avg_pose.header = transformed_poses[-1].header
                 self._publish_results(
-                    outcome.avg_pose, transformed_poses, self.clustered_child_frame_id
+                    outcome.avg_pose,
+                    transformed_poses,
+                    request.output_child_frame_ids[0],
                 )
 
                 response.is_enabled = False
@@ -390,12 +399,16 @@ class ClusterPosesServiceNode(Node):
                 # node from the executor (fencing the wait loop) and destroys it.
                 if self._channel is not None:
                     channel, self._channel = self._channel, None
-                    channel.shutdown()
+                    channel.shutdown(join_timeout=2)
                 with self._data_lock:
                     self._synchronized_data = []
                 self._camera_to_odom_transform = None
                 self._spike_timer.cancel()
 
+        if self._channel is not None:
+            channel = self._channel
+            self._channel = None
+            channel.shutdown(join_timeout=2)
         # Start accumulating
         self._spike_timer.reset()
         with self._data_lock:
@@ -488,6 +501,8 @@ def main(args=None) -> None:
     except Exception as e:
         node.get_logger().error(f"Unhandled exception in main: {e}")
     finally:
+        if node._channel is not None:
+            node._channel.shutdown(join_timeout=2.0)
         executor.shutdown()
         node.destroy_node()
     rclpy.try_shutdown()

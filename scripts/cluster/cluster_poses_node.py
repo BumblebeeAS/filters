@@ -4,6 +4,15 @@ from operator import attrgetter
 
 import rclpy
 import tf2_ros
+from bb_filters.utils.goal_sync import GoalSynchronizer
+from bb_filters.utils.pipeline import (
+    ClusterParams,
+    SpikeClusterMonitor,
+    fill_spike_status,
+    lookup_camera_to_odom,
+    select_primary_confidence,
+    transform_and_cluster,
+)
 from bb_perception_msgs.action import ClusterPosesAction
 from bb_perception_msgs.msg import ClusterSpikeStatus
 from geometry_msgs.msg import (
@@ -28,16 +37,6 @@ from rclpy.qos import (
 )
 from rclpy.task import Future
 from tf2_msgs.msg import TFMessage
-
-from bb_filters.utils.goal_sync import GoalSynchronizer
-from bb_filters.utils.pipeline import (
-    ClusterParams,
-    SpikeClusterMonitor,
-    fill_spike_status,
-    lookup_camera_to_odom,
-    select_primary_confidence,
-    transform_and_cluster,
-)
 
 
 def seconds_to_duration(seconds: float) -> Duration:
@@ -217,6 +216,7 @@ class ClusterPosesNode(Node):
             min_seconds_between_clusters=float(goal.min_seconds_between_spike_clusters),
             spike_min_poses=int(goal.spike_min_poses),
         )
+        partial_cluster_max_size = int(goal.partial_cluster_max_size)
 
         try:
             feedback_msg.current_status = "Setting up subscribers"
@@ -241,7 +241,7 @@ class ClusterPosesNode(Node):
 
             def _snapshot_fn():
                 with self._data_lock:
-                    return list(self._synchronized_data)
+                    return list(self._synchronized_data[-partial_cluster_max_size:])
 
             def _get_tf_fn(snapshot):
                 return (

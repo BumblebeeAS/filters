@@ -84,11 +84,19 @@ class GoalSynchronizer:
 
     def shutdown(self, join_timeout: float = 2.0) -> None:
         self._accepting = False
+        threading.Thread(
+            target=self.cleanup,
+            name="goal_sync_cleanup",
+            daemon=True,
+            kwargs={"timeout": join_timeout},
+        ).start()
+
+    def cleanup(self, timeout: float = 2.0) -> None:
         try:
             self._executor.shutdown()
         except Exception as e:
             self._parent.get_logger().warning(f"executor shutdown failed: {e}")
-        self._spin_thread.join(timeout=join_timeout)
+        self._spin_thread.join(timeout=timeout)
         if self._spin_thread.is_alive():
             self._parent.get_logger().warning(
                 "goal_sync spin thread did not exit within timeout; "
