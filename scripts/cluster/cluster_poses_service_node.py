@@ -33,11 +33,11 @@ from tf2_msgs.msg import TFMessage
 from bb_filters.utils.goal_sync import GoalSynchronizer
 from bb_filters.utils.pipeline import (
     ClusterParams,
+    SpikeClusterMonitor,
     fill_spike_status,
     lookup_camera_to_odom,
     transform_and_cluster,
 )
-from bb_filters.utils.spike import SpikeDetector, ThrottledTrigger
 
 
 def seconds_to_duration(seconds: float) -> Duration:
@@ -211,8 +211,7 @@ class ClusterPosesServiceNode(Node):
         self._data_lock = threading.Lock()
         self._camera_to_odom_transform: Optional[TransformStamped] = None
         self._channel: GoalSynchronizer | None = None
-        self._spike_detector: SpikeDetector | None = None
-        self._spike_throttle: ThrottledTrigger | None = None
+        self._spike_monitor: SpikeClusterMonitor | None = None
         self._spike_timer = self.create_timer(
             1.0 / self.spike_tick_hz, self._spike_tick
         )
@@ -269,20 +268,39 @@ class ClusterPosesServiceNode(Node):
             setattr(self, name, value)
 
         if self.enabled:
-            if {"spike_window_sec", "spike_rate_threshold"} & pending.keys():
-                self._spike_detector = SpikeDetector(
-                    window_sec=float(self.spike_window_sec),
-                    rate_threshold=float(self.spike_rate_threshold),
-                )
-            if "min_seconds_between_spike_clusters" in pending:
-                self._spike_throttle = ThrottledTrigger(
-                    min_interval_sec=float(self.min_seconds_between_spike_clusters)
-                )
+            if {
+                "spike_window_sec",
+                "spike_rate_threshold",
+                "min_seconds_between_spike_clusters",
+                "spike_min_poses",
+            } & pending.keys():
+                self._spike_monitor = self._build_spike_monitor()
             if "spike_tick_hz" in pending:
                 self._spike_timer.timer_period_ns = int(1e9 / float(self.spike_tick_hz))
                 self._spike_timer.reset()
 
         return SetParametersResult(successful=True)
+
+    def _build_spike_monitor(self) -> SpikeClusterMonitor:
+        return SpikeClusterMonitor(
+            window_sec=float(self.spike_window_sec),
+            rate_threshold=float(self.spike_rate_threshold),
+            min_seconds_between_clusters=float(self.min_seconds_between_spike_clusters),
+            spike_min_poses=int(self.spike_min_poses),
+        )
+
+    def _snapshot(self) -> list[tuple[Odometry, PoseStamped]]:
+        with self._data_lock:
+            return list(self._synchronized_data)
+
+    def _get_camera_to_odom(
+        self, snapshot: list[tuple[Odometry, PoseStamped]]
+    ) -> Optional[TransformStamped]:
+        return (
+            self._camera_to_odom_transform
+            if self._ensure_camera_to_odom(snapshot)
+            else None
+        )
 
     def _cluster_params(self) -> ClusterParams:
         return ClusterParams(
@@ -383,13 +401,7 @@ class ClusterPosesServiceNode(Node):
         with self._data_lock:
             self._synchronized_data = []
         self._camera_to_odom_transform = None
-        self._spike_detector = SpikeDetector(
-            window_sec=float(self.spike_window_sec),
-            rate_threshold=float(self.spike_rate_threshold),
-        )
-        self._spike_throttle = ThrottledTrigger(
-            min_interval_sec=float(self.min_seconds_between_spike_clusters)
-        )
+        self._spike_monitor = self._build_spike_monitor()
 
         self._channel = GoalSynchronizer(
             self,
@@ -407,36 +419,20 @@ class ClusterPosesServiceNode(Node):
         return response
 
     def _spike_tick(self) -> None:
-        if (
-            not self.enabled
-            or self._spike_detector is None
-            or self._spike_throttle is None
-        ):
+        if not self.enabled or self._spike_monitor is None:
             return
         with self._data_lock:
             poses_now = len(self._synchronized_data)
-        now_sec = self._now_sec()
-        reading = self._spike_detector.update(now_sec, poses_now)
+        reading = self._spike_monitor.tick(
+            now_sec=self._now_sec(),
+            poses_now=poses_now,
+            snapshot_fn=self._snapshot,
+            get_tf_fn=self._get_camera_to_odom,
+            params=self._cluster_params(),
+        )
         self.get_logger().info(
             f"Spike tick: {poses_now} poses, rate={reading.rate:.2f}"
         )
-
-        outcome = None
-        snapshot_len = poses_now
-        if (
-            reading.is_spike
-            and poses_now >= int(self.spike_min_poses)
-            and self._spike_throttle.test(now_sec)
-        ):
-            with self._data_lock:
-                snapshot = list(self._synchronized_data)
-            snapshot_len = len(snapshot)
-            if self._ensure_camera_to_odom(snapshot):
-                outcome, _ = transform_and_cluster(
-                    snapshot,
-                    self._camera_to_odom_transform,
-                    self._cluster_params(),
-                )
 
         msg = ClusterSpikeStatus()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -444,8 +440,8 @@ class ClusterPosesServiceNode(Node):
             msg,
             spike_detected=reading.is_spike,
             detection_rate=reading.rate,
-            outcome=outcome,
-            total_poses=snapshot_len,
+            outcome=self._spike_monitor.cached_outcome,
+            total_poses=self._spike_monitor.cached_snapshot_len,
             primary_metric=int(self.primary_confidence_metric),
         )
         self.spike_status_publisher.publish(msg)

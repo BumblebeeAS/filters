@@ -32,12 +32,12 @@ from tf2_msgs.msg import TFMessage
 from bb_filters.utils.goal_sync import GoalSynchronizer
 from bb_filters.utils.pipeline import (
     ClusterParams,
+    SpikeClusterMonitor,
     fill_spike_status,
     lookup_camera_to_odom,
     select_primary_confidence,
     transform_and_cluster,
 )
-from bb_filters.utils.spike import SpikeDetector, ThrottledTrigger
 
 
 def seconds_to_duration(seconds: float) -> Duration:
@@ -86,8 +86,7 @@ class ClusterPosesNode(Node):
         self._data_lock = threading.Lock()
         self._camera_to_odom_transform: TransformStamped | None = None
         self._channel: GoalSynchronizer | None = None
-        self._spike_detector: SpikeDetector | None = None
-        self._spike_throttle: ThrottledTrigger | None = None
+        self._spike_monitor: SpikeClusterMonitor | None = None
 
         # Declare parameters
         output_pose_array_topic = (
@@ -212,12 +211,11 @@ class ClusterPosesNode(Node):
             min_samples=int(goal.min_samples),
             cluster_selection_epsilon=float(goal.cluster_selection_epsilon),
         )
-        self._spike_detector = SpikeDetector(
+        self._spike_monitor = SpikeClusterMonitor(
             window_sec=float(goal.spike_window_sec),
             rate_threshold=float(goal.spike_rate_threshold),
-        )
-        self._spike_throttle = ThrottledTrigger(
-            min_interval_sec=float(goal.min_seconds_between_spike_clusters)
+            min_seconds_between_clusters=float(goal.min_seconds_between_spike_clusters),
+            spike_min_poses=int(goal.spike_min_poses),
         )
 
         try:
@@ -241,6 +239,17 @@ class ClusterPosesNode(Node):
             collection_start_time = self.get_clock().now()
             collection_duration = seconds_to_duration(goal.collection_duration)
 
+            def _snapshot_fn():
+                with self._data_lock:
+                    return list(self._synchronized_data)
+
+            def _get_tf_fn(snapshot):
+                return (
+                    self._camera_to_odom_transform
+                    if self._ensure_camera_to_odom(snapshot)
+                    else None
+                )
+
             while rclpy.ok():
                 elapsed_time = self.get_clock().now() - collection_start_time
                 if elapsed_time >= collection_duration:
@@ -263,32 +272,18 @@ class ClusterPosesNode(Node):
                 )
                 goal_handle.publish_feedback(feedback_msg)
 
-                # Spike detection + optional partial cluster
-                now_sec = self._now_sec()
-                reading = self._spike_detector.update(now_sec, poses_now)
-
-                outcome = None
-                snapshot_len = poses_now
-                if (
-                    reading.is_spike
-                    and poses_now >= int(goal.spike_min_poses)
-                    and self._spike_throttle.test(now_sec)
-                ):
-                    with self._data_lock:
-                        snapshot = list(self._synchronized_data)
-                    snapshot_len = len(snapshot)
-                    if self._ensure_camera_to_odom(snapshot):
-                        outcome, _ = transform_and_cluster(
-                            snapshot,
-                            self._camera_to_odom_transform,
-                            cluster_params,
-                        )
-
+                reading = self._spike_monitor.tick(
+                    now_sec=self._now_sec(),
+                    poses_now=poses_now,
+                    snapshot_fn=_snapshot_fn,
+                    get_tf_fn=_get_tf_fn,
+                    params=cluster_params,
+                )
                 self._publish_spike_status(
                     spike=reading.is_spike,
                     rate=reading.rate,
-                    outcome=outcome,
-                    total_poses=snapshot_len,
+                    outcome=self._spike_monitor.cached_outcome,
+                    total_poses=self._spike_monitor.cached_snapshot_len,
                     primary_metric=int(goal.primary_confidence_metric),
                     stamp_header=None,
                 )
