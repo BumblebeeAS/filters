@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
 import threading
-from operator import attrgetter
 
 import rclpy
 import tf2_ros
-from bb_filters.utils.goal_sync import GoalSynchronizer
-from bb_filters.utils.pipeline import (
-    ClusterParams,
-    SpikeClusterMonitor,
-    fill_spike_status,
-    lookup_camera_to_odom,
-    select_primary_confidence,
-    transform_and_cluster,
-)
 from bb_perception_msgs.action import ClusterPosesAction
 from bb_perception_msgs.msg import ClusterSpikeStatus
-from geometry_msgs.msg import (
-    PoseArray,
-    PoseStamped,
-    Quaternion,
-    TransformStamped,
-    Vector3,
-)
+from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.action.server import ServerGoalHandle
@@ -29,20 +13,22 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import (
-    DurabilityPolicy,
-    HistoryPolicy,
-    QoSProfile,
-    ReliabilityPolicy,
-)
 from rclpy.task import Future
 from tf2_msgs.msg import TFMessage
 
-
-def seconds_to_duration(seconds: float) -> Duration:
-    """Convert float seconds to rclpy Duration."""
-    sec_int, sec_frac = divmod(seconds, 1)
-    return Duration(seconds=int(sec_int), nanoseconds=int(round(sec_frac * 1e9)))
+from bb_filters.utils.goal_sync import GoalSynchronizer
+from bb_filters.utils.pipeline import (
+    TF_STATIC_QOS,
+    ClusterParams,
+    SpikeClusterMonitor,
+    fill_spike_status,
+    lookup_camera_to_odom,
+    pose_to_transform_stamped,
+    publish_clustered_results,
+    seconds_to_duration,
+    select_primary_confidence,
+    transform_and_cluster,
+)
 
 
 class ClusterPosesNode(Node):
@@ -52,17 +38,11 @@ class ClusterPosesNode(Node):
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10))
 
         # Subscribe only to /tf_static to avoid processing dynamic TF
-        static_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
         self._tf_static_sub = self.create_subscription(
             TFMessage,
             "/tf_static",
             self._handle_tf_static,
-            qos_profile=static_qos,
+            qos_profile=TF_STATIC_QOS,
         )
 
         # Callback group for action server
@@ -86,6 +66,7 @@ class ClusterPosesNode(Node):
         self._camera_to_odom_transform: TransformStamped | None = None
         self._channel: GoalSynchronizer | None = None
         self._spike_monitor: SpikeClusterMonitor | None = None
+        self._prev_cached_outcome: object = None
 
         # Declare parameters
         output_pose_array_topic = (
@@ -121,6 +102,7 @@ class ClusterPosesNode(Node):
         )
         self._tick_fut: Future = Future()
         self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
+        self._spike_cluster_frame_id = ""
 
         self._tick_timer = self.create_timer(
             1.0 / self.feedback_rate,
@@ -192,6 +174,18 @@ class ClusterPosesNode(Node):
             primary_metric=primary_metric,
         )
         self.spike_status_publisher.publish(msg)
+        if outcome is not None and outcome is not self._prev_cached_outcome:
+            self._broadcast_spike_tf(outcome.avg_pose)
+        self._prev_cached_outcome = outcome
+
+    def _broadcast_spike_tf(self, pose: PoseStamped) -> None:
+        self._static_tf_broadcaster.sendTransform(
+            pose_to_transform_stamped(
+                pose,
+                self._spike_cluster_frame_id,
+                stamp=self.get_clock().now().to_msg(),
+            )
+        )
 
     async def execute_callback(
         self, goal_handle: ServerGoalHandle
@@ -205,6 +199,12 @@ class ClusterPosesNode(Node):
         goal: ClusterPosesAction.Goal = goal_handle.request
         feedback_msg = ClusterPosesAction.Feedback()
 
+        self._spike_cluster_frame_id = (
+            f"{goal.clustered_child_frame_id}/spike"
+            if goal.clustered_child_frame_id
+            else "spike/cluster"
+        )
+
         cluster_params = ClusterParams(
             min_cluster_size=int(goal.min_cluster_size),
             min_samples=int(goal.min_samples),
@@ -216,6 +216,7 @@ class ClusterPosesNode(Node):
             min_seconds_between_clusters=float(goal.min_seconds_between_spike_clusters),
             spike_min_poses=int(goal.spike_min_poses),
         )
+        self._prev_cached_outcome = None
         partial_cluster_max_size = int(goal.partial_cluster_max_size)
 
         try:
@@ -334,8 +335,12 @@ class ClusterPosesNode(Node):
 
             outcome.avg_pose.header = transformed_poses[-1].header
 
-            self._publish_results(
-                outcome.avg_pose, transformed_poses, goal.clustered_child_frame_id
+            publish_clustered_results(
+                self.pose_array_publisher,
+                self._static_tf_broadcaster,
+                outcome.avg_pose,
+                transformed_poses,
+                goal.clustered_child_frame_id,
             )
 
             result = ClusterPosesAction.Result()
@@ -372,26 +377,6 @@ class ClusterPosesNode(Node):
             self._camera_to_odom_transform = None
             self._current_goal_handle = None
             self._tick_timer.cancel()
-
-    def _publish_results(
-        self,
-        avg_pose: PoseStamped,
-        transformed_poses: list[PoseStamped],
-        clustered_child_frame_id: str,
-    ) -> None:
-        pose_array_msg = PoseArray()
-        pose_array_msg.header = avg_pose.header
-        pose_array_msg.poses = [pose.pose for pose in transformed_poses]
-        self.pose_array_publisher.publish(pose_array_msg)
-
-        transform_stamped = TransformStamped()
-        transform_stamped.header = avg_pose.header
-        transform_stamped.child_frame_id = clustered_child_frame_id
-        t = attrgetter("x", "y", "z")(avg_pose.pose.position)
-        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
-        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
-        self._static_tf_broadcaster.sendTransform(transform_stamped)
 
     def _handle_tf_static(self, msg: TFMessage) -> None:
         for transform in msg.transforms:

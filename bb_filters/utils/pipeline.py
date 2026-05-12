@@ -17,9 +17,21 @@ import numpy as np
 import tf2_ros
 from bb_perception_msgs.msg import ClusterSpikeStatus
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import (
+    PoseArray,
+    PoseStamped,
+    Quaternion,
+    TransformStamped,
+    Vector3,
+)
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN  # type: ignore
 
@@ -47,6 +59,56 @@ _CONFIDENCE_KEY_BY_METRIC = {
 def select_primary_confidence(confidence: dict[str, float], metric: int) -> float:
     return confidence.get(
         _CONFIDENCE_KEY_BY_METRIC.get(metric, "mean_probability"), 0.0
+    )
+
+
+def seconds_to_duration(seconds: float) -> Duration:
+    """Convert float seconds to rclpy Duration."""
+    sec_int, sec_frac = divmod(seconds, 1)
+    return Duration(seconds=int(sec_int), nanoseconds=int(round(sec_frac * 1e9)))
+
+
+TF_STATIC_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
+
+
+def pose_to_transform_stamped(
+    pose: PoseStamped, child_frame_id: str, stamp=None
+) -> TransformStamped:
+    """Build a TransformStamped from a PoseStamped. If `stamp` is provided, it
+    overrides the pose's header stamp (frame_id is always taken from the pose).
+    """
+    tf_msg = TransformStamped()
+    tf_msg.header.frame_id = pose.header.frame_id
+    tf_msg.header.stamp = stamp if stamp is not None else pose.header.stamp
+    tf_msg.child_frame_id = child_frame_id
+    p = pose.pose.position
+    q = pose.pose.orientation
+    tf_msg.transform.translation = Vector3(x=p.x, y=p.y, z=p.z)
+    tf_msg.transform.rotation = Quaternion(x=q.x, y=q.y, z=q.z, w=q.w)
+    return tf_msg
+
+
+def publish_clustered_results(
+    pose_array_pub,
+    static_tf_broadcaster,
+    avg_pose: PoseStamped,
+    transformed_poses: list[PoseStamped],
+    clustered_child_frame_id: str,
+) -> None:
+    """Publish the cluster's pose array and broadcast its average pose as a
+    static transform.
+    """
+    pose_array_msg = PoseArray()
+    pose_array_msg.header = avg_pose.header
+    pose_array_msg.poses = [p.pose for p in transformed_poses]
+    pose_array_pub.publish(pose_array_msg)
+    static_tf_broadcaster.sendTransform(
+        pose_to_transform_stamped(avg_pose, clustered_child_frame_id)
     )
 
 

@@ -2,47 +2,32 @@
 from __future__ import annotations
 
 import threading
-from operator import attrgetter
 from typing import Optional
 
 import rclpy
 import tf2_ros
-from bb_filters.utils.goal_sync import GoalSynchronizer
-from bb_filters.utils.pipeline import (
-    ClusterParams,
-    SpikeClusterMonitor,
-    fill_spike_status,
-    lookup_camera_to_odom,
-    transform_and_cluster,
-)
 from bb_perception_msgs.msg import ClusterSpikeStatus
 from bb_perception_msgs.srv import ClusterTfSrv
-from geometry_msgs.msg import (
-    PoseArray,
-    PoseStamped,
-    Quaternion,
-    TransformStamped,
-    Vector3,
-)
+from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import (
-    DurabilityPolicy,
-    HistoryPolicy,
-    QoSProfile,
-    ReliabilityPolicy,
-)
 from tf2_msgs.msg import TFMessage
 
-
-def seconds_to_duration(seconds: float) -> Duration:
-    """Convert float seconds to rclpy Duration."""
-    sec_int, sec_frac = divmod(seconds, 1)
-    return Duration(seconds=int(sec_int), nanoseconds=int(round(sec_frac * 1e9)))
+from bb_filters.utils.goal_sync import GoalSynchronizer
+from bb_filters.utils.pipeline import (
+    TF_STATIC_QOS,
+    ClusterParams,
+    SpikeClusterMonitor,
+    fill_spike_status,
+    lookup_camera_to_odom,
+    pose_to_transform_stamped,
+    publish_clustered_results,
+    transform_and_cluster,
+)
 
 
 class ClusterPosesServiceNode(Node):
@@ -63,7 +48,6 @@ class ClusterPosesServiceNode(Node):
             "min_cluster_size",
             "min_samples",
             "cluster_selection_epsilon",
-            "clustered_child_frame_id",
         }
     )
 
@@ -91,17 +75,11 @@ class ClusterPosesServiceNode(Node):
 
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10))
 
-        static_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
         self._tf_static_sub = self.create_subscription(
             TFMessage,
             "/tf_static",
             self._handle_tf_static,
-            qos_profile=static_qos,
+            qos_profile=TF_STATIC_QOS,
         )
 
         self._service_server = self.create_service(
@@ -128,11 +106,6 @@ class ClusterPosesServiceNode(Node):
         )
         self.pose_stamped_topic = (
             self.declare_parameter("pose_stamped_topic", "/pose")
-            .get_parameter_value()
-            .string_value
-        )
-        self.clustered_child_frame_id = (
-            self.declare_parameter("clustered_child_frame_id", "clustered_pose")
             .get_parameter_value()
             .string_value
         )
@@ -217,9 +190,12 @@ class ClusterPosesServiceNode(Node):
         self._camera_to_odom_transform: Optional[TransformStamped] = None
         self._channel: GoalSynchronizer | None = None
         self._spike_monitor: SpikeClusterMonitor | None = None
+        self._prev_cached_outcome: object = None
         self._spike_timer = self.create_timer(
             1.0 / self.spike_tick_hz, self._spike_tick
         )
+        self._spike_cluster_frame_id = ""
+        self._clustered_child_frame_id = ""
         self._spike_timer.cancel()  # start disabled
 
         self.add_on_set_parameters_callback(self._on_set_parameters)
@@ -282,6 +258,7 @@ class ClusterPosesServiceNode(Node):
                 "spike_min_poses",
             } & pending.keys():
                 self._spike_monitor = self._build_spike_monitor()
+                self._prev_cached_outcome = None
             if "spike_tick_hz" in pending:
                 self._spike_timer.timer_period_ns = int(1e9 / float(self.spike_tick_hz))
                 self._spike_timer.reset()
@@ -383,10 +360,12 @@ class ClusterPosesServiceNode(Node):
                     return response
 
                 outcome.avg_pose.header = transformed_poses[-1].header
-                self._publish_results(
+                publish_clustered_results(
+                    self.pose_array_publisher,
+                    self._static_tf_broadcaster,
                     outcome.avg_pose,
                     transformed_poses,
-                    request.output_child_frame_ids[0],
+                    self._clustered_child_frame_id,
                 )
 
                 response.is_enabled = False
@@ -404,6 +383,8 @@ class ClusterPosesServiceNode(Node):
                     self._synchronized_data = []
                 self._camera_to_odom_transform = None
                 self._spike_timer.cancel()
+                self._spike_cluster_frame_id = ""
+                self._clustered_child_frame_id = ""
 
         if self._channel is not None:
             channel = self._channel
@@ -415,6 +396,13 @@ class ClusterPosesServiceNode(Node):
             self._synchronized_data = []
         self._camera_to_odom_transform = None
         self._spike_monitor = self._build_spike_monitor()
+
+        val = next(iter(request.input_child_frame_ids), None)
+        self._spike_cluster_frame_id = f"{val}/spike" if val else "spike/cluster"
+        val = next(iter(request.output_child_frame_ids), None)
+        self._clustered_child_frame_id = val if val else "unknown/clustered"
+
+        self._prev_cached_outcome = None
 
         self._channel = GoalSynchronizer(
             self,
@@ -458,30 +446,23 @@ class ClusterPosesServiceNode(Node):
             primary_metric=int(self.primary_confidence_metric),
         )
         self.spike_status_publisher.publish(msg)
+        fresh_outcome = self._spike_monitor.cached_outcome
+        if fresh_outcome is not None and fresh_outcome is not self._prev_cached_outcome:
+            self._broadcast_spike_tf(fresh_outcome.avg_pose)
+        self._prev_cached_outcome = fresh_outcome
+
+    def _broadcast_spike_tf(self, pose: PoseStamped) -> None:
+        self._static_tf_broadcaster.sendTransform(
+            pose_to_transform_stamped(
+                pose,
+                self._spike_cluster_frame_id,
+                stamp=self.get_clock().now().to_msg(),
+            )
+        )
 
     def _synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
         with self._data_lock:
             self._synchronized_data.append((odom_msg, pose_msg))
-
-    def _publish_results(
-        self,
-        avg_pose: PoseStamped,
-        transformed_poses: list[PoseStamped],
-        clustered_child_frame_id: str,
-    ) -> None:
-        pose_array_msg = PoseArray()
-        pose_array_msg.header = avg_pose.header
-        pose_array_msg.poses = [pose.pose for pose in transformed_poses]
-        self.pose_array_publisher.publish(pose_array_msg)
-
-        transform_stamped = TransformStamped()
-        transform_stamped.header = avg_pose.header
-        transform_stamped.child_frame_id = clustered_child_frame_id
-        t = attrgetter("x", "y", "z")(avg_pose.pose.position)
-        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
-        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
-        self._static_tf_broadcaster.sendTransform(transform_stamped)
 
     def _handle_tf_static(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
