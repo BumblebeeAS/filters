@@ -7,14 +7,12 @@ from typing import Optional
 import rclpy
 import tf2_ros
 from bb_perception_msgs.msg import ClusterSpikeStatus
-from bb_perception_msgs.srv import ClusterTfSrv
+from bb_perception_msgs.srv import ClusterPosesSrv
 from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
-from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from tf2_msgs.msg import TFMessage
 
 from bb_filters.utils.goal_sync import GoalSynchronizer
@@ -31,44 +29,13 @@ from bb_filters.utils.pipeline import (
 
 
 class ClusterPosesServiceNode(Node):
-    _SPIKE_PARAM_NAMES = frozenset(
-        {
-            "spike_tick_hz",
-            "spike_window_sec",
-            "spike_rate_threshold",
-            "min_seconds_between_spike_clusters",
-            "spike_min_poses",
-            "primary_confidence_metric",
-            "partial_cluster_max_size",
-        }
-    )
-    _CLUSTER_PARAM_NAMES = frozenset(
-        {
-            "min_poses",
-            "min_cluster_size",
-            "min_samples",
-            "cluster_selection_epsilon",
-        }
-    )
+    """Service-triggered pose clustering.
 
-    # Baked into subscribers at service-enable; can only change while idle.
-    _SUB_PARAM_NAMES = frozenset(
-        {
-            "odom_topic",
-            "pose_stamped_topic",
-            "sync_queue_size",
-            "sync_tolerance",
-        }
-    )
-
-    _POSITIVE_FLOAT_PARAMS = frozenset(
-        {"spike_window_sec", "min_seconds_between_spike_clusters", "spike_tick_hz"}
-    )
-    _NON_NEGATIVE_INT_PARAMS = frozenset({"spike_min_poses"})
-    _POSITIVE_INT_PARAMS = frozenset(
-        {"min_poses", "min_cluster_size", "min_samples", "sync_queue_size"}
-    )
-    _NON_NEGATIVE_FLOAT_PARAMS = frozenset({"cluster_selection_epsilon"})
+    Per-call configuration (subscriber topics, clustering params, spike
+    params, frame IDs) is delivered in the `ClusterPosesSrv` request on
+    every `enabled=True` call. Only the publisher topic names are
+    launch-time ROS parameters; everything else flows through the service.
+    """
 
     def __init__(self) -> None:
         super().__init__("cluster_poses_service_node")
@@ -83,12 +50,12 @@ class ClusterPosesServiceNode(Node):
         )
 
         self._service_server = self.create_service(
-            ClusterTfSrv,
+            ClusterPosesSrv,
             "cluster_poses_srv",
             self.cluster_srv_callback,
         )
 
-        # --------------------- Topics and synchronization parameters --------------------
+        # Launch-time ROS parameters: publisher topic names only.
         self.output_pose_array_topic = (
             self.declare_parameter("output_pose_array_topic", "clustered_poses")
             .get_parameter_value()
@@ -99,81 +66,24 @@ class ClusterPosesServiceNode(Node):
             .get_parameter_value()
             .string_value
         )
-        self.odom_topic = (
-            self.declare_parameter("odom_topic", "/odom")
-            .get_parameter_value()
-            .string_value
-        )
-        self.pose_stamped_topic = (
-            self.declare_parameter("pose_stamped_topic", "/pose")
-            .get_parameter_value()
-            .string_value
-        )
-        self.sync_queue_size = (
-            self.declare_parameter("sync_queue_size", 100)
-            .get_parameter_value()
-            .integer_value
-        )
-        self.sync_tolerance = (
-            self.declare_parameter("sync_tolerance", 0.05)
-            .get_parameter_value()
-            .double_value
-        )
 
-        # -------------------- Clustering parameters --------------------
-        self.min_poses = (
-            self.declare_parameter("min_poses", 10).get_parameter_value().integer_value
-        )
-        self.min_cluster_size = (
-            self.declare_parameter("min_cluster_size", 5)
-            .get_parameter_value()
-            .integer_value
-        )
-        self.min_samples = (
-            self.declare_parameter("min_samples", 5).get_parameter_value().integer_value
-        )
-        self.cluster_selection_epsilon = (
-            self.declare_parameter("cluster_selection_epsilon", 0.0)
-            .get_parameter_value()
-            .double_value
-        )
-
-        # -------------------- Spike detection parameters --------------------
-        self.spike_tick_hz = (
-            self.declare_parameter("spike_tick_hz", 10.0)
-            .get_parameter_value()
-            .double_value
-        )
-        self.spike_window_sec = (
-            self.declare_parameter("spike_window_sec", 1.0)
-            .get_parameter_value()
-            .double_value
-        )
-        self.spike_rate_threshold = (
-            self.declare_parameter("spike_rate_threshold", 3.0)
-            .get_parameter_value()
-            .double_value
-        )
-        self.min_seconds_between_spike_clusters = (
-            self.declare_parameter("min_seconds_between_spike_clusters", 0.5)
-            .get_parameter_value()
-            .double_value
-        )
-        self.spike_min_poses = (
-            self.declare_parameter("spike_min_poses", 5)
-            .get_parameter_value()
-            .integer_value
-        )
-        self.primary_confidence_metric = (
-            self.declare_parameter("primary_confidence_metric", 0)
-            .get_parameter_value()
-            .integer_value
-        )
-        self.partial_cluster_max_size = (
-            self.declare_parameter("partial_cluster_max_size", 100)
-            .get_parameter_value()
-            .integer_value
-        )
+        # Per-call configuration. Sentinel values; overwritten on every
+        # enable=True call via `_apply_request_config`.
+        self.odom_topic: str = ""
+        self.pose_stamped_topic: str = ""
+        self.sync_queue_size: int = 100
+        self.sync_tolerance: float = 0.05
+        self.min_poses: int = 10
+        self.min_cluster_size: int = 5
+        self.min_samples: int = 5
+        self.cluster_selection_epsilon: float = 0.0
+        self.spike_tick_hz: float = 10.0
+        self.spike_window_sec: float = 1.0
+        self.spike_rate_threshold: float = 3.0
+        self.min_seconds_between_spike_clusters: float = 0.5
+        self.spike_min_poses: int = 5
+        self.primary_confidence_metric: int = 0
+        self.partial_cluster_max_size: int = 100
 
         self.pose_array_publisher = self.create_publisher(
             PoseArray, self.output_pose_array_topic, 10
@@ -198,80 +108,37 @@ class ClusterPosesServiceNode(Node):
         self._clustered_child_frame_id = ""
         self._spike_timer.cancel()  # start disabled
 
-        self.add_on_set_parameters_callback(self._on_set_parameters)
-
         self.get_logger().info("Cluster Poses Service Node initialized")
 
-    def _on_set_parameters(self, params: list[Parameter]) -> SetParametersResult:
-        # Validate first so we either apply all or none.
-        handled = (
-            self._SPIKE_PARAM_NAMES | self._CLUSTER_PARAM_NAMES | self._SUB_PARAM_NAMES
+    def _apply_request_config(self, request: ClusterPosesSrv.Request) -> None:
+        """Apply per-call configuration from the service request.
+
+        Called on every enable=True. Sentinel-empty strings/zero values are
+        not special-cased — `.srv` defaults are the only fallback.
+        """
+        self.odom_topic = request.odom_topic
+        self.pose_stamped_topic = request.pose_stamped_topic
+        self.sync_queue_size = int(request.sync_queue_size)
+        self.sync_tolerance = float(request.sync_tolerance)
+        self.min_poses = int(request.min_poses)
+        self.min_cluster_size = int(request.min_cluster_size)
+        self.min_samples = int(request.min_samples)
+        self.cluster_selection_epsilon = float(request.cluster_selection_epsilon)
+        self.spike_window_sec = float(request.spike_window_sec)
+        self.spike_rate_threshold = float(request.spike_rate_threshold)
+        self.min_seconds_between_spike_clusters = float(
+            request.min_seconds_between_spike_clusters
         )
-        pending: dict[str, object] = {}
-        for p in params:
-            if p.name not in handled:
-                continue
-            if p.name in self._SUB_PARAM_NAMES and self.enabled:
-                return SetParametersResult(
-                    successful=False,
-                    reason=(
-                        f"{p.name} is baked into subscribers; stop the service "
-                        "(call with enabled=False) before changing it"
-                    ),
-                )
-            value = p.value
-            if p.name == "sync_tolerance" and float(value) <= 0.0:
-                return SetParametersResult(
-                    successful=False, reason="sync_tolerance must be > 0"
-                )
-            if p.name in self._POSITIVE_FLOAT_PARAMS and float(value) <= 0.0:
-                return SetParametersResult(
-                    successful=False, reason=f"{p.name} must be > 0"
-                )
-            if p.name in self._NON_NEGATIVE_INT_PARAMS and int(value) < 0:
-                return SetParametersResult(
-                    successful=False, reason=f"{p.name} must be >= 0"
-                )
-            if p.name in self._POSITIVE_INT_PARAMS and int(value) <= 0:
-                return SetParametersResult(
-                    successful=False, reason=f"{p.name} must be > 0"
-                )
-            if p.name in self._NON_NEGATIVE_FLOAT_PARAMS and float(value) < 0.0:
-                return SetParametersResult(
-                    successful=False, reason=f"{p.name} must be >= 0"
-                )
-            if p.name == "partial_cluster_max_size" and int(value) <= 0:
-                pending[p.name] = int(1e9)
-            pending[p.name] = value
+        self.spike_min_poses = int(request.spike_min_poses)
+        self.primary_confidence_metric = int(request.primary_confidence_metric)
+        # <= 0 means unbounded.
+        partial_max = int(request.partial_cluster_max_size)
+        self.partial_cluster_max_size = partial_max if partial_max > 0 else int(1e9)
 
-        if not pending:
-            return SetParametersResult(successful=True)
-
-        for name, value in pending.items():
-            setattr(self, name, value)
-
-        if self.enabled:
-            if {
-                "spike_window_sec",
-                "spike_rate_threshold",
-                "min_seconds_between_spike_clusters",
-                "spike_min_poses",
-            } & pending.keys():
-                self._spike_monitor = self._build_spike_monitor()
-                self._prev_cached_outcome = None
-            if "spike_tick_hz" in pending:
-                self._spike_timer.timer_period_ns = int(1e9 / float(self.spike_tick_hz))
-                self._spike_timer.reset()
-
-        return SetParametersResult(successful=True)
-
-    def _build_spike_monitor(self) -> SpikeClusterMonitor:
-        return SpikeClusterMonitor(
-            window_sec=float(self.spike_window_sec),
-            rate_threshold=float(self.spike_rate_threshold),
-            min_seconds_between_clusters=float(self.min_seconds_between_spike_clusters),
-            spike_min_poses=int(self.spike_min_poses),
-        )
+        new_tick_hz = float(request.spike_tick_hz)
+        if new_tick_hz > 0.0 and new_tick_hz != self.spike_tick_hz:
+            self.spike_tick_hz = new_tick_hz
+            self._spike_timer.timer_period_ns = int(1e9 / self.spike_tick_hz)
 
     def _snapshot(self) -> list[tuple[Odometry, PoseStamped]]:
         with self._data_lock:
@@ -293,6 +160,14 @@ class ClusterPosesServiceNode(Node):
             cluster_selection_epsilon=float(self.cluster_selection_epsilon),
         )
 
+    def _build_spike_monitor(self) -> SpikeClusterMonitor:
+        return SpikeClusterMonitor(
+            window_sec=float(self.spike_window_sec),
+            rate_threshold=float(self.spike_rate_threshold),
+            min_seconds_between_clusters=float(self.min_seconds_between_spike_clusters),
+            spike_min_poses=int(self.spike_min_poses),
+        )
+
     def _now_sec(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
@@ -308,11 +183,11 @@ class ClusterPosesServiceNode(Node):
         return True
 
     def cluster_srv_callback(
-        self, request: ClusterTfSrv.Request, response: ClusterTfSrv.Response
-    ) -> ClusterTfSrv.Response:
+        self, request: ClusterPosesSrv.Request, response: ClusterPosesSrv.Response
+    ) -> ClusterPosesSrv.Response:
         """Service callback.
 
-        - request.enabled == True: start accumulating
+        - request.enabled == True: apply config, start accumulating
         - request.enabled == False: stop + cluster + publish
         """
 
@@ -320,7 +195,8 @@ class ClusterPosesServiceNode(Node):
             if not self.enabled:
                 response.is_enabled = False
                 response.is_cluster_success = False
-                response.cluster_spread = 0.0
+                response.poses_in_cluster = 0
+                response.total_poses_collected = 0
                 return response
 
             try:
@@ -333,18 +209,19 @@ class ClusterPosesServiceNode(Node):
                 with self._data_lock:
                     final_snapshot = list(self._synchronized_data)
                 total_collected = len(final_snapshot)
+                response.total_poses_collected = total_collected
 
                 if total_collected < int(self.min_poses):
                     response.is_enabled = False
                     response.is_cluster_success = False
-                    response.cluster_spread = 0.0
+                    response.poses_in_cluster = 0
                     return response
 
                 if not self._ensure_camera_to_odom(final_snapshot):
                     self.get_logger().error("Failed to lookup camera->odom transform")
                     response.is_enabled = False
                     response.is_cluster_success = False
-                    response.cluster_spread = 0.0
+                    response.poses_in_cluster = 0
                     return response
 
                 outcome, transformed_poses = transform_and_cluster(
@@ -356,7 +233,7 @@ class ClusterPosesServiceNode(Node):
                     self.get_logger().error("No clusters found")
                     response.is_enabled = False
                     response.is_cluster_success = False
-                    response.cluster_spread = 0.0
+                    response.poses_in_cluster = 0
                     return response
 
                 outcome.avg_pose.header = transformed_poses[-1].header
@@ -370,8 +247,7 @@ class ClusterPosesServiceNode(Node):
 
                 response.is_enabled = False
                 response.is_cluster_success = True
-                # Reuse cluster_spread to report the number of poses in the cluster.
-                response.cluster_spread = float(outcome.num_in_cluster)
+                response.poses_in_cluster = int(outcome.num_in_cluster)
                 return response
             finally:
                 # Tear down the per-goal channel. shutdown() removes the child
@@ -390,17 +266,22 @@ class ClusterPosesServiceNode(Node):
             channel = self._channel
             self._channel = None
             channel.shutdown(join_timeout=2)
-        # Start accumulating
+
+        # Apply request configuration, then start accumulating.
+        self._apply_request_config(request)
+
         self._spike_timer.reset()
         with self._data_lock:
             self._synchronized_data = []
         self._camera_to_odom_transform = None
         self._spike_monitor = self._build_spike_monitor()
 
-        val = next(iter(request.input_child_frame_ids), None)
-        self._spike_cluster_frame_id = f"{val}/spike" if val else "spike/cluster"
-        val = next(iter(request.output_child_frame_ids), None)
-        self._clustered_child_frame_id = val if val else "unknown/clustered"
+        self._spike_cluster_frame_id = (
+            request.spike_cluster_frame_id or "spike/cluster"
+        )
+        self._clustered_child_frame_id = (
+            request.clustered_child_frame_id or "unknown/clustered"
+        )
 
         self._prev_cached_outcome = None
 
@@ -416,7 +297,8 @@ class ClusterPosesServiceNode(Node):
         self.enabled = True
         response.is_enabled = True
         response.is_cluster_success = False
-        response.cluster_spread = 0.0
+        response.poses_in_cluster = 0
+        response.total_poses_collected = 0
         return response
 
     def _spike_tick(self) -> None:
