@@ -163,6 +163,90 @@ def cluster_transformed_poses(
     )
 
 
+def cluster_top_k_transformed_poses(
+    transformed_poses: list[PoseStamped],
+    params: ClusterParams,
+    k: int,
+) -> list[tuple[ClusterOutcome, list[PoseStamped]]]:
+    """Cluster a list of poses, return up to `k` largest clusters in
+    descending size order. Each entry is the cluster's outcome paired with
+    its member poses (in original input order).
+
+    Returns an empty list if there are insufficient poses, k <= 0, or
+    HDBSCAN finds no non-noise clusters.
+    """
+    if k <= 0:
+        return []
+    if len(transformed_poses) < max(params.min_cluster_size, params.min_samples):
+        return []
+
+    hdbscan = HDBSCAN(
+        min_cluster_size=params.min_cluster_size,
+        min_samples=params.min_samples,
+        cluster_selection_epsilon=params.cluster_selection_epsilon,
+        allow_single_cluster=True,
+        store_centers="centroid",
+    )
+    positions = np.array(
+        [attrgetter("x", "y", "z")(pose.pose.position) for pose in transformed_poses]
+    )
+    hdbscan.fit(positions)
+
+    labels = np.array(hdbscan.labels_)
+    non_noise = labels[labels >= 0]
+    if len(non_noise) == 0:
+        return []
+
+    unique_labels, counts = np.unique(non_noise, return_counts=True)
+    order = np.argsort(-counts)
+    top_labels = unique_labels[order][:k]
+
+    probabilities = getattr(hdbscan, "probabilities_", None)
+    persistence_arr = getattr(hdbscan, "cluster_persistence_", None)
+    total_points = len(positions)
+
+    results: list[tuple[ClusterOutcome, list[PoseStamped]]] = []
+    for label in top_labels:
+        idxs = np.where(labels == int(label))[0]
+        if len(idxs) == 0:
+            continue
+
+        if probabilities is not None and len(probabilities) == len(labels):
+            mean_probability = float(np.mean(probabilities[idxs]))
+        else:
+            mean_probability = 0.0
+        if persistence_arr is not None and int(label) < len(persistence_arr):
+            cluster_persistence = float(persistence_arr[int(label)])
+        else:
+            cluster_persistence = 0.0
+        inlier_ratio = float(len(idxs) / total_points)
+        cluster_positions = positions[idxs]
+        centroid = cluster_positions.mean(axis=0)
+        position_std = float(
+            np.mean(np.linalg.norm(cluster_positions - centroid, axis=1))
+        )
+        confidence = {
+            "mean_probability": mean_probability,
+            "cluster_persistence": cluster_persistence,
+            "inlier_ratio": inlier_ratio,
+            "position_std": position_std,
+        }
+
+        cluster_poses = [transformed_poses[i] for i in idxs]
+        avg_pose = get_average_pose([p.pose for p in cluster_poses])
+        avg_stamped = PoseStamped()
+        avg_stamped.pose = avg_pose
+        avg_stamped.header = cluster_poses[0].header
+
+        outcome = ClusterOutcome(
+            avg_pose=avg_stamped,
+            num_in_cluster=len(idxs),
+            confidence=confidence,
+        )
+        results.append((outcome, cluster_poses))
+    return results
+
+
 def lookup_camera_to_odom(
     tf_buffer: tf2_ros.Buffer,
     snapshot: list[tuple[Odometry, PoseStamped]],
@@ -207,6 +291,26 @@ def transform_and_cluster(
         transform_pose_to_odom(odom, pose, camera_to_odom) for odom, pose in snapshot
     ]
     return cluster_transformed_poses(transformed, params), transformed
+
+
+def transform_and_cluster_top_k(
+    snapshot: list[tuple[Odometry, PoseStamped]],
+    camera_to_odom: TransformStamped,
+    params: ClusterParams,
+    k: int,
+) -> tuple[list[tuple[ClusterOutcome, list[PoseStamped]]], list[PoseStamped]]:
+    """Transform a snapshot into the odom frame and return its top-`k` clusters.
+
+    Returns (results, transformed_poses) where `results` is a list of
+    (outcome, member_poses) tuples in descending cluster-size order, and
+    `transformed_poses` is the full transformed snapshot.
+    """
+    if not snapshot:
+        return [], []
+    transformed = [
+        transform_pose_to_odom(odom, pose, camera_to_odom) for odom, pose in snapshot
+    ]
+    return cluster_top_k_transformed_poses(transformed, params, k), transformed
 
 
 def fill_spike_status(

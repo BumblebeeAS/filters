@@ -6,15 +6,6 @@ from typing import Optional
 
 import rclpy
 import tf2_ros
-from bb_perception_msgs.msg import ClusterSpikeStatus
-from bb_perception_msgs.srv import ClusterPosesSrv
-from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
-from nav_msgs.msg import Odometry
-from rclpy.duration import Duration
-from rclpy.executors import SingleThreadedExecutor
-from rclpy.node import Node
-from tf2_msgs.msg import TFMessage
-
 from bb_filters.utils.goal_sync import GoalSynchronizer
 from bb_filters.utils.pipeline import (
     TF_STATIC_QOS,
@@ -24,8 +15,16 @@ from bb_filters.utils.pipeline import (
     lookup_camera_to_odom,
     pose_to_transform_stamped,
     publish_clustered_results,
-    transform_and_cluster,
+    transform_and_cluster_top_k,
 )
+from bb_perception_msgs.msg import ClusterSpikeStatus
+from bb_perception_msgs.srv import ClusterPosesSrv
+from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
+from nav_msgs.msg import Odometry
+from rclpy.duration import Duration
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from tf2_msgs.msg import TFMessage
 
 
 class ClusterPosesServiceNode(Node):
@@ -74,6 +73,7 @@ class ClusterPosesServiceNode(Node):
         self.sync_queue_size: int = 100
         self.sync_tolerance: float = 0.05
         self.min_poses: int = 10
+        self.cluster_num: int = 1
         self.min_cluster_size: int = 5
         self.min_samples: int = 5
         self.cluster_selection_epsilon: float = 0.0
@@ -121,6 +121,8 @@ class ClusterPosesServiceNode(Node):
         self.sync_queue_size = int(request.sync_queue_size)
         self.sync_tolerance = float(request.sync_tolerance)
         self.min_poses = int(request.min_poses)
+        # Number of top (largest) clusters to extract and broadcast.
+        self.cluster_num = max(1, int(request.cluster_num))
         self.min_cluster_size = int(request.min_cluster_size)
         self.min_samples = int(request.min_samples)
         self.cluster_selection_epsilon = float(request.cluster_selection_epsilon)
@@ -224,30 +226,47 @@ class ClusterPosesServiceNode(Node):
                     response.poses_in_cluster = 0
                     return response
 
-                outcome, transformed_poses = transform_and_cluster(
+                results, transformed_poses = transform_and_cluster_top_k(
                     final_snapshot,
                     self._camera_to_odom_transform,
                     self._cluster_params(),
+                    int(self.cluster_num),
                 )
-                if outcome is None:
+                if not results:
                     self.get_logger().error("No clusters found")
                     response.is_enabled = False
                     response.is_cluster_success = False
                     response.poses_in_cluster = 0
                     return response
 
-                outcome.avg_pose.header = transformed_poses[-1].header
+                # Existing behaviour: publish the pose array and broadcast the
+                # largest cluster under the unsuffixed `clustered_child_frame_id`.
+                primary_outcome, _ = results[0]
+                primary_outcome.avg_pose.header = transformed_poses[-1].header
                 publish_clustered_results(
                     self.pose_array_publisher,
                     self._static_tf_broadcaster,
-                    outcome.avg_pose,
+                    primary_outcome.avg_pose,
                     transformed_poses,
                     self._clustered_child_frame_id,
                 )
 
+                # Add-on: also broadcast each of the top-K clusters under
+                # `<clustered_child_frame_id>/<i>` (i=0 is the largest, mirroring
+                # the unsuffixed transform above).
+                self._static_tf_broadcaster.sendTransform(
+                    [
+                        pose_to_transform_stamped(
+                            self._stamped_avg_pose(outcome, transformed_poses),
+                            f"{self._clustered_child_frame_id}/{i}",
+                        )
+                        for i, (outcome, _members) in enumerate(results)
+                    ]
+                )
+
                 response.is_enabled = False
                 response.is_cluster_success = True
-                response.poses_in_cluster = int(outcome.num_in_cluster)
+                response.poses_in_cluster = int(primary_outcome.num_in_cluster)
                 return response
             finally:
                 # Tear down the per-goal channel. shutdown() removes the child
@@ -276,9 +295,7 @@ class ClusterPosesServiceNode(Node):
         self._camera_to_odom_transform = None
         self._spike_monitor = self._build_spike_monitor()
 
-        self._spike_cluster_frame_id = (
-            request.spike_cluster_frame_id or "spike/cluster"
-        )
+        self._spike_cluster_frame_id = request.spike_cluster_frame_id or "spike/cluster"
         self._clustered_child_frame_id = (
             request.clustered_child_frame_id or "unknown/clustered"
         )
@@ -332,6 +349,14 @@ class ClusterPosesServiceNode(Node):
         if fresh_outcome is not None and fresh_outcome is not self._prev_cached_outcome:
             self._broadcast_spike_tf(fresh_outcome.avg_pose)
         self._prev_cached_outcome = fresh_outcome
+
+    @staticmethod
+    def _stamped_avg_pose(outcome, transformed_poses: list[PoseStamped]) -> PoseStamped:
+        """Stamp a cluster's average pose with the final transformed header so
+        all broadcast transforms share a consistent stamp/frame.
+        """
+        outcome.avg_pose.header = transformed_poses[-1].header
+        return outcome.avg_pose
 
     def _broadcast_spike_tf(self, pose: PoseStamped) -> None:
         self._static_tf_broadcaster.sendTransform(

@@ -3,19 +3,6 @@ import threading
 
 import rclpy
 import tf2_ros
-from bb_perception_msgs.action import ClusterPosesAction
-from bb_perception_msgs.msg import ClusterSpikeStatus
-from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
-from nav_msgs.msg import Odometry
-from rclpy.action import ActionServer, CancelResponse, GoalResponse
-from rclpy.action.server import ServerGoalHandle
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.duration import Duration
-from rclpy.executors import SingleThreadedExecutor
-from rclpy.node import Node
-from rclpy.task import Future
-from tf2_msgs.msg import TFMessage
-
 from bb_filters.utils.goal_sync import GoalSynchronizer
 from bb_filters.utils.pipeline import (
     TF_STATIC_QOS,
@@ -29,6 +16,18 @@ from bb_filters.utils.pipeline import (
     select_primary_confidence,
     transform_and_cluster,
 )
+from bb_perception_msgs.action import ClusterPosesAction
+from bb_perception_msgs.msg import ClusterSpikeStatus
+from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
+from nav_msgs.msg import Odometry
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.action.server import ServerGoalHandle
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from rclpy.task import Future
+from tf2_msgs.msg import TFMessage
 
 
 class ClusterPosesNode(Node):
@@ -83,7 +82,7 @@ class ClusterPosesNode(Node):
             .string_value
         )
         self.sync_queue_size = (
-            self.declare_parameter("sync_queue_size", 100)
+            self.declare_parameter("sync_queue_size", 1000)
             .get_parameter_value()
             .integer_value
         )
