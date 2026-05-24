@@ -34,12 +34,6 @@ from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
 
-CONFIDENCE_KEY_BY_METRIC = {
-    0: "mean_probability",
-    1: "inlier_ratio",
-    2: "position_std",
-}
-
 
 def seconds_to_duration(seconds: float) -> Duration:
     """Convert float seconds to rclpy Duration."""
@@ -275,11 +269,6 @@ class ClusterPosesNode(Node):
             result.mean_probability = cluster_result.mean_probability
             result.inlier_ratio = cluster_result.inlier_ratio
             result.position_std = cluster_result.position_std
-            result.primary_confidence = getattr(
-                cluster_result,
-                CONFIDENCE_KEY_BY_METRIC.get(int(goal.primary_confidence_metric), ""),
-                0.0,
-            )
 
             self.get_logger().info(
                 f"Clustering complete: {result.poses_in_cluster}/{result.total_poses_collected} poses in cluster"
