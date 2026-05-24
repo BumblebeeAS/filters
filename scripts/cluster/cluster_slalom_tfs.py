@@ -3,7 +3,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import Bounds, minimize
 
-from bb_filters.utils.cluster import assign_to_centroids
+from bb_filters.clustering.cluster import assign_to_centroids
 
 
 def get_slalom_centroids(
