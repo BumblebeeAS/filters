@@ -4,7 +4,7 @@ from operator import attrgetter
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.clustering.cluster import get_idxs_and_confidence_in_largest_cluster
+from bb_filters.clustering.cluster import ClusterResult, get_largest_cluster
 from bb_filters.clustering.pose import get_average_pose
 from bb_perception_msgs.action import ClusterPosesAction
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
@@ -36,9 +36,8 @@ from tf2_msgs.msg import TFMessage
 
 CONFIDENCE_KEY_BY_METRIC = {
     0: "mean_probability",
-    1: "cluster_persistence",
-    2: "inlier_ratio",
-    3: "position_std",
+    1: "inlier_ratio",
+    2: "position_std",
 }
 
 
@@ -253,9 +252,7 @@ class ClusterPosesNode(Node):
 
             self.get_logger().info("Trying to cluster...")
             # Cluster the transformed poses
-            avg_pose, num_poses_in_cluster, confidence = self._cluster_poses(
-                transformed_poses, goal
-            )
+            avg_pose, cluster_result = self._cluster_poses(transformed_poses, goal)
             if avg_pose is None:
                 goal_handle.abort()
                 self._cleanup_subscribers()
@@ -274,12 +271,12 @@ class ClusterPosesNode(Node):
             result = ClusterPosesAction.Result()
             result.clustered_pose = avg_pose
             result.total_poses_collected = total_collected
-            result.poses_in_cluster = num_poses_in_cluster
-            result.mean_probability = confidence["mean_probability"]
-            result.cluster_persistence = confidence["cluster_persistence"]
-            result.inlier_ratio = confidence["inlier_ratio"]
-            result.position_std = confidence["position_std"]
-            result.primary_confidence = confidence.get(
+            result.poses_in_cluster = len(cluster_result.idxs)
+            result.mean_probability = cluster_result.mean_probability
+            result.inlier_ratio = cluster_result.inlier_ratio
+            result.position_std = cluster_result.position_std
+            result.primary_confidence = getattr(
+                cluster_result,
                 CONFIDENCE_KEY_BY_METRIC.get(int(goal.primary_confidence_metric), ""),
                 0.0,
             )
@@ -300,7 +297,7 @@ class ClusterPosesNode(Node):
 
     def _cluster_poses(
         self, transformed_poses: list[PoseStamped], goal: ClusterPosesAction.Goal
-    ) -> tuple[PoseStamped | None, int, dict[str, float]]:
+    ) -> tuple[PoseStamped | None, ClusterResult]:
         """Cluster transformed poses using HDBSCAN and return the average pose.
 
         Args:
@@ -313,7 +310,7 @@ class ClusterPosesNode(Node):
         # Check if there are enough poses for clustering
         if len(transformed_poses) < max(goal.min_cluster_size, goal.min_samples):
             self.get_logger().error("Not enough poses for clustering")
-            return None, 0, self._empty_confidence()
+            return None, ClusterResult.empty()
 
         # Create HDBSCAN clustering instance
         hdbscan = HDBSCAN(
@@ -331,31 +328,20 @@ class ClusterPosesNode(Node):
                 for pose in transformed_poses
             ]
         )
-        filtered_idxs, confidence = get_idxs_and_confidence_in_largest_cluster(
-            hdbscan, positions
-        )
+        cluster_result = get_largest_cluster(hdbscan, positions)
 
-        if len(filtered_idxs) == 0:
+        if len(cluster_result.idxs) == 0:
             self.get_logger().error("No clusters found")
-            return None, 0, confidence
+            return None, cluster_result
 
         # Get average pose from filtered poses
-        filtered_pose_msgs = [transformed_poses[i].pose for i in filtered_idxs]
+        filtered_pose_msgs = [transformed_poses[i].pose for i in cluster_result.idxs]
         avg_pose = get_average_pose(filtered_pose_msgs)
         avg_pose_stamped = PoseStamped()
         avg_pose_stamped.pose = avg_pose
-        avg_pose_stamped.header = transformed_poses[filtered_idxs[0]].header
+        avg_pose_stamped.header = transformed_poses[cluster_result.idxs[0]].header
 
-        return avg_pose_stamped, len(filtered_idxs), confidence
-
-    @staticmethod
-    def _empty_confidence() -> dict[str, float]:
-        return {
-            "mean_probability": 0.0,
-            "cluster_persistence": 0.0,
-            "inlier_ratio": 0.0,
-            "position_std": 0.0,
-        }
+        return avg_pose_stamped, cluster_result
 
     def _publish_results(
         self,
