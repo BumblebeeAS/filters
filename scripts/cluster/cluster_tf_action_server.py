@@ -6,6 +6,7 @@ import rclpy
 import tf2_ros
 from bb_filters.clustering.cluster import (
     average_transforms,
+    get_largest_cluster,
     get_position_from_transform,
     tf_to_pose,
 )
@@ -80,27 +81,6 @@ class ClusterTfActionServer(Node):
     def handle_accepted(self, goal_handle):
         self.get_logger().info("Goal accepted, executing callback")
         goal_handle.execute()
-
-    @staticmethod
-    def _get_idxs_in_largest_cluster(
-        hdbscan: HDBSCAN, positions: np.ndarray
-    ) -> np.ndarray:
-        """Returns an array of indices belonging to the largest, non-noise cluster."""
-        hdbscan.fit(positions)
-
-        labels = np.array(hdbscan.labels_)
-        non_noise_labels = labels[labels >= 0]
-
-        if len(non_noise_labels) == 0:
-            return np.array([])
-
-        unique_labels, unique_label_counts = np.unique(
-            non_noise_labels, return_counts=True
-        )
-        largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
-        largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
-
-        return largest_cluster_idxs
 
     async def execute_callback(self, goal_handle):
         goal: ClusterTfAction.Goal = goal_handle.request
@@ -231,7 +211,7 @@ class ClusterTfActionServer(Node):
                 store_centers="centroid",
             )
 
-            filtered_idxs = self._get_idxs_in_largest_cluster(hdbscan, positions)
+            filtered_idxs = get_largest_cluster(hdbscan, positions).idxs
             if len(filtered_idxs) == 0:
                 self.get_logger().warn(
                     "No clusters found, cannot create clustered transform."
