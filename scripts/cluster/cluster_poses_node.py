@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
 from operator import attrgetter
-import threading
 
 import numpy as np
 import rclpy
@@ -43,13 +40,6 @@ CONFIDENCE_KEY_BY_METRIC = {
     3: "position_std",
 }
 
-TF_STATIC_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    history=HistoryPolicy.KEEP_LAST,
-    depth=10,
-)
-
 
 def seconds_to_duration(seconds: float) -> Duration:
     """Convert float seconds to rclpy Duration."""
@@ -78,28 +68,28 @@ class ClusterPosesNode(Node):
             qos_profile=static_qos,
         )
 
+        self._action_server = ActionServer(
+            self,
+            ClusterPosesAction,
+            "cluster_poses",
+            execute_callback=self._execute_callback,
+            goal_callback=self._goal_callback,
+        )
+
+        # State for current goal execution
         self._action_running = False
         self._goal_handle: ServerGoalHandle | None = None
         self._result_future: Future | None = None
         self._goal_phase = "idle"
 
         self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
-        self._data_lock = threading.Lock()
         self._camera_to_odom_transform: TransformStamped | None = None
-        self._odom_sub: Subscriber | None = None
-        self._pose_sub: Subscriber | None = None
-        self._sync: ApproximateTimeSynchronizer | None = None
+        self._odom_subscriber: Subscriber | None = None
+        self._pose_subscriber: Subscriber | None = None
+        self._time_synchronizer: ApproximateTimeSynchronizer | None = None
 
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = Duration(seconds=0)
-
-        self._action_server = ActionServer(
-            self,
-            ClusterPosesAction,
-            "cluster_poses",
-            execute_callback=self._execute_goal,
-            goal_callback=self._goal_callback,
-        )
 
         # Declare parameters
         output_pose_array_topic = (
@@ -136,21 +126,12 @@ class ClusterPosesNode(Node):
 
         self.get_logger().info("Cluster Poses Action Server initialized")
 
-    def _p(self, name: str, default):
-        value = self.get_parameter_or(name, default)
-        return getattr(value, "value", value)
-
-    def _snapshot(self) -> list[tuple[Odometry, PoseStamped]]:
-        with self._data_lock:
-            return self._synchronized_data
-
     def _handle_tf_static(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
             self._tf_buffer.set_transform_static(transform, "default_authority")
 
-    def _on_synchronized(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
-        with self._data_lock:
-            self._synchronized_data.append((odom_msg, pose_msg))
+    def _synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
+        self._synchronized_data.append((odom_msg, pose_msg))
 
     def _ensure_camera_to_odom(
         self,
@@ -200,50 +181,51 @@ class ClusterPosesNode(Node):
         self._result_future = None
         self._goal_phase = "idle"
         self._camera_to_odom_transform = None
-        with self._data_lock:
-            self._synchronized_data = []
+        self._synchronized_data = []
 
     def _start_subscribers(self, goal: ClusterPosesAction.Goal) -> None:
-        self._odom_sub = Subscriber(
+        self._odom_subscriber = Subscriber(
             self,
             Odometry,
             goal.odom_topic,
             qos_profile=qos_profile_sensor_data,
         )
-        self._pose_sub = Subscriber(
+        self._pose_subscriber = Subscriber(
             self,
             PoseStamped,
             goal.pose_stamped_topic,
             qos_profile=qos_profile_sensor_data,
         )
-        self._sync = ApproximateTimeSynchronizer(
-            [self._odom_sub, self._pose_sub],
+        self._time_synchronizer = ApproximateTimeSynchronizer(
+            [self._odom_subscriber, self._pose_subscriber],
             queue_size=self._sync_queue_size,
             slop=float(goal.sync_tolerance),
         )
-        self._sync.registerCallback(self._on_synchronized)
+        self._time_synchronizer.registerCallback(self._synchronized_callback)
 
-    def _stop_subscribers(self) -> None:
-        for sub in (self._odom_sub, self._pose_sub):
+    def _cleanup_subscribers(self) -> None:
+        for sub in (self._odom_subscriber, self._pose_subscriber):
             if sub is None:
                 continue
             try:
                 self.destroy_subscription(sub.sub)
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(f"Subscriber cleanup failed: {exc}")
-        self._odom_sub = None
-        self._pose_sub = None
-        self._sync = None
+        self._odom_subscriber = None
+        self._pose_subscriber = None
+        self._time_synchronizer = None
 
-    def _goal_callback(self, _goal_request: ClusterPosesAction.Goal) -> GoalResponse:
+    def _goal_callback(self, goal_request: ClusterPosesAction.Goal) -> GoalResponse:
+        self.get_logger().info("Received new goal request")
         if self._action_running:
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
-    async def _execute_goal(
+    async def _execute_callback(
         self,
         goal_handle: ServerGoalHandle,
     ) -> ClusterPosesAction.Result:
+        self.get_logger().info("Executing goal...")
         self._action_running = True
         self._goal_handle = goal_handle
         self._result_future = Future()
@@ -252,7 +234,7 @@ class ClusterPosesNode(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"Failed to start cluster goal: {exc}")
             goal_handle.abort()
-            self._stop_subscribers()
+            self._cleanup_subscribers()
             self._action_running = False
             self._reset_goal_state()
             return self._empty_result()
@@ -265,8 +247,7 @@ class ClusterPosesNode(Node):
         )
 
         self._camera_to_odom_transform = None
-        with self._data_lock:
-            self._synchronized_data = []
+        self._synchronized_data = []
 
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = seconds_to_duration(float(goal.collection_duration))
@@ -299,7 +280,7 @@ class ClusterPosesNode(Node):
             self._goal_phase = "finalizing"
             return
 
-        poses_now = len(self._snapshot())
+        poses_now = len(self._synchronized_data)
         duration_ns = max(self._collection_duration.nanoseconds, 1)
 
         feedback = ClusterPosesAction.Feedback()
@@ -311,8 +292,8 @@ class ClusterPosesNode(Node):
     def _finalize_goal(self, goal_handle: ServerGoalHandle) -> None:
         goal: ClusterPosesAction.Goal = goal_handle.request
 
-        self._stop_subscribers()
-        final_snapshot = self._snapshot()
+        self._cleanup_subscribers()
+        final_snapshot = self._synchronized_data
         total_collected = len(final_snapshot)
         self.get_logger().info(f"Collected {total_collected} synchronized pose pairs")
 
@@ -400,10 +381,7 @@ class ClusterPosesNode(Node):
                 for pose in transformed_poses
             ]
         )
-        idxs, confidence = get_idxs_and_confidence_in_largest_cluster(
-            hdbscan,
-            positions,
-        )
+        idxs, confidence = get_idxs_and_confidence_in_largest_cluster(hdbscan, positions)
         if len(idxs) == 0:
             self.get_logger().error("No clusters found")
             return None, 0, confidence
@@ -455,7 +433,7 @@ class ClusterPosesNode(Node):
             goal_handle.abort()
 
         result_future.set_result(result)
-        self._stop_subscribers()
+        self._cleanup_subscribers()
         self._action_running = False
         self._reset_goal_state()
 

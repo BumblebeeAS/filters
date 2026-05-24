@@ -4,6 +4,12 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.clustering.cluster import (
+    average_transforms,
+    get_position_from_transform,
+    tf_to_pose,
+)
+from bb_filters.utils.tf_lru_cache import TfLruCache
 from bb_perception_msgs.action import ClusterTfAction
 from geometry_msgs.msg import PoseArray, TransformStamped
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -14,13 +20,6 @@ from rclpy.publisher import Publisher
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from std_srvs.srv import Trigger
-
-from bb_filters.clustering.cluster import (
-    average_transforms,
-    get_position_from_transform,
-    tf_to_pose,
-)
-from bb_filters.utils.tf_lru_cache import TfLruCache
 
 
 class ClusterTfActionServer(Node):

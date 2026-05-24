@@ -4,14 +4,6 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_perception_msgs.srv import ClusterTfSrv
-from geometry_msgs.msg import PoseArray, TransformStamped
-from rclpy.node import Node
-from rclpy.publisher import Publisher
-from rclpy.time import Time
-from sklearn.cluster import HDBSCAN  # type: ignore
-from std_srvs.srv import Trigger
-
 from bb_filters.clustering.cluster import (
     average_transforms,
     get_idxs_in_largest_cluster,
@@ -20,6 +12,13 @@ from bb_filters.clustering.cluster import (
     tf_to_pose,
 )
 from bb_filters.utils.tf_lru_cache import TfLruCache
+from bb_perception_msgs.srv import ClusterTfSrv
+from geometry_msgs.msg import PoseArray, TransformStamped
+from rclpy.node import Node
+from rclpy.publisher import Publisher
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN  # type: ignore
+from std_srvs.srv import Trigger
 
 
 class ClusterTfServiceServer(Node):
