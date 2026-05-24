@@ -36,7 +36,6 @@ from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
 
-
 CONFIDENCE_KEY_BY_METRIC = {
     0: "mean_probability",
     1: "cluster_persistence",
@@ -53,6 +52,7 @@ TF_STATIC_QOS = QoSProfile(
 
 
 def seconds_to_duration(seconds: float) -> Duration:
+    """Convert float seconds to rclpy Duration."""
     sec_int, sec_frac = divmod(seconds, 1)
     return Duration(seconds=int(sec_int), nanoseconds=int(round(sec_frac * 1e9)))
 
@@ -61,32 +61,22 @@ class ClusterPosesNode(Node):
     """ROS node that runs pose collection and clustering as an action."""
 
     def __init__(self) -> None:
-        super().__init__(
-            "cluster_poses_node",
-            automatically_declare_parameters_from_overrides=True,
-        )
-
-        self._output_pose_array_topic = str(
-            self._p("output_pose_array_topic", "clustered_poses")
-        )
-        self._sync_queue_size = int(self._p("sync_queue_size", 100))
-        self._feedback_rate_hz = float(self._p("feedback_rate_hz", 10.0))
-        if self._feedback_rate_hz <= 0.0:
-            raise ValueError("feedback_rate_hz must be > 0")
+        super().__init__("cluster_poses_node")
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10))
+        # Subscribe only to /tf_static to avoid processing dynamic TF
+        static_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
         self._tf_static_sub = self.create_subscription(
             TFMessage,
             "/tf_static",
             self._handle_tf_static,
-            qos_profile=TF_STATIC_QOS,
+            qos_profile=static_qos,
         )
-        self._pose_array_publisher = self.create_publisher(
-            PoseArray,
-            self._output_pose_array_topic,
-            10,
-        )
-        self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         self._action_running = False
         self._goal_handle: ServerGoalHandle | None = None
@@ -103,10 +93,6 @@ class ClusterPosesNode(Node):
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = Duration(seconds=0)
 
-        self._action_timer = self.create_timer(
-            1.0 / self._feedback_rate_hz,
-            self._step_action,
-        )
         self._action_server = ActionServer(
             self,
             ClusterPosesAction,
@@ -115,9 +101,40 @@ class ClusterPosesNode(Node):
             goal_callback=self._goal_callback,
         )
 
-        self.get_logger().info(
-            f"ClusterPosesNode ready. output={self._output_pose_array_topic}"
+        # Declare parameters
+        output_pose_array_topic = (
+            self.declare_parameter(
+                "output_pose_array_topic",
+                "clustered_poses",
+            )
+            .get_parameter_value()
+            .string_value
         )
+        self._sync_queue_size = (
+            self.declare_parameter("sync_queue_size", 100)
+            .get_parameter_value()
+            .integer_value
+        )
+        feedback_rate = (
+            self.declare_parameter("feedback_rate_hz", 10)
+            .get_parameter_value()
+            .integer_value
+        )
+
+        # Publishers
+        self._pose_array_publisher = self.create_publisher(
+            PoseArray,
+            output_pose_array_topic,
+            10,
+        )
+        self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
+
+        self._action_timer = self.create_timer(
+            1.0 / feedback_rate,
+            self._step_action,
+        )
+
+        self.get_logger().info("Cluster Poses Action Server initialized")
 
     def _p(self, name: str, default):
         value = self.get_parameter_or(name, default)
@@ -268,9 +285,6 @@ class ClusterPosesNode(Node):
             return
 
         try:
-            if self._goal_handle.is_cancel_requested:
-                self._finish_action("canceled", self._empty_result())
-                return
             if self._goal_phase == "collecting":
                 self._step_collection(self._goal_handle)
             elif self._goal_phase == "finalizing":
@@ -367,7 +381,9 @@ class ClusterPosesNode(Node):
         transformed_poses: list[PoseStamped],
         goal: ClusterPosesAction.Goal,
     ) -> tuple[PoseStamped | None, int, dict[str, float]]:
-        if len(transformed_poses) < max(int(goal.min_cluster_size), int(goal.min_samples)):
+        if len(transformed_poses) < max(
+            int(goal.min_cluster_size), int(goal.min_samples)
+        ):
             self.get_logger().error("Not enough poses for clustering")
             return None, 0, self._empty_confidence()
 
@@ -379,7 +395,10 @@ class ClusterPosesNode(Node):
             store_centers="centroid",
         )
         positions = np.array(
-            [attrgetter("x", "y", "z")(pose.pose.position) for pose in transformed_poses]
+            [
+                attrgetter("x", "y", "z")(pose.pose.position)
+                for pose in transformed_poses
+            ]
         )
         idxs, confidence = get_idxs_and_confidence_in_largest_cluster(
             hdbscan,
@@ -430,10 +449,7 @@ class ClusterPosesNode(Node):
         if goal_handle is None or result_future is None or result_future.done():
             return
 
-        if status == "canceled":
-            goal_handle.canceled()
-            self.get_logger().info("Cluster goal canceled")
-        elif status == "succeeded":
+        if status == "succeeded":
             goal_handle.succeed()
         else:
             goal_handle.abort()
