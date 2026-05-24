@@ -6,7 +6,7 @@ import rclpy
 import tf2_ros
 from bb_filters.clustering.cluster import (
     average_transforms,
-    get_idxs_in_largest_cluster,
+    get_largest_cluster,
     get_position_from_transform,
     get_tfs_spread,
     tf_to_pose,
@@ -140,7 +140,7 @@ class ClusterTfServiceServer(Node):
                 store_centers="centroid",
             )
 
-            filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
+            filtered_idxs = get_largest_cluster(hdbscan, positions).idxs
             if len(filtered_idxs) == 0:
                 self.get_logger().warn(
                     "No clusters found, cannot create clustered transform."

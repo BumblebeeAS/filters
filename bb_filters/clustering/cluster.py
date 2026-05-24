@@ -1,9 +1,22 @@
 import copy
+from dataclasses import dataclass
 
 import numpy as np
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion, TransformStamped, Vector3
 from numpy.typing import ArrayLike
 from sklearn.cluster import HDBSCAN
+
+
+@dataclass(frozen=True)
+class ClusterResult:
+    idxs: np.ndarray
+    mean_probability: float = 0.0
+    inlier_ratio: float = 0.0
+    position_std: float = 0.0
+
+    @classmethod
+    def empty(cls) -> "ClusterResult":
+        return cls(idxs=np.array([], dtype=int))
 
 
 def euclidean_metric(v: tuple[Vector3, Quaternion], w: tuple[Vector3, Quaternion]):
@@ -66,28 +79,31 @@ def get_top_k_clusters(
     ]
 
 
-def get_idxs_in_largest_cluster(
+def get_largest_cluster(
     hdbscan: HDBSCAN,
     positions: np.ndarray,
-) -> np.ndarray:
-    """
-    Returns an array of indices belonging to the largest, non-noise cluster.
-
-    If no clusters are found, an empty array is returned.
-    """
+) -> ClusterResult:
+    """Fit HDBSCAN and return the largest cluster."""
     hdbscan.fit(positions)
 
     labels = np.array(hdbscan.labels_)
     non_noise_labels = labels[labels >= 0]
 
     if len(non_noise_labels) == 0:
-        return np.array([])
+        return ClusterResult.empty()
 
     unique_labels, unique_label_counts = np.unique(non_noise_labels, return_counts=True)
-    largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
+    largest_cluster_label = int(unique_labels[np.argmax(unique_label_counts)])
     largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
 
-    return largest_cluster_idxs
+    cluster_positions = positions[largest_cluster_idxs]
+    centroid = cluster_positions.mean(axis=0)
+    return ClusterResult(
+        idxs=largest_cluster_idxs,
+        mean_probability=float(hdbscan.probabilities_[largest_cluster_idxs].mean()),
+        inlier_ratio=float(len(largest_cluster_idxs) / len(positions)),
+        position_std=float(np.linalg.norm(cluster_positions - centroid, axis=1).mean()),
+    )
 
 
 def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:

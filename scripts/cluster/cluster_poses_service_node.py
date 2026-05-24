@@ -33,7 +33,7 @@ from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
 
-from bb_filters.clustering.cluster import get_idxs_in_largest_cluster
+from bb_filters.clustering.cluster import get_largest_cluster
 from bb_filters.clustering.pose import get_average_pose
 
 
@@ -265,7 +265,7 @@ class ClusterPosesServiceNode(Node):
                 for pose in transformed_poses
             ]
         )
-        filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
+        filtered_idxs = get_largest_cluster(hdbscan, positions).idxs
 
         if len(filtered_idxs) == 0:
             self.get_logger().error("No clusters found")

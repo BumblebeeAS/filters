@@ -4,7 +4,7 @@ from operator import attrgetter
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.clustering.cluster import get_idxs_in_largest_cluster
+from bb_filters.clustering.cluster import ClusterResult, get_largest_cluster
 from bb_filters.clustering.pose import get_average_pose
 from bb_perception_msgs.action import ClusterPosesAction
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
@@ -246,9 +246,7 @@ class ClusterPosesNode(Node):
 
             self.get_logger().info("Trying to cluster...")
             # Cluster the transformed poses
-            avg_pose, num_poses_in_cluster = self._cluster_poses(
-                transformed_poses, goal
-            )
+            avg_pose, cluster_result = self._cluster_poses(transformed_poses, goal)
             if avg_pose is None:
                 goal_handle.abort()
                 self._cleanup_subscribers()
@@ -267,7 +265,10 @@ class ClusterPosesNode(Node):
             result = ClusterPosesAction.Result()
             result.clustered_pose = avg_pose
             result.total_poses_collected = total_collected
-            result.poses_in_cluster = num_poses_in_cluster
+            result.poses_in_cluster = len(cluster_result.idxs)
+            result.mean_probability = cluster_result.mean_probability
+            result.inlier_ratio = cluster_result.inlier_ratio
+            result.position_std = cluster_result.position_std
 
             self.get_logger().info(
                 f"Clustering complete: {result.poses_in_cluster}/{result.total_poses_collected} poses in cluster"
@@ -285,7 +286,7 @@ class ClusterPosesNode(Node):
 
     def _cluster_poses(
         self, transformed_poses: list[PoseStamped], goal: ClusterPosesAction.Goal
-    ) -> tuple[PoseStamped | None, int]:
+    ) -> tuple[PoseStamped | None, ClusterResult]:
         """Cluster transformed poses using HDBSCAN and return the average pose.
 
         Args:
@@ -298,7 +299,7 @@ class ClusterPosesNode(Node):
         # Check if there are enough poses for clustering
         if len(transformed_poses) < max(goal.min_cluster_size, goal.min_samples):
             self.get_logger().error("Not enough poses for clustering")
-            return None, 0
+            return None, ClusterResult.empty()
 
         # Create HDBSCAN clustering instance
         hdbscan = HDBSCAN(
@@ -316,20 +317,20 @@ class ClusterPosesNode(Node):
                 for pose in transformed_poses
             ]
         )
-        filtered_idxs = get_idxs_in_largest_cluster(hdbscan, positions)
+        cluster_result = get_largest_cluster(hdbscan, positions)
 
-        if len(filtered_idxs) == 0:
+        if len(cluster_result.idxs) == 0:
             self.get_logger().error("No clusters found")
-            return None, 0
+            return None, cluster_result
 
         # Get average pose from filtered poses
-        filtered_pose_msgs = [transformed_poses[i].pose for i in filtered_idxs]
+        filtered_pose_msgs = [transformed_poses[i].pose for i in cluster_result.idxs]
         avg_pose = get_average_pose(filtered_pose_msgs)
         avg_pose_stamped = PoseStamped()
         avg_pose_stamped.pose = avg_pose
-        avg_pose_stamped.header = transformed_poses[filtered_idxs[0]].header
+        avg_pose_stamped.header = transformed_poses[cluster_result.idxs[0]].header
 
-        return avg_pose_stamped, len(filtered_idxs)
+        return avg_pose_stamped, cluster_result
 
     def _publish_results(
         self,
