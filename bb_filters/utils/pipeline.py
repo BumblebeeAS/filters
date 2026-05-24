@@ -11,11 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from operator import attrgetter
-from typing import Callable, Optional
 
 import numpy as np
 import tf2_ros
-from bb_perception_msgs.msg import ClusterSpikeStatus
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from geometry_msgs.msg import (
     PoseArray,
@@ -39,7 +37,6 @@ from bb_filters.utils.cluster import (
     get_idxs_and_confidence_in_largest_cluster,
 )
 from bb_filters.utils.pose import get_average_pose
-from bb_filters.utils.spike import SpikeDetector, SpikeReading, ThrottledTrigger
 
 # Confidence-metric selector values; mirrors the constants on
 # ClusterPosesAction.Goal so callers can pass them through unchanged.
@@ -128,7 +125,7 @@ class ClusterOutcome:
 
 def cluster_transformed_poses(
     transformed_poses: list[PoseStamped], params: ClusterParams
-) -> Optional[ClusterOutcome]:
+) -> ClusterOutcome | None:
     """Cluster a list of poses already in the target frame. Returns None if
     there are insufficient poses or HDBSCAN finds no non-noise cluster.
     """
@@ -167,7 +164,7 @@ def lookup_camera_to_odom(
     tf_buffer: tf2_ros.Buffer,
     snapshot: list[tuple[Odometry, PoseStamped]],
     timeout_sec: float = 5.0,
-) -> Optional[TransformStamped]:
+) -> TransformStamped | None:
     """Lookup the static transform from the pose's camera frame to the odom
     child frame using the first sample of the snapshot. Returns None if the
     snapshot is empty or the transform isn't available.
@@ -195,7 +192,7 @@ def transform_and_cluster(
     snapshot: list[tuple[Odometry, PoseStamped]],
     camera_to_odom: TransformStamped,
     params: ClusterParams,
-) -> tuple[Optional[ClusterOutcome], list[PoseStamped]]:
+) -> tuple[ClusterOutcome | None, list[PoseStamped]]:
     """Transform a snapshot into the odom frame and cluster it.
 
     Returns (outcome_or_None, transformed_poses). The transformed list is
@@ -207,98 +204,3 @@ def transform_and_cluster(
         transform_pose_to_odom(odom, pose, camera_to_odom) for odom, pose in snapshot
     ]
     return cluster_transformed_poses(transformed, params), transformed
-
-
-def fill_spike_status(
-    msg: ClusterSpikeStatus,
-    *,
-    spike_detected: bool,
-    detection_rate: float,
-    outcome: Optional[ClusterOutcome],
-    total_poses: int,
-    primary_metric: int,
-) -> None:
-    """Populate a ClusterSpikeStatus message in-place. Caller sets the header."""
-    msg.spike_detected = spike_detected
-    msg.current_detection_rate = float(detection_rate)
-    if outcome is None:
-        msg.partial_cluster_available = False
-        msg.partial_clustered_pose = PoseStamped()
-        msg.partial_poses_in_cluster = 0
-        msg.partial_total_poses = int(total_poses)
-        msg.partial_mean_probability = 0.0
-        msg.partial_cluster_persistence = 0.0
-        msg.partial_inlier_ratio = 0.0
-        msg.partial_position_std = 0.0
-        msg.partial_primary_confidence = 0.0
-        return
-    msg.partial_cluster_available = True
-    msg.partial_clustered_pose = outcome.avg_pose
-    msg.partial_poses_in_cluster = int(outcome.num_in_cluster)
-    msg.partial_total_poses = int(total_poses)
-    msg.partial_mean_probability = outcome.confidence.get("mean_probability", 0.0)
-    msg.partial_cluster_persistence = outcome.confidence.get("cluster_persistence", 0.0)
-    msg.partial_inlier_ratio = outcome.confidence.get("inlier_ratio", 0.0)
-    msg.partial_position_std = outcome.confidence.get("position_std", 0.0)
-    msg.partial_primary_confidence = select_primary_confidence(
-        outcome.confidence, primary_metric
-    )
-
-
-class SpikeClusterMonitor:
-    """Tick-driven spike detector + throttled partial clustering with a sticky cache.
-
-    Each `tick` updates the rate estimate. When a spike is active and the
-    throttle allows, it runs `transform_and_cluster` on the current snapshot
-    and stores the result. While the spike persists between throttle windows
-    the cached outcome is reused so downstream consumers see a stable
-    `partial_cluster_available` flag instead of flicker. When the spike ends
-    the cache is cleared.
-    """
-
-    SnapshotFn = Callable[[], list[tuple[Odometry, PoseStamped]]]
-    GetTfFn = Callable[[list[tuple[Odometry, PoseStamped]]], Optional[TransformStamped]]
-
-    def __init__(
-        self,
-        *,
-        window_sec: float,
-        rate_threshold: float,
-        min_seconds_between_clusters: float,
-        spike_min_poses: int,
-    ) -> None:
-        self._detector = SpikeDetector(
-            window_sec=window_sec, rate_threshold=rate_threshold
-        )
-        self._throttle = ThrottledTrigger(min_interval_sec=min_seconds_between_clusters)
-        self._spike_min_poses = int(spike_min_poses)
-        self.cached_outcome: Optional[ClusterOutcome] = None
-        self.cached_snapshot_len: int = 0
-
-    def reset(self) -> None:
-        self._detector.reset()
-        self._throttle.reset()
-        self.cached_outcome = None
-        self.cached_snapshot_len = 0
-
-    def tick(
-        self,
-        *,
-        now_sec: float,
-        poses_now: int,
-        snapshot_fn: SnapshotFn,
-        get_tf_fn: GetTfFn,
-        params: ClusterParams,
-    ) -> SpikeReading:
-        reading = self._detector.update(now_sec, poses_now)
-        if not reading.is_spike:
-            self.cached_outcome = None
-            self.cached_snapshot_len = poses_now
-        elif poses_now >= self._spike_min_poses and self._throttle.test(now_sec):
-            snapshot = snapshot_fn()
-            tf = get_tf_fn(snapshot)
-            if tf is not None:
-                fresh_outcome, _ = transform_and_cluster(snapshot, tf, params)
-                self.cached_outcome = fresh_outcome
-                self.cached_snapshot_len = len(snapshot)
-        return reading
