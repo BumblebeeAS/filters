@@ -1,31 +1,60 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from operator import attrgetter
 import threading
 
+import numpy as np
 import rclpy
 import tf2_ros
+from bb_filters.clustering.cluster import get_idxs_and_confidence_in_largest_cluster
+from bb_filters.clustering.pose import get_average_pose
 from bb_perception_msgs.action import ClusterPosesAction
-from geometry_msgs.msg import PoseArray, PoseStamped, TransformStamped
+from frames.utils.transform_ros_msgs import transform_pose_to_odom
+from geometry_msgs.msg import (
+    PoseArray,
+    PoseStamped,
+    Quaternion,
+    TransformStamped,
+    Vector3,
+)
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from rclpy.task import Future
+from rclpy.time import Time
+from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
 
-from bb_filters.utils.pipeline import (
-    TF_STATIC_QOS,
-    ClusterParams,
-    lookup_camera_to_odom,
-    publish_clustered_results,
-    seconds_to_duration,
-    select_primary_confidence,
-    transform_and_cluster,
+
+CONFIDENCE_KEY_BY_METRIC = {
+    0: "mean_probability",
+    1: "cluster_persistence",
+    2: "inlier_ratio",
+    3: "position_std",
+}
+
+TF_STATIC_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
 )
+
+
+def seconds_to_duration(seconds: float) -> Duration:
+    sec_int, sec_frac = divmod(seconds, 1)
+    return Duration(seconds=int(sec_int), nanoseconds=int(round(sec_frac * 1e9)))
 
 
 class ClusterPosesNode(Node):
@@ -36,7 +65,6 @@ class ClusterPosesNode(Node):
             "cluster_poses_node",
             automatically_declare_parameters_from_overrides=True,
         )
-        log = self.get_logger()
 
         self._output_pose_array_topic = str(
             self._p("output_pose_array_topic", "clustered_poses")
@@ -47,7 +75,6 @@ class ClusterPosesNode(Node):
             raise ValueError("feedback_rate_hz must be > 0")
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10))
-
         self._tf_static_sub = self.create_subscription(
             TFMessage,
             "/tf_static",
@@ -55,7 +82,9 @@ class ClusterPosesNode(Node):
             qos_profile=TF_STATIC_QOS,
         )
         self._pose_array_publisher = self.create_publisher(
-            PoseArray, self._output_pose_array_topic, 10
+            PoseArray,
+            self._output_pose_array_topic,
+            10,
         )
         self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
@@ -73,11 +102,6 @@ class ClusterPosesNode(Node):
 
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = Duration(seconds=0)
-        self._cluster_params = ClusterParams(
-            min_cluster_size=1,
-            min_samples=1,
-            cluster_selection_epsilon=0.0,
-        )
 
         self._action_timer = self.create_timer(
             1.0 / self._feedback_rate_hz,
@@ -91,7 +115,9 @@ class ClusterPosesNode(Node):
             goal_callback=self._goal_callback,
         )
 
-        log.info("ClusterPosesNode ready. " f"output={self._output_pose_array_topic}")
+        self.get_logger().info(
+            f"ClusterPosesNode ready. output={self._output_pose_array_topic}"
+        )
 
     def _p(self, name: str, default):
         value = self.get_parameter_or(name, default)
@@ -110,17 +136,33 @@ class ClusterPosesNode(Node):
             self._synchronized_data.append((odom_msg, pose_msg))
 
     def _ensure_camera_to_odom(
-        self, snapshot: list[tuple[Odometry, PoseStamped]]
+        self,
+        snapshot: list[tuple[Odometry, PoseStamped]],
     ) -> bool:
         if self._camera_to_odom_transform is not None:
             return True
-        tf = lookup_camera_to_odom(self._tf_buffer, snapshot, timeout_sec=5.0)
-        if tf is None:
+        if not snapshot:
             return False
-        self._camera_to_odom_transform = tf
+
+        odom_child_frame = snapshot[0][0].child_frame_id
+        camera_frame_id = snapshot[0][1].header.frame_id
+        try:
+            self._camera_to_odom_transform = self._tf_buffer.lookup_transform(
+                odom_child_frame,
+                camera_frame_id,
+                Time(),
+                timeout=Duration(seconds=5),
+            )
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as exc:
+            self.get_logger().error(f"Failed to lookup transform: {exc}")
+            return False
+
         self.get_logger().info(
-            f"Found transform from {snapshot[0][1].header.frame_id} to "
-            f"{snapshot[0][0].child_frame_id}"
+            f"Found transform from {camera_frame_id} to {odom_child_frame}"
         )
         return True
 
@@ -182,7 +224,8 @@ class ClusterPosesNode(Node):
         return GoalResponse.ACCEPT
 
     async def _execute_goal(
-        self, goal_handle: ServerGoalHandle
+        self,
+        goal_handle: ServerGoalHandle,
     ) -> ClusterPosesAction.Result:
         self._action_running = True
         self._goal_handle = goal_handle
@@ -210,11 +253,6 @@ class ClusterPosesNode(Node):
 
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = seconds_to_duration(float(goal.collection_duration))
-        self._cluster_params = ClusterParams(
-            min_cluster_size=int(goal.min_cluster_size),
-            min_samples=int(goal.min_samples),
-            cluster_selection_epsilon=float(goal.cluster_selection_epsilon),
-        )
 
         feedback = ClusterPosesAction.Feedback()
         feedback.current_status = "Setting up subscribers"
@@ -226,9 +264,7 @@ class ClusterPosesNode(Node):
         self._goal_phase = "collecting"
 
     def _step_action(self) -> None:
-        if not self._action_running:
-            return
-        if self._goal_handle is None:
+        if not self._action_running or self._goal_handle is None:
             return
 
         try:
@@ -237,8 +273,7 @@ class ClusterPosesNode(Node):
                 return
             if self._goal_phase == "collecting":
                 self._step_collection(self._goal_handle)
-                return
-            if self._goal_phase == "finalizing":
+            elif self._goal_phase == "finalizing":
                 self._finalize_goal(self._goal_handle)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"Error during cluster goal: {exc}")
@@ -282,7 +317,6 @@ class ClusterPosesNode(Node):
         goal_handle.publish_feedback(feedback)
 
         if not self._ensure_camera_to_odom(final_snapshot):
-            self.get_logger().error("Failed to lookup camera->odom transform")
             self._finish_action("aborted", self._empty_result(total_collected))
             return
 
@@ -290,36 +324,36 @@ class ClusterPosesNode(Node):
         feedback.current_status = "Transforming and clustering poses"
         goal_handle.publish_feedback(feedback)
 
-        outcome, transformed_poses = transform_and_cluster(
-            final_snapshot,
-            self._camera_to_odom_transform,
-            self._cluster_params,
+        transformed_poses = [
+            transform_pose_to_odom(odom_msg, pose_msg, self._camera_to_odom_transform)
+            for odom_msg, pose_msg in final_snapshot
+        ]
+        avg_pose, poses_in_cluster, confidence = self._cluster_poses(
+            transformed_poses,
+            goal,
         )
-        if outcome is None:
-            self.get_logger().error("No clusters found")
+        if avg_pose is None:
             self._finish_action("aborted", self._empty_result(total_collected))
             return
 
-        outcome.avg_pose.header = transformed_poses[-1].header
-        publish_clustered_results(
-            self._pose_array_publisher,
-            self._static_tf_broadcaster,
-            outcome.avg_pose,
+        avg_pose.header = transformed_poses[-1].header
+        self._publish_results(
+            avg_pose,
             transformed_poses,
             goal.clustered_child_frame_id,
         )
 
         result = ClusterPosesAction.Result()
-        result.clustered_pose = outcome.avg_pose
+        result.clustered_pose = avg_pose
         result.total_poses_collected = total_collected
-        result.poses_in_cluster = int(outcome.num_in_cluster)
-        result.mean_probability = outcome.confidence["mean_probability"]
-        result.cluster_persistence = outcome.confidence["cluster_persistence"]
-        result.inlier_ratio = outcome.confidence["inlier_ratio"]
-        result.position_std = outcome.confidence["position_std"]
-        result.primary_confidence = select_primary_confidence(
-            outcome.confidence,
-            int(goal.primary_confidence_metric),
+        result.poses_in_cluster = int(poses_in_cluster)
+        result.mean_probability = confidence["mean_probability"]
+        result.cluster_persistence = confidence["cluster_persistence"]
+        result.inlier_ratio = confidence["inlier_ratio"]
+        result.position_std = confidence["position_std"]
+        result.primary_confidence = confidence.get(
+            CONFIDENCE_KEY_BY_METRIC.get(int(goal.primary_confidence_metric), ""),
+            0.0,
         )
 
         self.get_logger().info(
@@ -327,6 +361,68 @@ class ClusterPosesNode(Node):
             f"{result.poses_in_cluster}/{result.total_poses_collected} poses in cluster"
         )
         self._finish_action("succeeded", result)
+
+    def _cluster_poses(
+        self,
+        transformed_poses: list[PoseStamped],
+        goal: ClusterPosesAction.Goal,
+    ) -> tuple[PoseStamped | None, int, dict[str, float]]:
+        if len(transformed_poses) < max(int(goal.min_cluster_size), int(goal.min_samples)):
+            self.get_logger().error("Not enough poses for clustering")
+            return None, 0, self._empty_confidence()
+
+        hdbscan = HDBSCAN(
+            min_cluster_size=int(goal.min_cluster_size),
+            min_samples=int(goal.min_samples),
+            cluster_selection_epsilon=float(goal.cluster_selection_epsilon),
+            allow_single_cluster=True,
+            store_centers="centroid",
+        )
+        positions = np.array(
+            [attrgetter("x", "y", "z")(pose.pose.position) for pose in transformed_poses]
+        )
+        idxs, confidence = get_idxs_and_confidence_in_largest_cluster(
+            hdbscan,
+            positions,
+        )
+        if len(idxs) == 0:
+            self.get_logger().error("No clusters found")
+            return None, 0, confidence
+
+        filtered_pose_msgs = [transformed_poses[i].pose for i in idxs]
+        avg_pose = PoseStamped()
+        avg_pose.pose = get_average_pose(filtered_pose_msgs)
+        avg_pose.header = transformed_poses[idxs[0]].header
+        return avg_pose, len(idxs), confidence
+
+    @staticmethod
+    def _empty_confidence() -> dict[str, float]:
+        return {
+            "mean_probability": 0.0,
+            "cluster_persistence": 0.0,
+            "inlier_ratio": 0.0,
+            "position_std": 0.0,
+        }
+
+    def _publish_results(
+        self,
+        avg_pose: PoseStamped,
+        transformed_poses: list[PoseStamped],
+        clustered_child_frame_id: str,
+    ) -> None:
+        pose_array_msg = PoseArray()
+        pose_array_msg.header = avg_pose.header
+        pose_array_msg.poses = [pose.pose for pose in transformed_poses]
+        self._pose_array_publisher.publish(pose_array_msg)
+
+        transform_stamped = TransformStamped()
+        transform_stamped.header = avg_pose.header
+        transform_stamped.child_frame_id = clustered_child_frame_id
+        t = attrgetter("x", "y", "z")(avg_pose.pose.position)
+        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
+        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
+        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+        self._static_tf_broadcaster.sendTransform(transform_stamped)
 
     def _finish_action(self, status: str, result: ClusterPosesAction.Result) -> None:
         goal_handle = self._goal_handle
