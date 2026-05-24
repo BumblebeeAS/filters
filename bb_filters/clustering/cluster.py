@@ -75,19 +75,47 @@ def get_idxs_in_largest_cluster(
 
     If no clusters are found, an empty array is returned.
     """
+    idxs, _ = get_idxs_and_confidence_in_largest_cluster(hdbscan, positions)
+    return idxs
+
+
+_EMPTY_CONFIDENCE = {
+    "mean_probability": 0.0,
+    "cluster_persistence": 0.0,
+    "inlier_ratio": 0.0,
+    "position_std": 0.0,
+}
+
+
+def get_idxs_and_confidence_in_largest_cluster(
+    hdbscan: HDBSCAN,
+    positions: np.ndarray,
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Fit HDBSCAN and return the largest cluster indices plus confidence."""
     hdbscan.fit(positions)
 
     labels = np.array(hdbscan.labels_)
     non_noise_labels = labels[labels >= 0]
 
     if len(non_noise_labels) == 0:
-        return np.array([])
+        return np.array([]), dict(_EMPTY_CONFIDENCE)
 
     unique_labels, unique_label_counts = np.unique(non_noise_labels, return_counts=True)
-    largest_cluster_label = unique_labels[np.argmax(unique_label_counts)]
+    largest_cluster_label = int(unique_labels[np.argmax(unique_label_counts)])
     largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
 
-    return largest_cluster_idxs
+    cluster_positions = positions[largest_cluster_idxs]
+    centroid = cluster_positions.mean(axis=0)
+    confidence = {
+        "mean_probability": float(hdbscan.probabilities_[largest_cluster_idxs].mean()),
+        "cluster_persistence": 0.0,
+        "inlier_ratio": float(len(largest_cluster_idxs) / len(positions)),
+        "position_std": float(
+            np.linalg.norm(cluster_positions - centroid, axis=1).mean()
+        ),
+    }
+
+    return largest_cluster_idxs, confidence
 
 
 def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
