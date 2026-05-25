@@ -19,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          path: src/repo
+          path: src/filters
 
       - name: Check out bb_msgs
         uses: actions/checkout@v4
@@ -38,6 +38,11 @@ jobs:
           apt-get update
           rosdep update
           rosdep install --from-paths src --ignore-src -y
+
+      - name: Install Python requirements
+        run: |
+          apt-get install -y python3-pip
+          pip3 install -r src/filters/requirements.txt
 
       - name: Build
         run: |
