@@ -111,6 +111,7 @@ class ClusterPosesNode(Node):
         self._odom_subscriber: Subscriber | None = None
         self._pose_subscribers: list[Subscriber] = []
         self._time_synchronizers: list[ApproximateTimeSynchronizer] = []
+        self._max_detection_age_s = 0.0
 
         # Declare parameters
         output_pose_array_topic = (
@@ -139,6 +140,17 @@ class ClusterPosesNode(Node):
 
     def _synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
         self._synchronized_data.append((odom_msg, pose_msg))
+
+    def _is_detection_too_old(
+        self, clustering_time: Time, pose_msg: PoseStamped
+    ) -> bool:
+        if self._max_detection_age_s <= 0.0:
+            return False
+
+        detection_age_s = (
+            clustering_time - Time.from_msg(pose_msg.header.stamp)
+        ).nanoseconds / 1e9
+        return detection_age_s >= self._max_detection_age_s
 
     def _reset_collection(self) -> None:
         self._synchronized_data = []
@@ -187,10 +199,12 @@ class ClusterPosesNode(Node):
         pose_topics: list[str],
         sync_tolerance: float,
         sync_queue_size: int | None = None,
+        max_detection_age_s: float = 0.0,
     ) -> None:
         """Subscribe to one odom topic and N pose topics, all feeding one buffer."""
         if not pose_topics:
             raise ValueError("pose_topics must contain at least one topic")
+        self._max_detection_age_s = float(max_detection_age_s)
         qsize = int(sync_queue_size or self._sync_queue_size)
         self._odom_subscriber = Subscriber(
             self,
@@ -240,6 +254,22 @@ class ClusterPosesNode(Node):
 
         Returns `(clustered, transformed_poses, total_collected)`
         """
+        if not self._synchronized_data:
+            total_collected = 0
+            self.get_logger().error(
+                "Not enough synchronized poses collected. "
+                f"Got {total_collected}, need {int(params.min_poses)}"
+            )
+            return [], [], total_collected
+
+        # Match the result PoseArray/ClusterPoseResultArray timestamp, which is
+        # taken from the last transformed pose after this age filter.
+        clustering_time = Time.from_msg(self._synchronized_data[-1][1].header.stamp)
+        self._synchronized_data = [
+            (odom_msg, pose_msg)
+            for odom_msg, pose_msg in self._synchronized_data
+            if not self._is_detection_too_old(clustering_time, pose_msg)
+        ]
         synchronized_data = self._synchronized_data
         total_collected = len(synchronized_data)
 
@@ -368,3 +398,11 @@ class ClusterPosesNode(Node):
             )
 
         self._cluster_pose_array_publishers[topic_name].publish(cluster_pose_array_msg)
+
+    def _cleanup_cluster_pose_publishers(self) -> None:
+        for topic_name in list(self._cluster_pose_array_publishers):
+            publisher = self._cluster_pose_array_publishers.pop(topic_name)
+            if not self.destroy_publisher(publisher):
+                self.get_logger().warning(
+                    f"Failed to destroy cluster pose publisher: {topic_name}"
+                )

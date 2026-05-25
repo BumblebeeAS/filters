@@ -50,6 +50,7 @@ class ClusterPosesServiceNode(ClusterPosesNode):
         self.min_cluster_size = 5
         self.min_samples = 5
         self.cluster_selection_epsilon = 0.0
+        self.max_detection_age_s = 0.0
         self.top_k = 1
         self.sort_key = int(ClusterSortKey.NUM_CLUSTER_POSES)
         self.cluster_interval = 0.0
@@ -73,6 +74,7 @@ class ClusterPosesServiceNode(ClusterPosesNode):
         self.min_cluster_size = int(params.min_cluster_size)
         self.min_samples = int(params.min_samples)
         self.cluster_selection_epsilon = float(params.cluster_selection_epsilon)
+        self.max_detection_age_s = float(params.max_detection_age_s)
         self.top_k = int(params.top_k)
         self.sort_key = int(params.sort_key)
         self.cluster_interval = float(request.cluster_interval)
@@ -121,6 +123,7 @@ class ClusterPosesServiceNode(ClusterPosesNode):
             pose_topics=self.pose_stamped_topics,
             sync_tolerance=self.sync_tolerance,
             sync_queue_size=self._sync_queue_size,
+            max_detection_age_s=self.max_detection_age_s,
         )
         if self.cluster_interval > 0.0:
             self._cluster_timer = self.create_timer(
@@ -173,6 +176,7 @@ class ClusterPosesServiceNode(ClusterPosesNode):
             response.is_cluster_success = True
             return response
         finally:
+            self._cleanup_cluster_pose_publishers()
             self._reset_collection()
             self._clustered_child_frame_id = ""
 

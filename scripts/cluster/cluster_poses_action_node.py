@@ -95,6 +95,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
             self.get_logger().error(f"Failed to start cluster goal: {exc}")
             goal_handle.abort()
             self._cleanup_subscribers()
+            self._cleanup_cluster_pose_publishers()
             self._action_running = False
             self._reset_goal_state()
             return self._empty_result(int(goal_handle.request.params.sort_key))
@@ -121,6 +122,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
             pose_topics=list(goal.params.pose_stamped_topics),
             sync_tolerance=float(goal.params.sync_tolerance),
             sync_queue_size=int(goal.params.sync_queue_size),
+            max_detection_age_s=float(goal.params.max_detection_age_s),
         )
         self._goal_phase = "collecting"
 
@@ -207,6 +209,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
 
         result_future.set_result(result)
         self._cleanup_subscribers()
+        self._cleanup_cluster_pose_publishers()
         self._action_running = False
         self._reset_goal_state()
 
