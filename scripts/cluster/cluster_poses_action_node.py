@@ -7,10 +7,9 @@ from bb_perception_msgs.action import ClusterPosesAction
 from cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
-    build_cluster_pose_result,
+    fill_cluster_result_array,
     seconds_to_duration,
 )
-from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.duration import Duration
@@ -65,6 +64,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
             min_cluster_size=int(params.min_cluster_size),
             min_samples=int(params.min_samples),
             cluster_selection_epsilon=float(params.cluster_selection_epsilon),
+            min_poses=int(params.min_poses),
             top_k=int(params.top_k),
             sort_key=ClusterSortKey(int(params.sort_key)),
         )
@@ -160,58 +160,33 @@ class ClusterPosesActionNode(ClusterPosesNode):
         params = goal.params
 
         self._cleanup_subscribers()
-        synchronized_data = self._synchronized_data
-        total_collected = len(synchronized_data)
-        self.get_logger().info(f"Collected {total_collected} synchronized pose pairs")
-
-        if total_collected < int(params.min_poses):
-            self.get_logger().error(
-                "Not enough synchronized poses collected. "
-                f"Got {total_collected}, need {int(params.min_poses)}"
-            )
-            self._finish_action("aborted", self._empty_result(int(params.sort_key)))
-            return
 
         feedback = ClusterPosesAction.Feedback()
-        feedback.current_status = "Looking up static transform"
+        feedback.current_status = "Finalizing clustering"
         feedback.collection_progress = 1.0
-        feedback.poses_collected_so_far = total_collected
+        feedback.poses_collected_so_far = len(self._synchronized_data)
         goal_handle.publish_feedback(feedback)
 
-        if not self._ensure_camera_to_odom(synchronized_data):
-            self._finish_action("aborted", self._empty_result(int(params.sort_key)))
-            return
-
-        feedback.current_status = "Transforming and clustering poses"
-        goal_handle.publish_feedback(feedback)
-
-        transformed_poses = [
-            transform_pose_to_odom(
-                odom_msg,
-                pose_msg,
-                self._camera_to_odom_transforms[pose_msg.header.frame_id],
-            )
-            for odom_msg, pose_msg in synchronized_data
-        ]
-        clustered = self._cluster_poses(transformed_poses, self._cluster_params(goal))
+        clustered, transformed_poses, total_collected = self._run_clustering(
+            self._cluster_params(goal)
+        )
         if not clustered:
             self._finish_action("aborted", self._empty_result(int(params.sort_key)))
             return
 
         last_header = transformed_poses[-1].header
-        for avg_pose, _ in clustered:
-            avg_pose.header = last_header
         self._publish_results(
             clustered, transformed_poses, params.clustered_child_frame_id
         )
 
         result = ClusterPosesAction.Result()
-        result.cluster_results.header = last_header
-        result.cluster_results.sort_key = int(params.sort_key)
-        result.cluster_results.results = [
-            build_cluster_pose_result(avg_pose, cluster_result, total_collected)
-            for avg_pose, cluster_result in clustered
-        ]
+        fill_cluster_result_array(
+            result.cluster_results,
+            clustered,
+            total_collected,
+            last_header,
+            int(params.sort_key),
+        )
 
         self.get_logger().info(
             f"Clustering complete: {len(result.cluster_results.results)} cluster(s) "

@@ -11,8 +11,10 @@ from bb_filters.clustering.cluster import (
     sort_clusters,
 )
 from bb_filters.clustering.pose import get_average_pose
-from bb_perception_msgs.msg import ClusterPoseResult
+from bb_perception_msgs.msg import ClusterPoseResult, ClusterPoseResultArray
+from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from geometry_msgs.msg import (
+    Pose,
     PoseArray,
     PoseStamped,
     Quaternion,
@@ -23,6 +25,7 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.publisher import Publisher
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -46,26 +49,40 @@ class ClusterParams:
     min_cluster_size: int
     min_samples: int
     cluster_selection_epsilon: float
+    # Minimum buffer size before clustering is even attempted. Acts as a
+    # pre-clustering rejection threshold, separate from HDBSCAN's own knobs.
+    min_poses: int = 10
     top_k: int = 1
     sort_key: ClusterSortKey = ClusterSortKey.NUM_CLUSTER_POSES
 
 
 def build_cluster_pose_result(
-    avg_pose: PoseStamped,
-    cluster_result: ClusterResult,
-    num_input_poses: int,
+    avg_pose: Pose, cluster_result: ClusterResult, num_input_poses: int
 ) -> ClusterPoseResult:
-    """Project a clustered (PoseStamped, ClusterResult) pair into a ROS message.
-
-    The PoseStamped's header is dropped — the array carries the timestamp once.
-    """
+    """Project a clustered (Pose, ClusterResult) pair into a ROS message."""
     msg = ClusterPoseResult()
-    msg.clustered_pose = avg_pose.pose
+    msg.clustered_pose = avg_pose
     msg.clustered_position_std = float(cluster_result.clustered_position_std)
     msg.num_cluster_poses = int(cluster_result.num_cluster_poses)
     msg.num_input_poses = int(num_input_poses)
     msg.mean_probability = float(cluster_result.mean_probability)
     return msg
+
+
+def fill_cluster_result_array(
+    msg: ClusterPoseResultArray,
+    clustered: list[tuple[Pose, ClusterResult]],
+    num_input_poses: int,
+    header,
+    sort_key: int,
+) -> None:
+    """Populate a ClusterPoseResultArray from clustered (Pose, ClusterResult) pairs."""
+    msg.header = header
+    msg.sort_key = int(sort_key)
+    msg.results = [
+        build_cluster_pose_result(avg_pose, cluster_result, num_input_poses)
+        for avg_pose, cluster_result in clustered
+    ]
 
 
 class ClusterPosesNode(Node):
@@ -113,6 +130,7 @@ class ClusterPosesNode(Node):
             output_pose_array_topic,
             10,
         )
+        self._cluster_pose_array_publishers: dict[str, Publisher] = {}
         self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
     def _handle_tf_static(self, msg: TFMessage) -> None:
@@ -210,14 +228,50 @@ class ClusterPosesNode(Node):
         self._pose_subscribers = []
         self._time_synchronizers = []
 
+    def _run_clustering(
+        self,
+        params: ClusterParams,
+    ) -> tuple[
+        list[tuple[Pose, ClusterResult]],
+        list[PoseStamped],
+        int,
+    ]:
+        """Run the full clustering pipeline against the current buffer.
+
+        Returns `(clustered, transformed_poses, total_collected)`
+        """
+        synchronized_data = self._synchronized_data
+        total_collected = len(synchronized_data)
+
+        if total_collected < int(params.min_poses):
+            self.get_logger().error(
+                "Not enough synchronized poses collected. "
+                f"Got {total_collected}, need {int(params.min_poses)}"
+            )
+            return [], [], total_collected
+
+        if not self._ensure_camera_to_odom(synchronized_data):
+            return [], [], total_collected
+
+        transformed_poses = [
+            transform_pose_to_odom(
+                odom_msg,
+                pose_msg,
+                self._camera_to_odom_transforms[pose_msg.header.frame_id],
+            )
+            for odom_msg, pose_msg in synchronized_data
+        ]
+        clustered = self._cluster_poses(transformed_poses, params)
+        return clustered, transformed_poses, total_collected
+
     def _cluster_poses(
         self,
         transformed_poses: list[PoseStamped],
         params: ClusterParams,
-    ) -> list[tuple[PoseStamped, ClusterResult]]:
+    ) -> list[tuple[Pose, ClusterResult]]:
         """Cluster `transformed_poses` and return the top_k results.
 
-        Each entry is the average PoseStamped of a cluster paired with its
+        Each entry is the averaged Pose of a cluster paired with its
         `ClusterResult`. The list is ordered by `params.sort_key`, best-first,
         and truncated to `params.top_k` (0 = keep all).
         """
@@ -247,38 +301,70 @@ class ClusterPosesNode(Node):
         if int(params.top_k) > 0:
             clusters = clusters[: int(params.top_k)]
 
-        results: list[tuple[PoseStamped, ClusterResult]] = []
-        for cluster in clusters:
-            cluster_poses = [transformed_poses[i].pose for i in cluster.idxs]
-            avg_pose = PoseStamped()
-            avg_pose.pose = get_average_pose(cluster_poses)
-            avg_pose.header = transformed_poses[cluster.idxs[0]].header
-            results.append((avg_pose, cluster))
-        return results
+        return [
+            (
+                get_average_pose([transformed_poses[i].pose for i in cluster.idxs]),
+                cluster,
+            )
+            for cluster in clusters
+        ]
 
     def _publish_results(
         self,
-        clustered: list[tuple[PoseStamped, ClusterResult]],
+        clustered: list[tuple[Pose, ClusterResult]],
         transformed_poses: list[PoseStamped],
         clustered_child_frame_id: str,
     ) -> None:
         if not clustered:
             return
 
-        # Pose array of every input pose — still useful for debugging/visualization.
-        pose_array_msg = PoseArray()
-        pose_array_msg.header = clustered[0][0].header
-        pose_array_msg.poses = [pose.pose for pose in transformed_poses]
-        self._pose_array_publisher.publish(pose_array_msg)
+        # All cluster TFs and the input PoseArray share the most recent
+        # transformed pose's header — clustering is a snapshot, so the
+        # timestamp is one value, not one per cluster.
+        header = transformed_poses[-1].header
+
+        all_transformed_poses_msg = PoseArray()
+        all_transformed_poses_msg.header = header
+        all_transformed_poses_msg.poses = [pose.pose for pose in transformed_poses]
+        self._pose_array_publisher.publish(all_transformed_poses_msg)
 
         transforms: list[TransformStamped] = []
-        for i, (avg_pose, _) in enumerate(clustered):
+        for cluster_index, (avg_pose, cluster_result) in enumerate(clustered):
+            cluster_child_frame_id = f"{clustered_child_frame_id}_{cluster_index}"
+            self._publish_cluster_pose_array(
+                cluster_child_frame_id,
+                transformed_poses,
+                cluster_result,
+                header,
+            )
+
             transform_stamped = TransformStamped()
-            transform_stamped.header = avg_pose.header
-            transform_stamped.child_frame_id = f"{clustered_child_frame_id}_{i}"
-            t = attrgetter("x", "y", "z")(avg_pose.pose.position)
-            qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
+            transform_stamped.header = header
+            transform_stamped.child_frame_id = cluster_child_frame_id
+            t = attrgetter("x", "y", "z")(avg_pose.position)
+            qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.orientation)
             transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
             transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
             transforms.append(transform_stamped)
         self._static_tf_broadcaster.sendTransform(transforms)
+
+    def _publish_cluster_pose_array(
+        self,
+        cluster_child_frame_id: str,
+        transformed_poses: list[PoseStamped],
+        cluster_result: ClusterResult,
+        header,
+    ) -> None:
+        cluster_pose_array_msg = PoseArray()
+        cluster_pose_array_msg.header = header
+        cluster_pose_array_msg.poses = [
+            transformed_poses[pose_index].pose for pose_index in cluster_result.idxs
+        ]
+
+        topic_name = f"{cluster_child_frame_id}/poses"
+        if topic_name not in self._cluster_pose_array_publishers:
+            self._cluster_pose_array_publishers[topic_name] = self.create_publisher(
+                PoseArray, topic_name, 10
+            )
+
+        self._cluster_pose_array_publishers[topic_name].publish(cluster_pose_array_msg)

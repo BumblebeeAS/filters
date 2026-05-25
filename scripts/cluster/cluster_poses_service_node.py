@@ -8,10 +8,9 @@ from bb_perception_msgs.srv import ClusterPosesSrv
 from cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
-    build_cluster_pose_result,
+    fill_cluster_result_array,
 )
-from frames.utils.transform_ros_msgs import transform_pose_to_odom
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose
 from rclpy.timer import Timer
 
 
@@ -86,6 +85,7 @@ class ClusterPosesServiceNode(ClusterPosesNode):
             min_cluster_size=int(self.min_cluster_size),
             min_samples=int(self.min_samples),
             cluster_selection_epsilon=float(self.cluster_selection_epsilon),
+            min_poses=int(self.min_poses),
             top_k=int(self.top_k),
             sort_key=ClusterSortKey(int(self.sort_key)),
         )
@@ -146,55 +146,30 @@ class ClusterPosesServiceNode(ClusterPosesNode):
             self.enabled = False
             self._cancel_cluster_timer()
             self._cleanup_subscribers()
-            synchronized_data = self._synchronized_data
-            total_collected = len(synchronized_data)
             response.cluster_results.sort_key = int(self.sort_key)
+            response.is_enabled = False
 
-            if total_collected < int(self.min_poses):
-                self.get_logger().error(
-                    "Not enough synchronized poses collected. "
-                    f"Got {total_collected}, need {int(self.min_poses)}"
-                )
-                response.is_enabled = False
-                response.is_cluster_success = False
-                return response
-
-            if not self._ensure_camera_to_odom(synchronized_data):
-                response.is_enabled = False
-                response.is_cluster_success = False
-                return response
-
-            transformed_poses = [
-                transform_pose_to_odom(
-                    odom_msg,
-                    pose_msg,
-                    self._camera_to_odom_transforms[pose_msg.header.frame_id],
-                )
-                for odom_msg, pose_msg in synchronized_data
-            ]
-            clustered = self._cluster_poses(
-                transformed_poses, self._cluster_params()
+            clustered, transformed_poses, total_collected = self._run_clustering(
+                self._cluster_params()
             )
             if not clustered:
-                response.is_enabled = False
                 response.is_cluster_success = False
                 return response
 
             last_header = transformed_poses[-1].header
-            for avg_pose, _ in clustered:
-                avg_pose.header = last_header
             self._publish_results(
                 clustered, transformed_poses, self._clustered_child_frame_id
             )
-
-            self._fill_cluster_result_array(
-                response.cluster_results, clustered, total_collected, last_header
+            fill_cluster_result_array(
+                response.cluster_results,
+                clustered,
+                total_collected,
+                last_header,
+                self.sort_key,
             )
             self._publish_cluster_pose_result_array(
                 clustered, total_collected, last_header
             )
-
-            response.is_enabled = False
             response.is_cluster_success = True
             return response
         finally:
@@ -205,53 +180,26 @@ class ClusterPosesServiceNode(ClusterPosesNode):
         """Cluster the poses collected so far and publish a ClusterPoseResultArray."""
         if not self.enabled:
             return
-        synchronized_data = self._synchronized_data
-        total_collected = len(synchronized_data)
-        if total_collected < int(self.min_poses):
-            return
-        if not self._ensure_camera_to_odom(synchronized_data):
-            return
-        transformed_poses = [
-            transform_pose_to_odom(
-                odom_msg,
-                pose_msg,
-                self._camera_to_odom_transforms[pose_msg.header.frame_id],
-            )
-            for odom_msg, pose_msg in synchronized_data
-        ]
-        clustered = self._cluster_poses(transformed_poses, self._cluster_params())
+        clustered, transformed_poses, total_collected = self._run_clustering(
+            self._cluster_params()
+        )
         if not clustered:
             return
-        last_header = transformed_poses[-1].header
-        for avg_pose, _ in clustered:
-            avg_pose.header = last_header
         self._publish_cluster_pose_result_array(
-            clustered, total_collected, last_header
+            clustered, total_collected, transformed_poses[-1].header
         )
 
     def _publish_cluster_pose_result_array(
         self,
-        clustered: list[tuple[PoseStamped, ClusterResult]],
+        clustered: list[tuple[Pose, ClusterResult]],
         num_input_poses: int,
         header,
     ) -> None:
         msg = ClusterPoseResultArray()
-        self._fill_cluster_result_array(msg, clustered, num_input_poses, header)
+        fill_cluster_result_array(
+            msg, clustered, num_input_poses, header, self.sort_key
+        )
         self._cluster_pose_result_publisher.publish(msg)
-
-    def _fill_cluster_result_array(
-        self,
-        msg: ClusterPoseResultArray,
-        clustered: list[tuple[PoseStamped, ClusterResult]],
-        num_input_poses: int,
-        header,
-    ) -> None:
-        msg.header = header
-        msg.sort_key = int(self.sort_key)
-        msg.results = [
-            build_cluster_pose_result(avg_pose, cluster_result, num_input_poses)
-            for avg_pose, cluster_result in clustered
-        ]
 
     def _cancel_cluster_timer(self) -> None:
         if self._cluster_timer is None:
