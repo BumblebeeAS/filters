@@ -47,10 +47,10 @@ jobs:
       - name: Build
         run: |
           source /opt/ros/humble/setup.bash
-          colcon build --event-handlers console_direct+
+          colcon build --packages-up-to bb_filters --event-handlers console_direct+
 
       - name: Test
         run: |
           source /opt/ros/humble/setup.bash
-          colcon test --event-handlers console_direct+
+          colcon test --packages-select bb_filters --event-handlers console_direct+
           colcon test-result --verbose

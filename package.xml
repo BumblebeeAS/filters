@@ -21,8 +21,6 @@
 
   <depend>bb_perception_msgs</depend>
   <depend>bb_robosub_msgs</depend>
-  <depend>bb_robotx_msgs</depend>
-  <depend>bb_uav_msgs</depend>
   <depend>frames</depend>
 
   <test_depend>ament_copyright</test_depend>
