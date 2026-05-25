@@ -69,7 +69,8 @@ class ClusterPosesServiceNode(Node):
         # Per-call configuration. Sentinel values; overwritten on every
         # enable=True call via `_apply_request_config`.
         self.odom_topic: str = ""
-        self.pose_stamped_topic: str = ""
+        # Parallel lists: one entry per stream to cluster concurrently.
+        self.pose_stamped_topics: list[str] = []
         self.sync_queue_size: int = 100
         self.sync_tolerance: float = 0.05
         self.min_poses: int = 10
@@ -93,19 +94,21 @@ class ClusterPosesServiceNode(Node):
         )
         self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
-        # State
+        # State. One bucket of synchronized (odom, pose) tuples per stream;
+        # one GoalSynchronizer channel per stream. Parallel with
+        # `pose_stamped_topics` / `_clustered_child_frame_ids`.
         self.enabled: bool = False
-        self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
+        self._synchronized_data_buckets: list[list[tuple[Odometry, PoseStamped]]] = []
         self._data_lock = threading.Lock()
         self._camera_to_odom_transform: Optional[TransformStamped] = None
-        self._channel: GoalSynchronizer | None = None
+        self._channels: list[GoalSynchronizer] = []
         self._spike_monitor: SpikeClusterMonitor | None = None
         self._prev_cached_outcome: object = None
         self._spike_timer = self.create_timer(
             1.0 / self.spike_tick_hz, self._spike_tick
         )
         self._spike_cluster_frame_id = ""
-        self._clustered_child_frame_id = ""
+        self._clustered_child_frame_ids: list[str] = []
         self._spike_timer.cancel()  # start disabled
 
         self.get_logger().info("Cluster Poses Service Node initialized")
@@ -114,14 +117,24 @@ class ClusterPosesServiceNode(Node):
         """Apply per-call configuration from the service request.
 
         Called on every enable=True. Sentinel-empty strings/zero values are
-        not special-cased — `.srv` defaults are the only fallback.
+        not special-cased — `.srv` defaults are the only fallback. Validates
+        that pose_stamped_topic and clustered_child_frame_id have matching
+        length; raises ValueError otherwise.
         """
         self.odom_topic = request.odom_topic
-        self.pose_stamped_topic = request.pose_stamped_topic
+        self.pose_stamped_topics = list(request.pose_stamped_topic)
+        if len(self.pose_stamped_topics) != len(request.clustered_child_frame_id):
+            raise ValueError(
+                "pose_stamped_topic and clustered_child_frame_id must have "
+                f"matching length; got {len(self.pose_stamped_topics)} and "
+                f"{len(request.clustered_child_frame_id)}"
+            )
+        if not self.pose_stamped_topics:
+            raise ValueError("pose_stamped_topic must contain at least one entry")
         self.sync_queue_size = int(request.sync_queue_size)
         self.sync_tolerance = float(request.sync_tolerance)
         self.min_poses = int(request.min_poses)
-        # Number of top (largest) clusters to extract and broadcast.
+        # Number of top (largest) clusters to extract and broadcast per stream.
         self.cluster_num = max(1, int(request.cluster_num))
         self.min_cluster_size = int(request.min_cluster_size)
         self.min_samples = int(request.min_samples)
@@ -142,9 +155,20 @@ class ClusterPosesServiceNode(Node):
             self.spike_tick_hz = new_tick_hz
             self._spike_timer.timer_period_ns = int(1e9 / self.spike_tick_hz)
 
-    def _snapshot(self) -> list[tuple[Odometry, PoseStamped]]:
+    def _snapshot(self, stream_idx: int = 0) -> list[tuple[Odometry, PoseStamped]]:
+        """Return a bounded copy of one stream's accumulated tuples.
+
+        Used by spike detection (stream 0 only) and per-stream final
+        clustering. Caller is responsible for picking a valid index.
+        """
         with self._data_lock:
-            return list(self._synchronized_data[-self.partial_cluster_max_size :])
+            if stream_idx >= len(self._synchronized_data_buckets):
+                return []
+            return list(
+                self._synchronized_data_buckets[stream_idx][
+                    -self.partial_cluster_max_size :
+                ]
+            )
 
     def _get_camera_to_odom(
         self, snapshot: list[tuple[Odometry, PoseStamped]]
@@ -204,112 +228,140 @@ class ClusterPosesServiceNode(Node):
             try:
                 self.enabled = False
 
-                # Stop accepting new tuples and take a final snapshot. The
-                # channel itself is destroyed in `finally`.
-                if self._channel is not None:
-                    self._channel._accepting = False
+                # Stop accepting new tuples on all channels and take a final
+                # snapshot per stream. Channels themselves are destroyed in
+                # `finally`.
+                for channel in self._channels:
+                    channel._accepting = False
                 with self._data_lock:
-                    final_snapshot = list(self._synchronized_data)
-                total_collected = len(final_snapshot)
+                    final_snapshots = [
+                        list(bucket) for bucket in self._synchronized_data_buckets
+                    ]
+                total_collected = sum(len(s) for s in final_snapshots)
                 response.total_poses_collected = total_collected
 
+                # Need at least min_poses across the union to bother resolving
+                # the camera->odom transform.
                 if total_collected < int(self.min_poses):
                     response.is_enabled = False
                     response.is_cluster_success = False
                     response.poses_in_cluster = 0
                     return response
 
-                if not self._ensure_camera_to_odom(final_snapshot):
+                # camera->odom uses any non-empty snapshot for the lookup.
+                tf_snapshot = next((s for s in final_snapshots if s), [])
+                if not self._ensure_camera_to_odom(tf_snapshot):
                     self.get_logger().error("Failed to lookup camera->odom transform")
                     response.is_enabled = False
                     response.is_cluster_success = False
                     response.poses_in_cluster = 0
                     return response
 
-                results, transformed_poses = transform_and_cluster_top_k(
-                    final_snapshot,
-                    self._camera_to_odom_transform,
-                    self._cluster_params(),
-                    int(self.cluster_num),
-                )
-                if not results:
-                    self.get_logger().error("No clusters found")
-                    response.is_enabled = False
-                    response.is_cluster_success = False
-                    response.poses_in_cluster = 0
-                    return response
-
-                # Existing behaviour: publish the pose array and broadcast the
-                # largest cluster under the unsuffixed `clustered_child_frame_id`.
-                primary_outcome, _ = results[0]
-                primary_outcome.avg_pose.header = transformed_poses[-1].header
-                publish_clustered_results(
-                    self.pose_array_publisher,
-                    self._static_tf_broadcaster,
-                    primary_outcome.avg_pose,
-                    transformed_poses,
-                    self._clustered_child_frame_id,
-                )
-
-                # Add-on: also broadcast each of the top-K clusters under
-                # `<clustered_child_frame_id>/<i>` (i=0 is the largest, mirroring
-                # the unsuffixed transform above).
-                self._static_tf_broadcaster.sendTransform(
-                    [
-                        pose_to_transform_stamped(
-                            self._stamped_avg_pose(outcome, transformed_poses),
-                            f"{self._clustered_child_frame_id}/{i}",
+                # Cluster + broadcast each stream independently. Streams that
+                # didn't accumulate enough poses contribute nothing — they're
+                # silently skipped rather than failing the whole call.
+                cluster_params = self._cluster_params()
+                primary_sizes_sum = 0
+                any_success = False
+                for stream_idx, snapshot in enumerate(final_snapshots):
+                    prefix = self._clustered_child_frame_ids[stream_idx]
+                    if len(snapshot) < int(self.min_poses):
+                        self.get_logger().info(
+                            f"Stream {stream_idx} ({prefix}): "
+                            f"{len(snapshot)} < min_poses={self.min_poses}, skip"
                         )
-                        for i, (outcome, _members) in enumerate(results)
-                    ]
-                )
+                        continue
+
+                    results, transformed_poses = transform_and_cluster_top_k(
+                        snapshot,
+                        self._camera_to_odom_transform,
+                        cluster_params,
+                        int(self.cluster_num),
+                    )
+                    if not results:
+                        self.get_logger().error(
+                            f"Stream {stream_idx} ({prefix}): no clusters found"
+                        )
+                        continue
+
+                    # Mirror prior single-stream behaviour: publish the largest
+                    # cluster under the unsuffixed prefix, and the top-K under
+                    # `<prefix>/<i>`. PoseArray of cluster members goes out on
+                    # the shared topic for every stream that succeeds.
+                    primary_outcome, _ = results[0]
+                    primary_outcome.avg_pose.header = transformed_poses[-1].header
+                    publish_clustered_results(
+                        self.pose_array_publisher,
+                        self._static_tf_broadcaster,
+                        primary_outcome.avg_pose,
+                        transformed_poses,
+                        prefix,
+                    )
+                    self._static_tf_broadcaster.sendTransform(
+                        [
+                            pose_to_transform_stamped(
+                                self._stamped_avg_pose(outcome, transformed_poses),
+                                f"{prefix}/{i}",
+                            )
+                            for i, (outcome, _members) in enumerate(results)
+                        ]
+                    )
+                    primary_sizes_sum += int(primary_outcome.num_in_cluster)
+                    any_success = True
 
                 response.is_enabled = False
-                response.is_cluster_success = True
-                response.poses_in_cluster = int(primary_outcome.num_in_cluster)
+                response.is_cluster_success = any_success
+                response.poses_in_cluster = primary_sizes_sum
                 return response
             finally:
-                # Tear down the per-goal channel. shutdown() removes the child
-                # node from the executor (fencing the wait loop) and destroys it.
-                if self._channel is not None:
-                    channel, self._channel = self._channel, None
+                # Tear down all per-goal channels.
+                channels_to_close, self._channels = self._channels, []
+                for channel in channels_to_close:
                     channel.shutdown(join_timeout=2)
                 with self._data_lock:
-                    self._synchronized_data = []
+                    self._synchronized_data_buckets = []
                 self._camera_to_odom_transform = None
                 self._spike_timer.cancel()
                 self._spike_cluster_frame_id = ""
-                self._clustered_child_frame_id = ""
+                self._clustered_child_frame_ids = []
 
-        if self._channel is not None:
-            channel = self._channel
-            self._channel = None
-            channel.shutdown(join_timeout=2)
+        # Tear down any leftover channels from a prior partial start.
+        if self._channels:
+            for channel in self._channels:
+                channel.shutdown(join_timeout=2)
+            self._channels = []
 
         # Apply request configuration, then start accumulating.
         self._apply_request_config(request)
 
         self._spike_timer.reset()
         with self._data_lock:
-            self._synchronized_data = []
+            # One bucket per declared stream.
+            self._synchronized_data_buckets = [[] for _ in self.pose_stamped_topics]
         self._camera_to_odom_transform = None
         self._spike_monitor = self._build_spike_monitor()
 
         self._spike_cluster_frame_id = request.spike_cluster_frame_id or "spike/cluster"
-        self._clustered_child_frame_id = (
-            request.clustered_child_frame_id or "unknown/clustered"
-        )
+        # Apply the unknown/clustered fallback per entry.
+        self._clustered_child_frame_ids = [
+            f or "unknown/clustered" for f in request.clustered_child_frame_id
+        ]
 
         self._prev_cached_outcome = None
 
-        self._channel = GoalSynchronizer(
-            self,
-            odom_topic=self.odom_topic,
-            pose_topic=self.pose_stamped_topic,
-            slop=float(self.sync_tolerance),
-            queue_size=int(self.sync_queue_size),
-            on_synchronized=self._synchronized_callback,
-        )
+        # One GoalSynchronizer per stream; the per-stream callback is bound
+        # to the bucket index at creation time.
+        self._channels = [
+            GoalSynchronizer(
+                self,
+                odom_topic=self.odom_topic,
+                pose_topic=topic,
+                slop=float(self.sync_tolerance),
+                queue_size=int(self.sync_queue_size),
+                on_synchronized=self._make_stream_callback(stream_idx),
+            )
+            for stream_idx, topic in enumerate(self.pose_stamped_topics)
+        ]
 
         self.enabled = True
         response.is_enabled = True
@@ -319,14 +371,22 @@ class ClusterPosesServiceNode(Node):
         return response
 
     def _spike_tick(self) -> None:
+        # Spike detection runs on stream 0 only; multi-stream callers wanting
+        # spike behaviour should put their primary topic first. The
+        # `spike_cluster_frame_id` broadcast doesn't disambiguate streams,
+        # so trying to spike-monitor multiple sources would mix sources.
         if not self.enabled or self._spike_monitor is None:
             return
         with self._data_lock:
-            poses_now = len(self._synchronized_data)
+            poses_now = (
+                len(self._synchronized_data_buckets[0])
+                if self._synchronized_data_buckets
+                else 0
+            )
         reading = self._spike_monitor.tick(
             now_sec=self._now_sec(),
             poses_now=poses_now,
-            snapshot_fn=self._snapshot,
+            snapshot_fn=lambda: self._snapshot(0),
             get_tf_fn=self._get_camera_to_odom,
             params=self._cluster_params(),
         )
@@ -367,9 +427,19 @@ class ClusterPosesServiceNode(Node):
             )
         )
 
-    def _synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
-        with self._data_lock:
-            self._synchronized_data.append((odom_msg, pose_msg))
+    def _make_stream_callback(self, stream_idx: int):
+        """Return a GoalSynchronizer callback bound to a specific bucket."""
+
+        def _on_sync(odom_msg: Odometry, pose_msg: PoseStamped) -> None:
+            with self._data_lock:
+                # Channels can outlive the buckets briefly during teardown;
+                # guard the index so a late tuple doesn't crash.
+                if stream_idx < len(self._synchronized_data_buckets):
+                    self._synchronized_data_buckets[stream_idx].append(
+                        (odom_msg, pose_msg)
+                    )
+
+        return _on_sync
 
     def _handle_tf_static(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
@@ -389,8 +459,9 @@ def main(args=None) -> None:
     except Exception as e:
         node.get_logger().error(f"Unhandled exception in main: {e}")
     finally:
-        if node._channel is not None:
-            node._channel.shutdown(join_timeout=2.0)
+        for channel in node._channels:
+            channel.shutdown(join_timeout=2.0)
+        node._channels = []
         executor.shutdown()
         node.destroy_node()
     rclpy.try_shutdown()
