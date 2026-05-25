@@ -9,23 +9,26 @@
 
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
+  <depend>ament_index_cpp</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
-  <depend>bb_msgs</depend>
-  <depend>bb_perception_msgs</depend>
-  <depend>bb_robosub_msgs</depend>
-  <depend>bb_robotx_msgs</depend>
-  <depend>bb_uav_msgs</depend>
   <depend>geographic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
 
+  <depend>bb_perception_msgs</depend>
+  <depend>bb_robosub_msgs</depend>
+  <depend>bb_robotx_msgs</depend>
+  <depend>bb_uav_msgs</depend>
+  <depend>frames</depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>
 
   <export>

@@ -31,6 +31,7 @@ set(DEPENDENCIES
   tf2_geometry_msgs
   Eigen3
   rclcpp_components
+  ament_index_cpp
 )
 include_directories(
   include
@@ -123,6 +124,16 @@ if(BUILD_TESTING)
   set(ament_cmake_mypy_FOUND TRUE)
   set(ament_cmake_xmllint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_cluster_poses_service
+    test/test_cluster_poses_service.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(test_cluster_poses_action
+    test/test_cluster_poses_action.py
+    TIMEOUT 60
+  )
 endif()
 
 

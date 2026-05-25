@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import rclpy
-from cluster_poses_node import ClusterParams, ClusterPosesNode
+from bb_filters.clustering.cluster import ClusterResult
 from bb_perception_msgs.msg import ClusterPoseResult
 from bb_perception_msgs.srv import ClusterPosesSrv
-from bb_filters.clustering.cluster import ClusterResult
+from cluster_poses_node import ClusterParams, ClusterPosesNode
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from geometry_msgs.msg import PoseStamped
 from rclpy.timer import Timer
@@ -153,7 +153,9 @@ class ClusterPosesServiceNode(ClusterPosesNode):
                 return response
 
             transformed_poses = [
-                transform_pose_to_odom(odom_msg, pose_msg, self._camera_to_odom_transform)
+                transform_pose_to_odom(
+                    odom_msg, pose_msg, self._camera_to_odom_transform
+                )
                 for odom_msg, pose_msg in synchronized_data
             ]
             avg_pose, cluster_result = self._cluster_poses(
