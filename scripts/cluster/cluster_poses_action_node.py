@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import rclpy
+from bb_filters.clustering.cluster import ClusterSortKey
+from bb_perception_msgs.action import ClusterPosesAction
 from cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
+    build_cluster_pose_result,
     seconds_to_duration,
 )
-from bb_perception_msgs.action import ClusterPosesAction
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.action.server import ServerGoalHandle
@@ -50,20 +52,21 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self.get_logger().info("Cluster Poses Action Server initialized")
 
     @staticmethod
-    def _empty_result(num_input_poses: int = 0) -> ClusterPosesAction.Result:
+    def _empty_result(sort_key: int = 0) -> ClusterPosesAction.Result:
         result = ClusterPosesAction.Result()
-        result.cluster_result.num_input_poses = int(num_input_poses)
-        result.cluster_result.num_cluster_poses = 0
-        result.cluster_result.mean_probability = 0.0
-        result.cluster_result.clustered_position_std = 0.0
+        result.cluster_results.sort_key = int(sort_key)
+        result.cluster_results.results = []
         return result
 
     @staticmethod
     def _cluster_params(goal: ClusterPosesAction.Goal) -> ClusterParams:
+        params = goal.params
         return ClusterParams(
-            min_cluster_size=int(goal.min_cluster_size),
-            min_samples=int(goal.min_samples),
-            cluster_selection_epsilon=float(goal.cluster_selection_epsilon),
+            min_cluster_size=int(params.min_cluster_size),
+            min_samples=int(params.min_samples),
+            cluster_selection_epsilon=float(params.cluster_selection_epsilon),
+            top_k=int(params.top_k),
+            sort_key=ClusterSortKey(int(params.sort_key)),
         )
 
     def _reset_goal_state(self) -> None:
@@ -94,7 +97,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
             self._cleanup_subscribers()
             self._action_running = False
             self._reset_goal_state()
-            return self._empty_result()
+            return self._empty_result(int(goal_handle.request.params.sort_key))
         return await self._result_future
 
     def _start_goal(self, goal_handle: ServerGoalHandle) -> None:
@@ -114,9 +117,10 @@ class ClusterPosesActionNode(ClusterPosesNode):
         goal_handle.publish_feedback(feedback)
 
         self._start_subscribers(
-            odom_topic=goal.odom_topic,
-            pose_topic=goal.pose_stamped_topic,
-            sync_tolerance=float(goal.sync_tolerance),
+            odom_topic=goal.params.odom_topic,
+            pose_topics=list(goal.params.pose_stamped_topics),
+            sync_tolerance=float(goal.params.sync_tolerance),
+            sync_queue_size=int(goal.params.sync_queue_size),
         )
         self._goal_phase = "collecting"
 
@@ -131,7 +135,12 @@ class ClusterPosesActionNode(ClusterPosesNode):
                 self._finalize_goal(self._goal_handle)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"Error during cluster goal: {exc}")
-            self._finish_action("aborted", self._empty_result())
+            sort_key = (
+                int(self._goal_handle.request.params.sort_key)
+                if self._goal_handle
+                else 0
+            )
+            self._finish_action("aborted", self._empty_result(sort_key))
 
     def _step_collection(self, goal_handle: ServerGoalHandle) -> None:
         elapsed = self.get_clock().now() - self._collection_start_time
@@ -148,18 +157,19 @@ class ClusterPosesActionNode(ClusterPosesNode):
 
     def _finalize_goal(self, goal_handle: ServerGoalHandle) -> None:
         goal: ClusterPosesAction.Goal = goal_handle.request
+        params = goal.params
 
         self._cleanup_subscribers()
         synchronized_data = self._synchronized_data
         total_collected = len(synchronized_data)
         self.get_logger().info(f"Collected {total_collected} synchronized pose pairs")
 
-        if total_collected < int(goal.min_poses):
+        if total_collected < int(params.min_poses):
             self.get_logger().error(
                 "Not enough synchronized poses collected. "
-                f"Got {total_collected}, need {int(goal.min_poses)}"
+                f"Got {total_collected}, need {int(params.min_poses)}"
             )
-            self._finish_action("aborted", self._empty_result(total_collected))
+            self._finish_action("aborted", self._empty_result(int(params.sort_key)))
             return
 
         feedback = ClusterPosesAction.Feedback()
@@ -169,37 +179,43 @@ class ClusterPosesActionNode(ClusterPosesNode):
         goal_handle.publish_feedback(feedback)
 
         if not self._ensure_camera_to_odom(synchronized_data):
-            self._finish_action("aborted", self._empty_result(total_collected))
+            self._finish_action("aborted", self._empty_result(int(params.sort_key)))
             return
 
         feedback.current_status = "Transforming and clustering poses"
         goal_handle.publish_feedback(feedback)
 
         transformed_poses = [
-            transform_pose_to_odom(odom_msg, pose_msg, self._camera_to_odom_transform)
+            transform_pose_to_odom(
+                odom_msg,
+                pose_msg,
+                self._camera_to_odom_transforms[pose_msg.header.frame_id],
+            )
             for odom_msg, pose_msg in synchronized_data
         ]
-        avg_pose, cluster_result = self._cluster_poses(
-            transformed_poses, self._cluster_params(goal)
-        )
-        if avg_pose is None:
-            self._finish_action("aborted", self._empty_result(total_collected))
+        clustered = self._cluster_poses(transformed_poses, self._cluster_params(goal))
+        if not clustered:
+            self._finish_action("aborted", self._empty_result(int(params.sort_key)))
             return
 
-        avg_pose.header = transformed_poses[-1].header
-        self._publish_results(avg_pose, transformed_poses, goal.clustered_child_frame_id)
+        last_header = transformed_poses[-1].header
+        for avg_pose, _ in clustered:
+            avg_pose.header = last_header
+        self._publish_results(
+            clustered, transformed_poses, params.clustered_child_frame_id
+        )
 
         result = ClusterPosesAction.Result()
-        result.cluster_result.clustered_pose = avg_pose
-        result.cluster_result.clustered_position_std = cluster_result.clustered_position_std
-        result.cluster_result.num_cluster_poses = int(cluster_result.num_cluster_poses)
-        result.cluster_result.num_input_poses = int(total_collected)
-        result.cluster_result.mean_probability = cluster_result.mean_probability
+        result.cluster_results.header = last_header
+        result.cluster_results.sort_key = int(params.sort_key)
+        result.cluster_results.results = [
+            build_cluster_pose_result(avg_pose, cluster_result, total_collected)
+            for avg_pose, cluster_result in clustered
+        ]
 
         self.get_logger().info(
-            "Clustering complete: "
-            f"{result.cluster_result.num_cluster_poses}/"
-            f"{result.cluster_result.num_input_poses} poses in cluster"
+            f"Clustering complete: {len(result.cluster_results.results)} cluster(s) "
+            f"from {total_collected} poses"
         )
         self._finish_action("succeeded", result)
 

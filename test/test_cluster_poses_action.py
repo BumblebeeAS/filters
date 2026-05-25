@@ -3,6 +3,7 @@
 import pytest
 import rclpy
 from bb_perception_msgs.action import ClusterPosesAction
+from bb_perception_msgs.msg import ClusterPosesRequest
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 
@@ -32,7 +33,7 @@ def rig(rclpy_context):
     executor.add_node(action_node)
     executor.add_node(client_node)
 
-    publishers = attach_synthetic_publishers(client_node, ODOM_TOPIC, POSE_TOPIC)
+    publishers = attach_synthetic_publishers(client_node, ODOM_TOPIC, [POSE_TOPIC])
     action_client = ActionClient(client_node, ClusterPosesAction, ACTION_NAME)
 
     spin_for(executor, 0.05)
@@ -56,15 +57,17 @@ def test_action_succeeds(rig):
     spin_for(rig["executor"], 0.2)
 
     goal = ClusterPosesAction.Goal()
-    goal.odom_topic = ODOM_TOPIC
-    goal.pose_stamped_topic = POSE_TOPIC
-    goal.clustered_child_frame_id = "test/clustered_action"
+    goal.params.odom_topic = ODOM_TOPIC
+    goal.params.pose_stamped_topics = [POSE_TOPIC]
+    goal.params.clustered_child_frame_id = "test/clustered_action"
+    goal.params.sync_tolerance = 0.05
+    goal.params.min_poses = 5
+    goal.params.min_cluster_size = 3
+    goal.params.min_samples = 2
+    goal.params.cluster_selection_epsilon = 0.0
+    goal.params.top_k = 1
+    goal.params.sort_key = ClusterPosesRequest.SORT_BY_NUM_CLUSTER_POSES
     goal.collection_duration = 0.6
-    goal.sync_tolerance = 0.05
-    goal.min_poses = 5
-    goal.min_cluster_size = 3
-    goal.min_samples = 2
-    goal.cluster_selection_epsilon = 0.0
 
     rig["publish_timer"].reset()
     try:
@@ -79,8 +82,11 @@ def test_action_succeeds(rig):
     finally:
         rig["publish_timer"].cancel()
 
-    cluster = result.cluster_result
-    assert cluster.num_input_poses > 0
-    assert cluster.num_cluster_poses > 0
-    assert cluster.num_cluster_poses <= cluster.num_input_poses
-    assert abs(cluster.clustered_pose.pose.position.x - EXPECTED_CLUSTER_X) < 0.05
+    cluster_results = result.cluster_results
+    assert cluster_results.sort_key == ClusterPosesRequest.SORT_BY_NUM_CLUSTER_POSES
+    assert len(cluster_results.results) >= 1
+    top = cluster_results.results[0]
+    assert top.num_input_poses > 0
+    assert top.num_cluster_poses > 0
+    assert top.num_cluster_poses <= top.num_input_poses
+    assert abs(top.clustered_pose.position.x - EXPECTED_CLUSTER_X) < 0.05

@@ -4,8 +4,14 @@ from operator import attrgetter
 
 import numpy as np
 import tf2_ros
-from bb_filters.clustering.cluster import ClusterResult, get_largest_cluster
+from bb_filters.clustering.cluster import (
+    ClusterResult,
+    ClusterSortKey,
+    get_all_clusters,
+    sort_clusters,
+)
 from bb_filters.clustering.pose import get_average_pose
+from bb_perception_msgs.msg import ClusterPoseResult
 from geometry_msgs.msg import (
     PoseArray,
     PoseStamped,
@@ -40,6 +46,26 @@ class ClusterParams:
     min_cluster_size: int
     min_samples: int
     cluster_selection_epsilon: float
+    top_k: int = 1
+    sort_key: ClusterSortKey = ClusterSortKey.NUM_CLUSTER_POSES
+
+
+def build_cluster_pose_result(
+    avg_pose: PoseStamped,
+    cluster_result: ClusterResult,
+    num_input_poses: int,
+) -> ClusterPoseResult:
+    """Project a clustered (PoseStamped, ClusterResult) pair into a ROS message.
+
+    The PoseStamped's header is dropped — the array carries the timestamp once.
+    """
+    msg = ClusterPoseResult()
+    msg.clustered_pose = avg_pose.pose
+    msg.clustered_position_std = float(cluster_result.clustered_position_std)
+    msg.num_cluster_poses = int(cluster_result.num_cluster_poses)
+    msg.num_input_poses = int(num_input_poses)
+    msg.mean_probability = float(cluster_result.mean_probability)
+    return msg
 
 
 class ClusterPosesNode(Node):
@@ -64,10 +90,10 @@ class ClusterPosesNode(Node):
         )
 
         self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
-        self._camera_to_odom_transform: TransformStamped | None = None
+        self._camera_to_odom_transforms: dict[str, TransformStamped] = {}
         self._odom_subscriber: Subscriber | None = None
-        self._pose_subscriber: Subscriber | None = None
-        self._time_synchronizer: ApproximateTimeSynchronizer | None = None
+        self._pose_subscribers: list[Subscriber] = []
+        self._time_synchronizers: list[ApproximateTimeSynchronizer] = []
 
         # Declare parameters
         output_pose_array_topic = (
@@ -98,86 +124,106 @@ class ClusterPosesNode(Node):
 
     def _reset_collection(self) -> None:
         self._synchronized_data = []
-        self._camera_to_odom_transform = None
+        self._camera_to_odom_transforms = {}
 
     def _ensure_camera_to_odom(
         self,
         synchronized_data: list[tuple[Odometry, PoseStamped]],
     ) -> bool:
-        if self._camera_to_odom_transform is not None:
-            return True
+        """Look up odom_child -> camera transforms for every unique source frame."""
         if not synchronized_data:
             return False
 
         odom_child_frame = synchronized_data[0][0].child_frame_id
-        camera_frame_id = synchronized_data[0][1].header.frame_id
-        try:
-            self._camera_to_odom_transform = self._tf_buffer.lookup_transform(
-                odom_child_frame,
-                camera_frame_id,
-                Time(),
-                timeout=Duration(seconds=5),
+        camera_frames = {pose.header.frame_id for _, pose in synchronized_data}
+        for camera_frame_id in camera_frames:
+            if camera_frame_id in self._camera_to_odom_transforms:
+                continue
+            try:
+                tf = self._tf_buffer.lookup_transform(
+                    odom_child_frame,
+                    camera_frame_id,
+                    Time(),
+                    timeout=Duration(seconds=5),
+                )
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as exc:
+                self.get_logger().error(
+                    f"Failed to lookup transform from {camera_frame_id} to "
+                    f"{odom_child_frame}: {exc}"
+                )
+                return False
+            self._camera_to_odom_transforms[camera_frame_id] = tf
+            self.get_logger().info(
+                f"Found transform from {camera_frame_id} to {odom_child_frame}"
             )
-        except (
-            tf2_ros.LookupException,
-            tf2_ros.ConnectivityException,
-            tf2_ros.ExtrapolationException,
-        ) as exc:
-            self.get_logger().error(f"Failed to lookup transform: {exc}")
-            return False
-
-        self.get_logger().info(
-            f"Found transform from {camera_frame_id} to {odom_child_frame}"
-        )
         return True
 
     def _start_subscribers(
         self,
         *,
         odom_topic: str,
-        pose_topic: str,
+        pose_topics: list[str],
         sync_tolerance: float,
         sync_queue_size: int | None = None,
     ) -> None:
+        """Subscribe to one odom topic and N pose topics, all feeding one buffer."""
+        if not pose_topics:
+            raise ValueError("pose_topics must contain at least one topic")
+        qsize = int(sync_queue_size or self._sync_queue_size)
         self._odom_subscriber = Subscriber(
             self,
             Odometry,
             odom_topic,
             qos_profile=qos_profile_sensor_data,
         )
-        self._pose_subscriber = Subscriber(
-            self,
-            PoseStamped,
-            pose_topic,
-            qos_profile=qos_profile_sensor_data,
-        )
-        self._time_synchronizer = ApproximateTimeSynchronizer(
-            [self._odom_subscriber, self._pose_subscriber],
-            queue_size=int(sync_queue_size or self._sync_queue_size),
-            slop=float(sync_tolerance),
-        )
-        self._time_synchronizer.registerCallback(self._synchronized_callback)
+        for topic in pose_topics:
+            pose_sub = Subscriber(
+                self,
+                PoseStamped,
+                topic,
+                qos_profile=qos_profile_sensor_data,
+            )
+            self._pose_subscribers.append(pose_sub)
+            time_synchronizer = ApproximateTimeSynchronizer(
+                [self._odom_subscriber, pose_sub],
+                queue_size=qsize,
+                slop=float(sync_tolerance),
+            )
+            time_synchronizer.registerCallback(self._synchronized_callback)
+            self._time_synchronizers.append(time_synchronizer)
 
     def _cleanup_subscribers(self) -> None:
-        for sub in (self._odom_subscriber, self._pose_subscriber):
-            if sub is None:
-                continue
+        subs: list[Subscriber] = []
+        if self._odom_subscriber is not None:
+            subs.append(self._odom_subscriber)
+        subs.extend(self._pose_subscribers)
+        for sub in subs:
             try:
                 self.destroy_subscription(sub.sub)
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(f"Subscriber cleanup failed: {exc}")
         self._odom_subscriber = None
-        self._pose_subscriber = None
-        self._time_synchronizer = None
+        self._pose_subscribers = []
+        self._time_synchronizers = []
 
     def _cluster_poses(
         self,
         transformed_poses: list[PoseStamped],
         params: ClusterParams,
-    ) -> tuple[PoseStamped | None, ClusterResult]:
+    ) -> list[tuple[PoseStamped, ClusterResult]]:
+        """Cluster `transformed_poses` and return the top_k results.
+
+        Each entry is the average PoseStamped of a cluster paired with its
+        `ClusterResult`. The list is ordered by `params.sort_key`, best-first,
+        and truncated to `params.top_k` (0 = keep all).
+        """
         if len(transformed_poses) < max(params.min_cluster_size, params.min_samples):
             self.get_logger().error("Not enough poses for clustering")
-            return None, ClusterResult.empty(num_input_poses=len(transformed_poses))
+            return []
 
         hdbscan = HDBSCAN(
             min_cluster_size=int(params.min_cluster_size),
@@ -192,33 +238,47 @@ class ClusterPosesNode(Node):
                 for pose in transformed_poses
             ]
         )
-        cluster_result = get_largest_cluster(hdbscan, positions)
-        if len(cluster_result.idxs) == 0:
+        clusters = get_all_clusters(hdbscan, positions)
+        if not clusters:
             self.get_logger().error("No clusters found")
-            return None, cluster_result
+            return []
 
-        filtered_pose_msgs = [transformed_poses[i].pose for i in cluster_result.idxs]
-        avg_pose = PoseStamped()
-        avg_pose.pose = get_average_pose(filtered_pose_msgs)
-        avg_pose.header = transformed_poses[cluster_result.idxs[0]].header
-        return avg_pose, cluster_result
+        clusters = sort_clusters(clusters, params.sort_key)
+        if int(params.top_k) > 0:
+            clusters = clusters[: int(params.top_k)]
+
+        results: list[tuple[PoseStamped, ClusterResult]] = []
+        for cluster in clusters:
+            cluster_poses = [transformed_poses[i].pose for i in cluster.idxs]
+            avg_pose = PoseStamped()
+            avg_pose.pose = get_average_pose(cluster_poses)
+            avg_pose.header = transformed_poses[cluster.idxs[0]].header
+            results.append((avg_pose, cluster))
+        return results
 
     def _publish_results(
         self,
-        avg_pose: PoseStamped,
+        clustered: list[tuple[PoseStamped, ClusterResult]],
         transformed_poses: list[PoseStamped],
         clustered_child_frame_id: str,
     ) -> None:
+        if not clustered:
+            return
+
+        # Pose array of every input pose — still useful for debugging/visualization.
         pose_array_msg = PoseArray()
-        pose_array_msg.header = avg_pose.header
+        pose_array_msg.header = clustered[0][0].header
         pose_array_msg.poses = [pose.pose for pose in transformed_poses]
         self._pose_array_publisher.publish(pose_array_msg)
 
-        transform_stamped = TransformStamped()
-        transform_stamped.header = avg_pose.header
-        transform_stamped.child_frame_id = clustered_child_frame_id
-        t = attrgetter("x", "y", "z")(avg_pose.pose.position)
-        qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
-        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
-        self._static_tf_broadcaster.sendTransform(transform_stamped)
+        transforms: list[TransformStamped] = []
+        for i, (avg_pose, _) in enumerate(clustered):
+            transform_stamped = TransformStamped()
+            transform_stamped.header = avg_pose.header
+            transform_stamped.child_frame_id = f"{clustered_child_frame_id}_{i}"
+            t = attrgetter("x", "y", "z")(avg_pose.pose.position)
+            qx, qy, qz, qw = attrgetter("x", "y", "z", "w")(avg_pose.pose.orientation)
+            transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
+            transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+            transforms.append(transform_stamped)
+        self._static_tf_broadcaster.sendTransform(transforms)

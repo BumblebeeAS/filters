@@ -38,8 +38,9 @@ TF_STATIC_QOS = QoSProfile(
 )
 
 # Tuple returned by attach_synthetic_publishers. publish_timer fires every
-# 20ms while reset(); calls publish a synchronized odom+pose pair.
-PublisherRig = namedtuple("PublisherRig", ["tf", "odom", "pose", "publish_timer"])
+# 20ms while reset(); each tick publishes one odom plus one PoseStamped per
+# topic in `poses`.
+PublisherRig = namedtuple("PublisherRig", ["tf", "odom", "poses", "publish_timer"])
 
 
 def add_scripts_to_path() -> None:
@@ -93,31 +94,47 @@ def spin_until_done(executor, future, timeout_sec: float) -> bool:
 
 
 def attach_synthetic_publishers(
-    client_node, odom_topic: str, pose_topic: str
+    client_node,
+    odom_topic: str,
+    pose_topics: list[str],
+    cluster_xs: list[float] | None = None,
 ) -> PublisherRig:
-    """Create /tf_static + odom + pose publishers and a periodic-publish timer.
+    """Create /tf_static + odom + N pose publishers and a periodic-publish timer.
 
-    The timer is created in cancelled state; call ``rig.publish_timer.reset()``
-    to start streaming synchronized odom+pose pairs clustered around
-    (``EXPECTED_CLUSTER_X``, 0, 0), and ``rig.publish_timer.cancel()`` to stop.
+    Each tick publishes one odom message plus one PoseStamped on every entry of
+    `pose_topics`, with topic i clustered around `cluster_xs[i]` (defaults to
+    ``EXPECTED_CLUSTER_X`` for every topic). The timer is created in cancelled
+    state; call ``rig.publish_timer.reset()`` to start streaming and
+    ``rig.publish_timer.cancel()`` to stop.
     """
+    if not pose_topics:
+        raise ValueError("pose_topics must contain at least one topic")
+    if cluster_xs is None:
+        cluster_xs = [EXPECTED_CLUSTER_X] * len(pose_topics)
+    if len(cluster_xs) != len(pose_topics):
+        raise ValueError("cluster_xs must match pose_topics in length")
+
     tf_pub = client_node.create_publisher(TFMessage, "/tf_static", TF_STATIC_QOS)
     odom_pub = client_node.create_publisher(
         Odometry, odom_topic, qos_profile_sensor_data
     )
-    pose_pub = client_node.create_publisher(
-        PoseStamped, pose_topic, qos_profile_sensor_data
-    )
+    pose_pubs = [
+        client_node.create_publisher(PoseStamped, topic, qos_profile_sensor_data)
+        for topic in pose_topics
+    ]
 
     counter = [0]
 
     def publish_once():
         stamp = client_node.get_clock().now().to_msg()
-        x = EXPECTED_CLUSTER_X + POSE_NOISE * ((counter[0] % 5) - 2)
         odom_pub.publish(make_odom(stamp))
-        pose_pub.publish(make_pose(stamp, x=x))
+        for pub, base_x in zip(pose_pubs, cluster_xs):
+            x = base_x + POSE_NOISE * ((counter[0] % 5) - 2)
+            pub.publish(make_pose(stamp, x=x))
         counter[0] += 1
 
     publish_timer = client_node.create_timer(0.02, publish_once)
     publish_timer.cancel()
-    return PublisherRig(tf=tf_pub, odom=odom_pub, pose=pose_pub, publish_timer=publish_timer)
+    return PublisherRig(
+        tf=tf_pub, odom=odom_pub, poses=pose_pubs, publish_timer=publish_timer
+    )
