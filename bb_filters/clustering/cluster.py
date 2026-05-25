@@ -13,19 +13,21 @@ class ClusterResult:
 
     Attributes:
         idxs: Indices of input points assigned to the cluster.
+        clustered_position_std: Mean Euclidean distance of cluster points from their centroid.
+        num_cluster_poses: Number of points assigned to the cluster.
+        num_input_poses: Total number of points presented to the clusterer.
         mean_probability: Mean HDBSCAN soft-membership probability over the cluster.
-        inlier_ratio: Fraction of input points assigned to the cluster.
-        position_std: Mean Euclidean distance of cluster points from their centroid.
     """
 
     idxs: np.ndarray
+    clustered_position_std: float = 0.0
+    num_cluster_poses: int = 0
+    num_input_poses: int = 0
     mean_probability: float = 0.0
-    inlier_ratio: float = 0.0
-    position_std: float = 0.0
 
     @classmethod
-    def empty(cls) -> "ClusterResult":
-        return cls(idxs=np.array([], dtype=int))
+    def empty(cls, num_input_poses: int = 0) -> "ClusterResult":
+        return cls(idxs=np.array([], dtype=int), num_input_poses=int(num_input_poses))
 
 
 def euclidean_metric(v: tuple[Vector3, Quaternion], w: tuple[Vector3, Quaternion]):
@@ -99,7 +101,7 @@ def get_largest_cluster(
     non_noise_labels = labels[labels >= 0]
 
     if len(non_noise_labels) == 0:
-        return ClusterResult.empty()
+        return ClusterResult.empty(num_input_poses=len(positions))
 
     unique_labels, unique_label_counts = np.unique(non_noise_labels, return_counts=True)
     largest_cluster_label = int(unique_labels[np.argmax(unique_label_counts)])
@@ -109,9 +111,10 @@ def get_largest_cluster(
     centroid = cluster_positions.mean(axis=0)
     return ClusterResult(
         idxs=largest_cluster_idxs,
+        clustered_position_std=float(np.linalg.norm(cluster_positions - centroid, axis=1).mean()),
+        num_cluster_poses=int(len(largest_cluster_idxs)),
+        num_input_poses=int(len(positions)),
         mean_probability=float(hdbscan.probabilities_[largest_cluster_idxs].mean()),
-        inlier_ratio=float(len(largest_cluster_idxs) / len(positions)),
-        position_std=float(np.linalg.norm(cluster_positions - centroid, axis=1).mean()),
     )
 
 
