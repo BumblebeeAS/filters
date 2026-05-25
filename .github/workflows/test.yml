@@ -9,37 +9,43 @@ on:
 
 jobs:
   build:
-    runs-on: [self-hosted, ros2-humble]
+    runs-on: ubuntu-22.04
+    container:
+      image: ros:humble-ros-base
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Setup colcon workspace
-        run: source /opt/ros/humble/setup.bash
-
-      - name: Check out repo
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          path: src/filters
+          path: src/repo
 
       - name: Check out bb_msgs
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: Bumblebeeas/bb_msgs
           path: src/bb_msgs
 
       - name: Check out frames
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: BumblebeeAS/frames
           path: src/frames
 
-      - name: Install dependencies
-        run: source /opt/ros/humble/setup.bash && rosdep update && rosdep install --from-paths src -i -r -y
+      - name: Install rosdeps
+        run: |
+          apt-get update
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
 
       - name: Build
-        run: source /opt/ros/humble/setup.bash && colcon build --merge-install
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --event-handlers console_direct+
 
       - name: Test
-        run: source /opt/ros/humble/setup.bash && colcon test --merge-install
-
-      - name: Log Tests if failed
-        if: failure()
-        run: colcon test-result --verbose
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon test --event-handlers console_direct+
+          colcon test-result --verbose
