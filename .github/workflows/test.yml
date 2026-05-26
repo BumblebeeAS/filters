@@ -11,14 +11,14 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     container:
-      image: ros:humble-ros-base
+      image: rostooling/setup-ros-docker:ubuntu-jammy-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Python requirements
         run: |
           apt-get update
-          apt-get install -y python3-pip python3-colcon-coveragepy-result
+          apt-get install -y python3-pip
           pip3 install -r requirements.txt
 
       - uses: ros-tooling/action-ros-ci@v0.3
