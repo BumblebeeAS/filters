@@ -44,7 +44,11 @@
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-shapely</exec_depend>
   <exec_depend>python3-sklearn</exec_depend>
-  <exec_depend>python3-transforms3d</exec_depend>
+  <!-- Use the pip-installed version instead of the system version -->
+  <!-- Ubuntu 22.04 uses python3-transforms3d version 0.3.1 -->
+  <!-- This has a `numpy.float` bug which is incompatible with numpy 1.24+ -->
+  <!-- This is fixed in Ubuntu 24.04 which uses python3-transforms3d version 0.4.1 -->
+  <exec_depend>python-transforms3d-pip</exec_depend>
 
   <exec_depend>bb_robosub_msgs</exec_depend>
   <exec_depend>frames</exec_depend>
