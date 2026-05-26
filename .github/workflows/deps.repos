@@ -6,4 +6,4 @@ repositories:
   frames:
     type: git
     url: https://github.com/BumblebeeAS/frames.git
-    version: master
+    version: humble
