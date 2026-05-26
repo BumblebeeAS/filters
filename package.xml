@@ -7,25 +7,54 @@
   <maintainer email="bumblebeeauv@gmail.com">islabella</maintainer>
   <license>TODO: License declaration</license>
 
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_auto</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
+  <depend>rclpy</depend>
+  <depend>ament_index_cpp</depend>
+
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
-  <depend>bb_msgs</depend>
-  <depend>bb_perception_msgs</depend>
-  <depend>bb_robosub_msgs</depend>
-  <depend>bb_robotx_msgs</depend>
-  <depend>bb_uav_msgs</depend>
-  <depend>geographic_msgs</depend>
+
+  <depend>builtin_interfaces</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
 
+  <depend>eigen</depend>
+  <depend>yaml-cpp</depend>
+
+  <depend>bb_perception_msgs</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-shapely</exec_depend>
+  <exec_depend>python-transforms3d</exec_depend>
+  <!-- Install sklearn separately using pip for HDBSCAN -->
+
+  <exec_depend>bb_robosub_msgs</exec_depend>
+  <exec_depend>frames</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>
 
   <export>

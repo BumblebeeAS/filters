@@ -31,6 +31,7 @@ set(DEPENDENCIES
   tf2_geometry_msgs
   Eigen3
   rclcpp_components
+  ament_index_cpp
 )
 include_directories(
   include
@@ -91,7 +92,8 @@ install(PROGRAMS
   scripts/detected_object_3d_labelling.py
   scripts/detected_object_2d_filter_projection.py
 
-  scripts/cluster/cluster_poses_node.py
+  scripts/cluster/cluster_poses_action_node.py
+  scripts/cluster/cluster_poses_service_node.py
   scripts/cluster/cluster_tf_action.py
   scripts/cluster/cluster_tf_action_server.py
   scripts/cluster/cluster_tf_service_server.py
@@ -104,19 +106,36 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(FILES
+  scripts/cluster/cluster_poses_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
+  # the following lines skips linting
   set(ament_cmake_cpplint_FOUND TRUE)
   set(ament_cmake_mypy_FOUND TRUE)
   set(ament_cmake_xmllint_FOUND TRUE)
+  set(ament_cmake_flake8_FOUND TRUE)
+  set(ament_cmake_pep257_FOUND TRUE)
+  set(ament_cmake_lint_cmake_FOUND TRUE)
+  set(ament_cmake_uncrustify_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_cluster_poses_service
+    test/test_cluster_poses_service.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(test_cluster_poses_action
+    test/test_cluster_poses_action.py
+    TIMEOUT 60
+  )
 endif()
 
 

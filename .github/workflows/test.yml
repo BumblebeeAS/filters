@@ -1,0 +1,28 @@
+name: CI/CD
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-jammy-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python requirements
+        run: |
+          apt-get update
+          apt-get install -y python3-pip
+          pip3 install -r requirements.txt
+
+      - uses: ros-tooling/action-ros-ci@v0.3
+        with:
+          package-name: bb_filters
+          target-ros2-distro: humble
+          vcs-repo-file-url: ${{ github.workspace }}/.github/workflows/deps.repos

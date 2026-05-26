@@ -1,5 +1,6 @@
 import copy
 from dataclasses import dataclass
+from enum import IntEnum
 
 import numpy as np
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion, TransformStamped, Vector3
@@ -7,16 +8,40 @@ from numpy.typing import ArrayLike
 from sklearn.cluster import HDBSCAN
 
 
+class ClusterSortKey(IntEnum):
+    """Sort keys for ordering a list of `ClusterResult`s.
+
+    Integer values match the SORT_BY_* constants on
+    `bb_perception_msgs/ClusterPosesRequest` so request/goal fields can be
+    cast directly to this enum.
+    """
+
+    NUM_CLUSTER_POSES = 0  # largest first
+    MEAN_PROBABILITY = 1  # highest first
+    CLUSTERED_POSITION_STD = 2  # tightest (smallest std) first
+
+
 @dataclass(frozen=True)
 class ClusterResult:
+    """Single cluster result from HDBSCAN.
+
+    Attributes:
+        idxs: Indices of input points assigned to the cluster.
+        clustered_position_std: Mean Euclidean distance of cluster points from their centroid.
+        num_cluster_poses: Number of points assigned to the cluster.
+        num_input_poses: Total number of points presented to the clusterer.
+        mean_probability: Mean HDBSCAN soft-membership probability over the cluster.
+    """
+
     idxs: np.ndarray
+    clustered_position_std: float = 0.0
+    num_cluster_poses: int = 0
+    num_input_poses: int = 0
     mean_probability: float = 0.0
-    inlier_ratio: float = 0.0
-    position_std: float = 0.0
 
     @classmethod
-    def empty(cls) -> "ClusterResult":
-        return cls(idxs=np.array([], dtype=int))
+    def empty(cls, num_input_poses: int = 0) -> "ClusterResult":
+        return cls(idxs=np.array([], dtype=int), num_input_poses=int(num_input_poses))
 
 
 def euclidean_metric(v: tuple[Vector3, Quaternion], w: tuple[Vector3, Quaternion]):
@@ -79,31 +104,63 @@ def get_top_k_clusters(
     ]
 
 
-def get_largest_cluster(
-    hdbscan: HDBSCAN,
-    positions: np.ndarray,
+def _build_cluster_result(
+    hdbscan: HDBSCAN, positions: np.ndarray, idxs: np.ndarray
 ) -> ClusterResult:
+    cluster_positions = positions[idxs]
+    centroid = cluster_positions.mean(axis=0)
+    return ClusterResult(
+        idxs=idxs,
+        clustered_position_std=float(
+            np.linalg.norm(cluster_positions - centroid, axis=1).mean()
+        ),
+        num_cluster_poses=int(len(idxs)),
+        num_input_poses=int(len(positions)),
+        mean_probability=float(hdbscan.probabilities_[idxs].mean()),
+    )
+
+
+def get_largest_cluster(hdbscan: HDBSCAN, positions: np.ndarray) -> ClusterResult:
     """Fit HDBSCAN and return the largest cluster."""
+    clusters = get_all_clusters(hdbscan, positions)
+    if not clusters:
+        return ClusterResult.empty(num_input_poses=len(positions))
+    return sort_clusters(clusters, ClusterSortKey.NUM_CLUSTER_POSES)[0]
+
+
+def get_all_clusters(hdbscan: HDBSCAN, positions: np.ndarray) -> list[ClusterResult]:
+    """Fit HDBSCAN and return every non-noise cluster, unsorted."""
     hdbscan.fit(positions)
 
     labels = np.array(hdbscan.labels_)
     non_noise_labels = labels[labels >= 0]
-
     if len(non_noise_labels) == 0:
-        return ClusterResult.empty()
+        return []
 
-    unique_labels, unique_label_counts = np.unique(non_noise_labels, return_counts=True)
-    largest_cluster_label = int(unique_labels[np.argmax(unique_label_counts)])
-    largest_cluster_idxs = np.where(labels == largest_cluster_label)[0]
+    unique_labels = np.unique(non_noise_labels)
+    return [
+        _build_cluster_result(hdbscan, positions, np.where(labels == int(label))[0])
+        for label in unique_labels
+    ]
 
-    cluster_positions = positions[largest_cluster_idxs]
-    centroid = cluster_positions.mean(axis=0)
-    return ClusterResult(
-        idxs=largest_cluster_idxs,
-        mean_probability=float(hdbscan.probabilities_[largest_cluster_idxs].mean()),
-        inlier_ratio=float(len(largest_cluster_idxs) / len(positions)),
-        position_std=float(np.linalg.norm(cluster_positions - centroid, axis=1).mean()),
-    )
+
+def sort_clusters(
+    clusters: list[ClusterResult],
+    sort_key: ClusterSortKey,
+) -> list[ClusterResult]:
+    """Return clusters ordered best-first by the chosen key.
+
+    NUM_CLUSTER_POSES and MEAN_PROBABILITY sort descending
+    CLUSTERED_POSITION_STD sorts ascending.
+    """
+    key = ClusterSortKey(sort_key)
+    if key is ClusterSortKey.NUM_CLUSTER_POSES:
+        return sorted(clusters, key=lambda c: c.num_cluster_poses, reverse=True)
+    if key is ClusterSortKey.MEAN_PROBABILITY:
+        return sorted(clusters, key=lambda c: c.mean_probability, reverse=True)
+    if key is ClusterSortKey.CLUSTERED_POSITION_STD:
+        return sorted(clusters, key=lambda c: c.clustered_position_std)
+    raise ValueError(f"Unsupported ClusterSortKey: {sort_key}")
 
 
 def tf_to_pose_stamped(tf: TransformStamped) -> PoseStamped:
