@@ -18,7 +18,7 @@ jobs:
       - name: Install Python requirements
         run: |
           apt-get update
-          apt-get install -y python3-pip
+          apt-get install -y python3-pip python3-colcon-coveragepy-result
           pip3 install -r requirements.txt
 
       - uses: ros-tooling/action-ros-ci@v0.3
