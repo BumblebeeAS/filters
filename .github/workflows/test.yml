@@ -12,45 +12,17 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: ros:humble-ros-base
-    defaults:
-      run:
-        shell: bash
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          path: src/filters
-
-      - name: Check out bb_msgs
-        uses: actions/checkout@v4
-        with:
-          repository: Bumblebeeas/bb_msgs
-          path: src/bb_msgs
-
-      - name: Check out frames
-        uses: actions/checkout@v4
-        with:
-          repository: BumblebeeAS/frames
-          path: src/frames
-
-      - name: Install rosdeps
-        run: |
-          apt-get update
-          rosdep update
-          rosdep install --from-paths src --ignore-src -y
+      - uses: actions/checkout@v4
 
       - name: Install Python requirements
         run: |
+          apt-get update
           apt-get install -y python3-pip
-          pip3 install -r src/filters/requirements.txt
+          pip3 install -r requirements.txt
 
-      - name: Build
-        run: |
-          source /opt/ros/humble/setup.bash
-          colcon build --packages-up-to bb_filters --event-handlers console_direct+
-
-      - name: Test
-        run: |
-          source /opt/ros/humble/setup.bash
-          colcon test --packages-select bb_filters --event-handlers console_direct+
-          colcon test-result --verbose
+      - uses: ros-tooling/action-ros-ci@v0.3
+        with:
+          package-name: bb_filters
+          target-ros2-distro: humble
+          vcs-repo-file-url: ${{ github.workspace }}/.github/workflows/deps.repos
