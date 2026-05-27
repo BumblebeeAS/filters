@@ -7,7 +7,7 @@ from bb_msgs.msg import DetectedObject, DetectedObjectsStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from std_msgs.msg import Header
-from bb_filters.sort_3d import SORT3D
+from sort_3d import SORT3D
 
 class LidarTrackerFilter(Node):
     def __init__(self):

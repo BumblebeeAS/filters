@@ -1,13 +1,11 @@
 """Shared helpers for the cluster_poses_* in-process integration tests.
 
-Constants, message builders, sys.path setup, and the synthetic-publisher
-rig used by both the service and action tests.
+Constants, message builders, and the synthetic-publisher rig used by both
+the service and action tests.
 """
 
 from __future__ import annotations
 
-import pathlib
-import sys
 import time
 from collections import namedtuple
 
@@ -41,13 +39,6 @@ TF_STATIC_QOS = QoSProfile(
 # 20ms while reset(); each tick publishes one odom plus one PoseStamped per
 # topic in `poses`.
 PublisherRig = namedtuple("PublisherRig", ["tf", "odom", "poses", "publish_timer"])
-
-
-def add_scripts_to_path() -> None:
-    """Add filters/scripts/cluster/ to sys.path so node modules import."""
-    scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "cluster"
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
 
 
 def identity_tf_static() -> TFMessage:

@@ -6,7 +6,6 @@ from bb_perception_msgs.msg import ClusterPoseResultArray, ClusterPosesRequest
 from bb_perception_msgs.srv import ClusterPosesSrv
 from cluster_test_utils import (
     EXPECTED_CLUSTER_X,
-    add_scripts_to_path,
     attach_synthetic_publishers,
     identity_tf_static,
     spin_for,
@@ -14,8 +13,7 @@ from cluster_test_utils import (
 )
 from rclpy.executors import SingleThreadedExecutor
 
-add_scripts_to_path()
-from cluster_poses_service_node import ClusterPosesServiceNode  # noqa: E402
+from bb_filters.nodes.cluster.cluster_poses_service_node import ClusterPosesServiceNode
 
 ODOM_TOPIC = "/test_odom"
 POSE_TOPIC = "/test_pose"

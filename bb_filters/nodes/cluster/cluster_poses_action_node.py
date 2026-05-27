@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import rclpy
-from bb_filters.clustering.cluster import ClusterSortKey
+from bb_filters.utils.cluster.cluster import ClusterSortKey
 from bb_perception_msgs.action import ClusterPosesAction
-from cluster_poses_node import (
+from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
     fill_cluster_result_array,

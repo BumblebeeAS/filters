@@ -5,13 +5,13 @@ import traceback
 import numpy as np
 import rclpy
 from bb_robosub_msgs.srv import ClusterSlalomTfsStart, ClusterSlalomTfsStop
-from cluster_slalom_tfs import get_slalom_centroids
+from bb_filters.nodes.cluster.cluster_slalom_tfs import get_slalom_centroids
 from geometry_msgs.msg import PoseArray, Quaternion, TransformStamped, Vector3
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.time import Time
 from transforms3d.euler import euler2quat
 
-from bb_filters.clustering.cluster import (
+from bb_filters.utils.cluster.cluster import (
     assign_to_centroids,
     get_position_from_transform,
     tf_to_pose_stamped,
