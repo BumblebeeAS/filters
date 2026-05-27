@@ -14,41 +14,12 @@ def generate_launch_description():
             # ComposableNodeContainer(),
             Node(
                 package="bb_filters",
-                executable="detected_object_3d_filter.py",
-                # executable="detected_object_3d_composite_filter.py",
-                name="bev_det_3d_sort_filter",
-                parameters=[
-                    {
-                        "dets_3d_topic": "/asv4/bev_detections",
-                        "filtered_topic": "/asv4/bev_detections/filtered",
-                        "objects_config": "robotx.yaml",
-                    }
-                ],
-            ),
-            Node(
-                package="bb_filters",
-                executable="detected_object_3d_filter.py",
-                # executable="detected_object_3d_composite_filter.py",
-                name="det_3d_sort_filter",
-                parameters=[
-                    {
-                        "dets_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
-                        "filtered_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
-                        "objects_config": "robotx.yaml",
-                        "max_lost": 10,
-                        "dist_threshold": 3.0,
-                        "max_range": 100.0
-                    }
-                ],
-            ),
-            Node(
-                package="bb_filters",
                 executable="detected_object_3d_labelling.py",
                 name="det_3d_labeller",
                 parameters=[
                     {
                         "detection_2d_topic": "/asv4/vision/detections_2d",
-                        "detection_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d/filtered",
+                        "detection_3d_topic": "/asv4/vision/lidar_small_objects/dets_3d",
                         "camera_info_topics": [
                             "/asv4/left_cam/camera_info",
                             "/asv4/right_cam/camera_info",
@@ -74,21 +45,6 @@ def generate_launch_description():
             #             ],
             #             "output_labeled_topic": "/asv4/vision/lidar_large_objects/dets_3d/labelled",
             #             "objects_config": "robotx.yaml",
-            #         }
-            #     ],
-            # ),
-            # Node(
-            #     package="bb_filters",
-            #     executable="detected_object_3d_filter.py",
-            #     # executable="detected_object_3d_composite_filter.py",
-            #     name="det_2d_proj_filter",
-            #     parameters=[
-            #         {
-            #             "dets_3d_topic": "/asv4/vision/detections_2d/projected",
-            #             "filtered_topic": "/asv4/vision/detections_2d/projected/filtered",
-            #             "objects_config": "robotx.yaml",
-            #             "max_lost": 10,
-            #             "dist_threshold": 5.0,
             #         }
             #     ],
             # ),

@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import rclpy
-from bb_filters.clustering.cluster import ClusterResult, ClusterSortKey
+from bb_filters.utils.cluster.cluster import ClusterResult, ClusterSortKey
 from bb_perception_msgs.msg import ClusterPoseResultArray
 from bb_perception_msgs.srv import ClusterPosesSrv
-from cluster_poses_node import (
+from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
     fill_cluster_result_array,

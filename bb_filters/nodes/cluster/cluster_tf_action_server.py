@@ -4,7 +4,7 @@ import traceback
 import numpy as np
 import rclpy
 import tf2_ros
-from bb_filters.clustering.cluster import (
+from bb_filters.utils.cluster.cluster import (
     average_transforms,
     get_largest_cluster,
     get_position_from_transform,

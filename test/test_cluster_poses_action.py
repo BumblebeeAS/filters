@@ -9,15 +9,13 @@ from rclpy.executors import SingleThreadedExecutor
 
 from cluster_test_utils import (
     EXPECTED_CLUSTER_X,
-    add_scripts_to_path,
     attach_synthetic_publishers,
     identity_tf_static,
     spin_for,
     spin_until_done,
 )
 
-add_scripts_to_path()
-from cluster_poses_action_node import ClusterPosesActionNode  # noqa: E402
+from bb_filters.nodes.cluster.cluster_poses_action_node import ClusterPosesActionNode
 
 ODOM_TOPIC = "/test_odom_action"
 POSE_TOPIC = "/test_pose_action"

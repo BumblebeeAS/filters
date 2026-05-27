@@ -15,7 +15,7 @@ from geometry_msgs.msg import Vector3, Quaternion
 from ml_detector.schema_validator import get_config, load_schema
 
 # from motrackers import SORT
-from bb_filters.sort_3d import SORT3D
+from sort_3d import SORT3D
 from rclpy.node import Node
 from transforms3d.euler import quat2euler, euler2quat
 

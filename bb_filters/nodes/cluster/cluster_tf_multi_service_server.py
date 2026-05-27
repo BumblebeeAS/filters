@@ -12,7 +12,7 @@ from rclpy.time import Time
 from sklearn.cluster import HDBSCAN  # type: ignore
 from std_srvs.srv import Trigger
 
-from bb_filters.clustering.cluster import (
+from bb_filters.utils.cluster.cluster import (
     average_transforms,
     get_position_from_transform,
     tf_to_pose_stamped,

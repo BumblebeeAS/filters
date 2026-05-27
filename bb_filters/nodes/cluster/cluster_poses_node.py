@@ -4,13 +4,13 @@ from operator import attrgetter
 
 import numpy as np
 import tf2_ros
-from bb_filters.clustering.cluster import (
+from bb_filters.utils.cluster.cluster import (
     ClusterResult,
     ClusterSortKey,
     get_all_clusters,
     sort_clusters,
 )
-from bb_filters.clustering.pose import get_average_pose
+from bb_filters.utils.pose import get_average_pose
 from bb_perception_msgs.msg import ClusterPoseResult, ClusterPoseResultArray
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from geometry_msgs.msg import (
