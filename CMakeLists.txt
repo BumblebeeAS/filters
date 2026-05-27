@@ -56,37 +56,6 @@ foreach (FOLDER configs urdf)
   )
 endforeach()
 
-add_library(detected_object_3d_vis_component SHARED src/detected_object_3d_vis.cpp)
-ament_target_dependencies(
-  detected_object_3d_vis_component
-  ${DEPENDENCIES}
-)
-target_link_libraries(
-  detected_object_3d_vis_component
-  yaml-cpp
-)
-rclcpp_components_register_node(detected_object_3d_vis_component PLUGIN "DetectedObject3DArrayVisNode" EXECUTABLE detected_object_3d_vis)
-
-
-add_library(detected_object_2d_vis_component SHARED src/detected_object_2d_vis.cpp)
-ament_target_dependencies(
-  detected_object_2d_vis_component
-  ${DEPENDENCIES}
-)
-target_link_libraries(
-  detected_object_2d_vis_component
-  yaml-cpp
-)
-rclcpp_components_register_node(detected_object_2d_vis_component PLUGIN "DetectedObject2DArrayVisNode" EXECUTABLE detected_object_2d_vis)
-
-install(TARGETS
-  detected_object_2d_vis_component
-  detected_object_3d_vis_component
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
-)
-
 install(PROGRAMS
   scripts/detected_object_3d_filter.py
   scripts/detected_object_3d_labelling.py
