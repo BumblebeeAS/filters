@@ -69,6 +69,19 @@ def build_cluster_pose_result(
     return msg
 
 
+def validate_stream_frame_ids(frame_ids: list[str], num_pose_topics: int) -> None:
+    """Reject `clustered_child_frame_ids` lengths the stream layout can't honour.
+
+    Empty (single default stream) and 1 (single merged stream) are always
+    valid; otherwise there must be exactly one frame per pose topic.
+    """
+    if frame_ids and len(frame_ids) not in (1, num_pose_topics):
+        raise ValueError(
+            "clustered_child_frame_ids must be empty, have 1 entry, or one per "
+            f"pose topic ({num_pose_topics}); got {len(frame_ids)}"
+        )
+
+
 def fill_cluster_result_array(
     msg: ClusterPoseResultArray,
     clustered: list[tuple[Pose, ClusterResult]],
@@ -106,7 +119,10 @@ class ClusterPosesNode(Node):
             qos_profile=static_qos,
         )
 
-        self._synchronized_data: list[tuple[Odometry, PoseStamped]] = []
+        # One accumulation buffer per pose topic, indexed by topic position.
+        # Populated by `_start_subscribers`; stream layout (merge vs. split) is
+        # decided later by the output frame IDs, not here.
+        self._stream_data: list[list[tuple[Odometry, PoseStamped]]] = []
         self._camera_to_odom_transforms: dict[str, TransformStamped] = {}
         self._odom_subscriber: Subscriber | None = None
         self._pose_subscribers: list[Subscriber] = []
@@ -138,8 +154,13 @@ class ClusterPosesNode(Node):
         for transform in msg.transforms:
             self._tf_buffer.set_transform_static(transform, "default_authority")
 
-    def _synchronized_callback(self, odom_msg: Odometry, pose_msg: PoseStamped) -> None:
-        self._synchronized_data.append((odom_msg, pose_msg))
+    def _collect_pose(
+        self, odom_msg: Odometry, pose_msg: PoseStamped, stream_index: int
+    ) -> None:
+        self._stream_data[stream_index].append((odom_msg, pose_msg))
+
+    def _num_collected(self) -> int:
+        return sum(len(stream) for stream in self._stream_data)
 
     def _is_detection_too_old(
         self, clustering_time: Time, pose_msg: PoseStamped
@@ -153,7 +174,7 @@ class ClusterPosesNode(Node):
         return detection_age_s >= self._max_detection_age_s
 
     def _reset_collection(self) -> None:
-        self._synchronized_data = []
+        self._stream_data = []
         self._camera_to_odom_transforms = {}
 
     def _ensure_camera_to_odom(
@@ -201,10 +222,17 @@ class ClusterPosesNode(Node):
         sync_queue_size: int | None = None,
         max_detection_age_s: float = 0.0,
     ) -> None:
-        """Subscribe to one odom topic and N pose topics, all feeding one buffer."""
+        """Subscribe to one odom topic and N pose topics.
+
+        Each pose topic accumulates into its own `_stream_data` buffer (indexed
+        by topic position). Whether those buffers are later merged into one
+        clustering stream or clustered independently is decided at cluster time
+        by the output frame IDs, not here.
+        """
         if not pose_topics:
             raise ValueError("pose_topics must contain at least one topic")
         self._max_detection_age_s = float(max_detection_age_s)
+        self._stream_data = [[] for _ in pose_topics]
         qsize = int(sync_queue_size or self._sync_queue_size)
         self._odom_subscriber = Subscriber(
             self,
@@ -212,7 +240,7 @@ class ClusterPosesNode(Node):
             odom_topic,
             qos_profile=qos_profile_sensor_data,
         )
-        for topic in pose_topics:
+        for stream_index, topic in enumerate(pose_topics):
             pose_sub = Subscriber(
                 self,
                 PoseStamped,
@@ -225,7 +253,7 @@ class ClusterPosesNode(Node):
                 queue_size=qsize,
                 slop=float(sync_tolerance),
             )
-            time_synchronizer.registerCallback(self._synchronized_callback)
+            time_synchronizer.registerCallback(self._collect_pose, stream_index)
             self._time_synchronizers.append(time_synchronizer)
 
     def _cleanup_subscribers(self) -> None:
@@ -242,35 +270,80 @@ class ClusterPosesNode(Node):
         self._pose_subscribers = []
         self._time_synchronizers = []
 
+    def _resolve_stream_frames(
+        self, frame_ids: list[str]
+    ) -> list[tuple[list[tuple[Odometry, PoseStamped]], str]]:
+        """Pair collected poses with the output frame for each clustering stream.
+
+        The number of `frame_ids` selects the layout (see
+        `validate_stream_frame_ids`):
+          - empty or 1 entry: every pose topic is merged into a single stream.
+          - one per pose topic: each topic is its own independent stream.
+        """
+        frame_ids = list(frame_ids) or ["clustered_object"]
+        validate_stream_frame_ids(frame_ids, len(self._stream_data))
+        if len(frame_ids) == 1:
+            merged = [pair for stream in self._stream_data for pair in stream]
+            return [(merged, frame_ids[0])]
+        return list(zip(self._stream_data, frame_ids))
+
+    def _cluster_streams(
+        self,
+        frame_ids: list[str],
+        params: ClusterParams,
+        publish_tfs: bool,
+    ) -> tuple[list[tuple[Pose, ClusterResult]], int, object]:
+        """Cluster each output stream independently and aggregate the results.
+
+        `params.top_k` applies per stream, so N streams can yield up to
+        N * top_k results. Returns `(clustered, total_collected, last_header)`;
+        when `publish_tfs`, each stream's results are TF-broadcast under its
+        own frame.
+        """
+        aggregated: list[tuple[Pose, ClusterResult]] = []
+        total_collected = 0
+        last_header = None
+        for synchronized_data, frame_id in self._resolve_stream_frames(frame_ids):
+            clustered, transformed_poses, collected = self._run_clustering(
+                synchronized_data, params
+            )
+            total_collected += collected
+            if not clustered:
+                continue
+            last_header = transformed_poses[-1].header
+            if publish_tfs:
+                self._publish_results(clustered, transformed_poses, frame_id)
+            aggregated.extend(clustered)
+        return aggregated, total_collected, last_header
+
     def _run_clustering(
         self,
+        synchronized_data: list[tuple[Odometry, PoseStamped]],
         params: ClusterParams,
     ) -> tuple[
         list[tuple[Pose, ClusterResult]],
         list[PoseStamped],
         int,
     ]:
-        """Run the full clustering pipeline against the current buffer.
+        """Run the full clustering pipeline against `synchronized_data`.
 
         Returns `(clustered, transformed_poses, total_collected)`
         """
-        if not self._synchronized_data:
-            total_collected = 0
+        if not synchronized_data:
             self.get_logger().error(
                 "Not enough synchronized poses collected. "
-                f"Got {total_collected}, need {int(params.min_poses)}"
+                f"Got 0, need {int(params.min_poses)}"
             )
-            return [], [], total_collected
+            return [], [], 0
 
         # Match the result PoseArray/ClusterPoseResultArray timestamp, which is
         # taken from the last transformed pose after this age filter.
-        clustering_time = Time.from_msg(self._synchronized_data[-1][1].header.stamp)
-        self._synchronized_data = [
+        clustering_time = Time.from_msg(synchronized_data[-1][1].header.stamp)
+        synchronized_data = [
             (odom_msg, pose_msg)
-            for odom_msg, pose_msg in self._synchronized_data
+            for odom_msg, pose_msg in synchronized_data
             if not self._is_detection_too_old(clustering_time, pose_msg)
         ]
-        synchronized_data = self._synchronized_data
         total_collected = len(synchronized_data)
 
         if total_collected < int(params.min_poses):

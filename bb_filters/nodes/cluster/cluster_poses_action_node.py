@@ -9,6 +9,7 @@ from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterPosesNode,
     fill_cluster_result_array,
     seconds_to_duration,
+    validate_stream_frame_ids,
 )
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.action.server import ServerGoalHandle
@@ -117,6 +118,10 @@ class ClusterPosesActionNode(ClusterPosesNode):
         feedback.poses_collected_so_far = 0
         goal_handle.publish_feedback(feedback)
 
+        validate_stream_frame_ids(
+            list(goal.params.clustered_child_frame_ids),
+            len(goal.params.pose_stamped_topics),
+        )
         self._start_subscribers(
             odom_topic=goal.params.odom_topic,
             pose_topics=list(goal.params.pose_stamped_topics),
@@ -154,7 +159,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
         feedback = ClusterPosesAction.Feedback()
         feedback.current_status = "Collecting synchronized messages"
         feedback.collection_progress = min(elapsed.nanoseconds / duration_ns, 1.0)
-        feedback.poses_collected_so_far = len(self._synchronized_data)
+        feedback.poses_collected_so_far = self._num_collected()
         goal_handle.publish_feedback(feedback)
 
     def _finalize_goal(self, goal_handle: ServerGoalHandle) -> None:
@@ -166,20 +171,17 @@ class ClusterPosesActionNode(ClusterPosesNode):
         feedback = ClusterPosesAction.Feedback()
         feedback.current_status = "Finalizing clustering"
         feedback.collection_progress = 1.0
-        feedback.poses_collected_so_far = len(self._synchronized_data)
+        feedback.poses_collected_so_far = self._num_collected()
         goal_handle.publish_feedback(feedback)
 
-        clustered, transformed_poses, total_collected = self._run_clustering(
-            self._cluster_params(goal)
+        clustered, total_collected, last_header = self._cluster_streams(
+            list(params.clustered_child_frame_ids),
+            self._cluster_params(goal),
+            publish_tfs=True,
         )
         if not clustered:
             self._finish_action("aborted", self._empty_result(int(params.sort_key)))
             return
-
-        last_header = transformed_poses[-1].header
-        self._publish_results(
-            clustered, transformed_poses, params.clustered_child_frame_id
-        )
 
         result = ClusterPosesAction.Result()
         fill_cluster_result_array(

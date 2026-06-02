@@ -57,7 +57,7 @@ def test_action_succeeds(rig):
     goal = ClusterPosesAction.Goal()
     goal.params.odom_topic = ODOM_TOPIC
     goal.params.pose_stamped_topics = [POSE_TOPIC]
-    goal.params.clustered_child_frame_id = "test/clustered_action"
+    goal.params.clustered_child_frame_ids = ["test/clustered_action"]
     goal.params.sync_tolerance = 0.05
     goal.params.min_poses = 5
     goal.params.min_cluster_size = 3

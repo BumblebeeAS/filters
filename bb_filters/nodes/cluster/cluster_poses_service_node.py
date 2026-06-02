@@ -9,6 +9,7 @@ from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
     fill_cluster_result_array,
+    validate_stream_frame_ids,
 )
 from geometry_msgs.msg import Pose
 from rclpy.timer import Timer
@@ -54,7 +55,7 @@ class ClusterPosesServiceNode(ClusterPosesNode):
         self.top_k = 1
         self.sort_key = int(ClusterSortKey.NUM_CLUSTER_POSES)
         self.cluster_interval = 0.0
-        self._clustered_child_frame_id = ""
+        self._clustered_child_frame_ids: list[str] = []
         self._cluster_timer: Timer | None = None
 
         self.get_logger().info("Cluster Poses Service Node initialized")
@@ -78,8 +79,11 @@ class ClusterPosesServiceNode(ClusterPosesNode):
         self.top_k = int(params.top_k)
         self.sort_key = int(params.sort_key)
         self.cluster_interval = float(request.cluster_interval)
-        self._clustered_child_frame_id = (
-            params.clustered_child_frame_id or "unknown/clustered"
+        # Stream layout (merge vs. independent per topic) is derived from the
+        # number of frame IDs at cluster time; validate the length up front.
+        self._clustered_child_frame_ids = list(params.clustered_child_frame_ids)
+        validate_stream_frame_ids(
+            self._clustered_child_frame_ids, len(self.pose_stamped_topics)
         )
 
     def _cluster_params(self) -> ClusterParams:
@@ -152,17 +156,13 @@ class ClusterPosesServiceNode(ClusterPosesNode):
             response.cluster_results.sort_key = int(self.sort_key)
             response.is_enabled = False
 
-            clustered, transformed_poses, total_collected = self._run_clustering(
-                self._cluster_params()
+            clustered, total_collected, last_header = self._cluster_streams(
+                self._clustered_child_frame_ids, self._cluster_params(), publish_tfs=True
             )
             if not clustered:
                 response.is_cluster_success = False
                 return response
 
-            last_header = transformed_poses[-1].header
-            self._publish_results(
-                clustered, transformed_poses, self._clustered_child_frame_id
-            )
             fill_cluster_result_array(
                 response.cluster_results,
                 clustered,
@@ -178,20 +178,18 @@ class ClusterPosesServiceNode(ClusterPosesNode):
         finally:
             self._cleanup_cluster_pose_publishers()
             self._reset_collection()
-            self._clustered_child_frame_id = ""
+            self._clustered_child_frame_ids = []
 
     def _periodic_cluster_tick(self) -> None:
         """Cluster the poses collected so far and publish a ClusterPoseResultArray."""
         if not self.enabled:
             return
-        clustered, transformed_poses, total_collected = self._run_clustering(
-            self._cluster_params()
+        clustered, total_collected, last_header = self._cluster_streams(
+            self._clustered_child_frame_ids, self._cluster_params(), publish_tfs=False
         )
         if not clustered:
             return
-        self._publish_cluster_pose_result_array(
-            clustered, total_collected, transformed_poses[-1].header
-        )
+        self._publish_cluster_pose_result_array(clustered, total_collected, last_header)
 
     def _publish_cluster_pose_result_array(
         self,

@@ -92,7 +92,9 @@ def _base_enable_request(pose_topics, child_frame_id):
     req.enabled = True
     req.params.odom_topic = ODOM_TOPIC
     req.params.pose_stamped_topics = pose_topics
-    req.params.clustered_child_frame_id = child_frame_id
+    req.params.clustered_child_frame_ids = (
+        [child_frame_id] if isinstance(child_frame_id, str) else list(child_frame_id)
+    )
     req.params.sync_queue_size = 100
     req.params.sync_tolerance = 0.05
     req.params.min_poses = 5
@@ -219,3 +221,43 @@ def test_multiple_pose_topics_feed_same_buffer(multi_rig):
     for cluster in final.results:
         assert cluster.num_cluster_poses >= 3
         assert cluster.num_cluster_poses < total_input
+
+
+def test_independent_streams_one_frame_per_topic(multi_rig):
+    """One frame id per pose topic clusters each topic independently. With
+    top_k=1 we still get one cluster per topic, but each result's
+    num_input_poses reflects only its own topic, not the merged total."""
+    multi_rig["tf_pub"].publish(identity_tf_static())
+    spin_for(multi_rig["executor"], 0.2)
+
+    req = _base_enable_request(
+        [POSE_TOPIC_A, POSE_TOPIC_B],
+        ["test/clustered_a", "test/clustered_b"],
+    )
+    req.params.top_k = 1
+
+    enable_response = multi_rig["call_service"](req)
+    assert enable_response.is_enabled is True
+
+    multi_rig["publish_timer"].reset()
+    spin_for(multi_rig["executor"], 1.5)
+    multi_rig["publish_timer"].cancel()
+
+    disable_req = ClusterPosesSrv.Request()
+    disable_req.enabled = False
+    response = multi_rig["call_service"](disable_req)
+
+    assert response.is_cluster_success is True
+    final = response.cluster_results
+    assert len(final.results) == 2, (
+        f"expected one cluster per independent stream, got {len(final.results)}"
+    )
+
+    cluster_xs = sorted(r.clustered_pose.position.x for r in final.results)
+    assert abs(cluster_xs[0] - EXPECTED_CLUSTER_X) < 0.05
+    assert abs(cluster_xs[1] - SECONDARY_CLUSTER_X) < 0.05
+
+    # Each stream sees only its own topic's poses, so a single result's
+    # num_input_poses is well under the combined two-topic total.
+    for cluster in final.results:
+        assert cluster.num_cluster_poses >= 3
