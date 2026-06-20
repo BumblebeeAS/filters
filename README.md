@@ -1,14 +1,26 @@
 # Filters
 
-## Quickstart
-
-### Clustering
-
-```bash
-ros2 run bb_filters cluster_poses_action_node.py
-```
-
 ## Notes
+
+The repository package is named `bb_filters`.
+
+### Clustering APIs
+
+Two APIs are available:
+
+- `ClusterTfAction` and `ClusterTfSrv` sample transforms from TF and broadcast
+  a stable output transform.
+- `ClusterPosesAction` and `ClusterPosesSrv` cluster pose topics directly and
+  return `ClusterPoseResultArray`.
+
+Both use spatial clustering to reject outliers before selecting a stable result.
+
+### Operational notes
+
+- Use simulated time when clustering simulated messages or transforms.
+- A TF clustering request needs a live broadcaster for every input child
+  frame. Repeated `LookupException` errors normally mean the upstream pose
+  estimator is not publishing.
 
 ### Cluster Poses vs Transforms
 
@@ -17,7 +29,6 @@ We implement separate cluster poses nodes to:
 - **Control time alignment explicitly**. We can ensure each detected pose is paired with an odometry sample within a chosen tolerance, rather than relying on latest available transforms.
 - **Produce physically meaningful clustering inputs**. Each data point corresponds to a real detection event transformed using the odometry state at approximately the same time, rather than "virtual" points created by mixing a detection at time t1 with odometry at time t2. (When clustering transforms, you may feed in multiple copies of the same detection transformed with different odometry readings.)
 - **Achieve higher efficiency** from not having to subscribe to a (potentially) high frequency dynamic transforms topic `/tf` and not having to use `tf` lookups. (But this is balanced out by the overhead from managing the time synchronization ourselves instead of using a `tf2_ros.Buffer`.)
-
 
 ### Cluster Poses implementation considerations
 
