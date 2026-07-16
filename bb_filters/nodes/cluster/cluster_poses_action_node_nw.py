@@ -14,9 +14,12 @@ from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterParams,
     fill_cluster_result_array,
     seconds_to_duration,
-    validate_stream_frame_ids,
+    # validate_stream_frame_ids,
 )
-from bb_filters.nodes.cluster.cluster_poses_node_nw import ClusterPosesNodeNw
+from bb_filters.nodes.cluster.cluster_poses_node_nw import (
+    ClusterPosesNodeNw,
+    validate_stream_frame_ids_nw,
+)
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.duration import Duration
@@ -128,7 +131,11 @@ class ClusterPosesActionNodeNw(ClusterPosesNodeNw):
         feedback.poses_collected_so_far = 0
         goal_handle.publish_feedback(feedback)
 
-        validate_stream_frame_ids(
+        # validate_stream_frame_ids(
+        #     list(goal.params.clustered_child_frame_ids),
+        #     len(goal.params.pose_stamped_topics),
+        # )
+        validate_stream_frame_ids_nw(
             list(goal.params.clustered_child_frame_ids),
             len(goal.params.pose_stamped_topics),
         )

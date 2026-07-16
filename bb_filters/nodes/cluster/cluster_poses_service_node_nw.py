@@ -14,9 +14,12 @@ from bb_perception_msgs.srv import ClusterPosesSrv
 from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterParams,
     fill_cluster_result_array,
-    validate_stream_frame_ids,
+    # validate_stream_frame_ids,
 )
-from bb_filters.nodes.cluster.cluster_poses_node_nw import ClusterPosesNodeNw
+from bb_filters.nodes.cluster.cluster_poses_node_nw import (
+    ClusterPosesNodeNw,
+    validate_stream_frame_ids_nw,
+)
 from geometry_msgs.msg import Pose
 from rclpy.timer import Timer
 
@@ -86,7 +89,10 @@ class ClusterPosesServiceNodeNw(ClusterPosesNodeNw):
         # Stream layout (merge vs. independent per topic) is derived from the
         # number of frame IDs at cluster time; validate the length up front.
         self._clustered_child_frame_ids = list(params.clustered_child_frame_ids)
-        validate_stream_frame_ids(
+        # validate_stream_frame_ids(
+        #     self._clustered_child_frame_ids, len(self.pose_stamped_topics)
+        # )
+        validate_stream_frame_ids_nw(
             self._clustered_child_frame_ids, len(self.pose_stamped_topics)
         )
 

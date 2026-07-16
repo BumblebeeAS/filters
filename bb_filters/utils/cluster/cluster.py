@@ -92,6 +92,7 @@ def get_top_k_clusters(
     positions = np.array([get_position_from_transform(tf) for tf in tfs])
 
     labels = hdbscan.fit_predict(positions)
+
     non_noise_labels = labels[labels >= 0]
 
     cluster_sizes = np.bincount(non_noise_labels)

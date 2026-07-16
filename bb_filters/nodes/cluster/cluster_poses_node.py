@@ -4,13 +4,6 @@ from operator import attrgetter
 
 import numpy as np
 import tf2_ros
-from bb_filters.utils.cluster.cluster import (
-    ClusterResult,
-    ClusterSortKey,
-    get_all_clusters,
-    sort_clusters,
-)
-from bb_filters.utils.pose import get_average_pose
 from bb_perception_msgs.msg import ClusterPoseResult, ClusterPoseResultArray
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
 from geometry_msgs.msg import (
@@ -36,6 +29,14 @@ from rclpy.qos import (
 from rclpy.time import Time
 from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
+
+from bb_filters.utils.cluster.cluster import (
+    ClusterResult,
+    ClusterSortKey,
+    get_all_clusters,
+    sort_clusters,
+)
+from bb_filters.utils.pose import get_average_pose
 
 
 def seconds_to_duration(seconds: float) -> Duration:
@@ -346,7 +347,7 @@ class ClusterPosesNode(Node):
         ]
         total_collected = len(synchronized_data)
 
-        if total_collected < int(params.min_poses):
+        if total_collected < int(params.min_poses) or total_collected < 2:
             self.get_logger().error(
                 "Not enough synchronized poses collected. "
                 f"Got {total_collected}, need {int(params.min_poses)}"
