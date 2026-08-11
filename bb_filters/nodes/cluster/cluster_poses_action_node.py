@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import traceback
+
 import rclpy
 from bb_filters.utils.cluster.cluster import ClusterSortKey
 from bb_perception_msgs.action import ClusterPosesAction
@@ -48,6 +50,8 @@ class ClusterPosesActionNode(ClusterPosesNode):
             1.0 / feedback_rate,
             self._step_action,
         )
+        # Idle until a goal starts; reset() re-enables it in _execute_callback.
+        self._action_timer.cancel()
 
         self.get_logger().info("Cluster Poses Action Server initialized")
 
@@ -90,11 +94,15 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self._action_running = True
         self._goal_handle = goal_handle
         self._result_future = Future()
+        self._action_timer.reset()
         try:
             self._start_goal(goal_handle)
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f"Failed to start cluster goal: {exc}")
+            self.get_logger().error(
+                f"Failed to start cluster goal: {exc}\n{traceback.format_exc()}"
+            )
             goal_handle.abort()
+            self._action_timer.cancel()
             self._cleanup_subscribers()
             self._cleanup_cluster_pose_publishers()
             self._action_running = False
@@ -141,7 +149,9 @@ class ClusterPosesActionNode(ClusterPosesNode):
             elif self._goal_phase == "finalizing":
                 self._finalize_goal(self._goal_handle)
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f"Error during cluster goal: {exc}")
+            self.get_logger().error(
+                f"Error during cluster goal: {exc}\n{traceback.format_exc()}"
+            )
             sort_key = (
                 int(self._goal_handle.request.params.sort_key)
                 if self._goal_handle
@@ -210,6 +220,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
             goal_handle.abort()
 
         result_future.set_result(result)
+        self._action_timer.cancel()
         self._cleanup_subscribers()
         self._cleanup_cluster_pose_publishers()
         self._action_running = False

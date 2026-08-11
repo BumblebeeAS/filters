@@ -364,6 +364,36 @@ class ClusterPosesNode(Node):
             )
             for odom_msg, pose_msg in synchronized_data
         ]
+
+        # Drop non-finite poses before clustering: a single NaN/inf row makes
+        # HDBSCAN raise "boolean index did not match indexed array...". Filter
+        # transformed_poses in lockstep with the source data so cluster idxs and
+        # the published pose array stay aligned. Log the SOURCE frame of each
+        # dropped pose (bot vs claw) to point at which estimator path emits NaN.
+        finite_flags = [
+            bool(np.all(np.isfinite(attrgetter("x", "y", "z")(pose.pose.position))))
+            for pose in transformed_poses
+        ]
+        if not all(finite_flags):
+            dropped_frames = [
+                synchronized_data[i][1].header.frame_id
+                for i, ok in enumerate(finite_flags)
+                if not ok
+            ]
+            self.get_logger().warning(
+                f"Dropped {len(dropped_frames)}/{len(transformed_poses)} non-finite "
+                f"pose(s) before clustering; source frame(s): {sorted(set(dropped_frames))}"
+            )
+            transformed_poses = [
+                pose for pose, ok in zip(transformed_poses, finite_flags) if ok
+            ]
+            if len(transformed_poses) < int(params.min_poses):
+                self.get_logger().error(
+                    "Not enough finite poses after dropping non-finite. "
+                    f"Got {len(transformed_poses)}, need {int(params.min_poses)}"
+                )
+                return [], transformed_poses, total_collected
+
         clustered = self._cluster_poses(transformed_poses, params)
         return clustered, transformed_poses, total_collected
 
@@ -395,6 +425,24 @@ class ClusterPosesNode(Node):
                 for pose in transformed_poses
             ]
         )
+        # Diagnostic for the intermittent HDBSCAN "boolean index did not match"
+        # crash: it only fires on degenerate input. A non-finite row (NaN/inf
+        # pose) or a collapse to one/few distinct points (static scene
+        # republishing the same backprojected pose) is the suspected trigger, so
+        # log shape / finiteness / distinct-point count right before the fit.
+        num_unique = len(np.unique(positions, axis=0))
+        all_finite = bool(np.isfinite(positions).all())
+        clustering_input_msg = (
+            f"Clustering input: shape={positions.shape}, all_finite={all_finite}, "
+            f"unique_points={num_unique}/{len(positions)}"
+        )
+        # Distinct call sites per severity: an rclpy logging call site caches the
+        # first severity it sees, so the degenerate case (non-finite or <2 distinct
+        # points, the suspected HDBSCAN crash trigger) gets its own warning line.
+        if not all_finite or num_unique < 2:
+            self.get_logger().warning(clustering_input_msg)
+        else:
+            self.get_logger().info(clustering_input_msg)
         clusters = get_all_clusters(hdbscan, positions)
         if not clusters:
             self.get_logger().error("No clusters found")
