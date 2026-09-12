@@ -36,7 +36,7 @@ class DetectedObject2DProjection(Node):
                 "/camera_info",
             ],
         )
-        self.declare_parameter("output_detections_topic", "/uav2/projected_3d")
+        self.declare_parameter("output_detections_topic", "/uav/projected_3d")
         self.declare_parameter("objects_config", "drone.yaml")
         self.declare_parameter("publish_tf", False)
 
@@ -59,7 +59,7 @@ class DetectedObject2DProjection(Node):
             .get_parameter_value()
             .string_value
         )
-        self.declare_parameter("height_offset_topic", "/uav2/height_offset_topic")
+        self.declare_parameter("height_offset_topic", "/uav/height_offset_topic")
         height_offset_topic = (
             self.get_parameter("height_offset_topic").get_parameter_value().string_value
         )
@@ -117,7 +117,7 @@ class DetectedObject2DProjection(Node):
         )
 
         self.detection_pose_publisher = self.create_publisher(
-            PoseStamped, "/uav2/detected_pose", 10
+            PoseStamped, "/uav/detected_pose", 10
         )
 
         self.tf_broadcast = tf2_ros.TransformBroadcaster(self)
