@@ -2,8 +2,8 @@ repositories:
   bb_msgs:
     type: git
     url: https://github.com/Bumblebeeas/bb_msgs.git
-    version: humble
+    version: main
   frames:
     type: git
     url: https://github.com/BumblebeeAS/frames.git
-    version: humble
+    version: main
