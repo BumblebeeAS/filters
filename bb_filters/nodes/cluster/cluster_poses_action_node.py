@@ -23,6 +23,7 @@ from bb_filters.nodes.cluster.cluster_poses_node import (
 )
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.action.server import ServerGoalHandle
+from rclpy.clock import Clock, ClockType
 from rclpy.duration import Duration
 from rclpy.task import Future
 
@@ -83,6 +84,8 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self._action_timer = self.create_timer(
             1.0 / feedback_rate,
             self._step_action,
+            # Cancellation and streaming deadlines must run while ROS time is paused.
+            clock=Clock(clock_type=ClockType.STEADY_TIME),
         )
         # Idle until a goal starts; reset() re-enables it in _execute_callback.
         self._action_timer.cancel()
@@ -280,7 +283,9 @@ class ClusterPosesActionNode(ClusterPosesNode):
         duration_ns = max(self._collection_duration.nanoseconds, 1)
         feedback = self._action_type.Feedback()
         feedback.current_status = "Collecting synchronized messages"
-        feedback.collection_progress = min(elapsed.nanoseconds / duration_ns, 1.0)
+        progress = (1. - (self._deadline - time.monotonic()) / (duration_ns * 1e-9)
+                    if self._cluster_interval > 0 else elapsed.nanoseconds / duration_ns)
+        feedback.collection_progress = min(max(progress, 0.), 1.)
         feedback.poses_collected_so_far = self._num_collected()
         if self._cluster_interval > 0 and time.monotonic() >= self._next_cluster:
             feedback.cluster_results = self._snapshot(goal_handle, publish_tfs=False).cluster_results

@@ -204,3 +204,30 @@ def test_endpoints_share_one_exclusive_goal_slot_and_release_after_cancel(rig, f
     result = following.result().get_result_async()
     assert spin_until_done(rig['executor'], result, 3.)
     assert_clean(rig)
+
+
+@pytest.mark.parametrize('finish', ['deadline', 'cancel'])
+def test_streaming_cleanup_runs_when_ros_time_is_paused(rig, finish):
+    from action_msgs.msg import GoalStatus
+    from rclpy.parameter import Parameter
+    server = rig['server']
+    server.set_parameters([Parameter('use_sim_time', value=True)])
+    assert server.get_clock().ros_time_is_active
+    assert server.get_clock().now().nanoseconds == 0  # No /clock publisher.
+    snapshots = []
+    sent = rig['stream_client'].send_goal_async(
+        streaming_goal(.4 if finish == 'deadline' else 10.),
+        feedback_callback=lambda msg: snapshots.append(msg.feedback))
+    assert spin_until_done(rig['executor'], sent, 3.)
+    assert sent.result().accepted
+    result = sent.result().get_result_async()
+    if finish == 'cancel':
+        cancel = sent.result().cancel_goal_async()
+        assert spin_until_done(rig['executor'], cancel, 3.)
+    assert spin_until_done(rig['executor'], result, 2.)
+    assert result.result().status == (GoalStatus.STATUS_ABORTED if finish == 'deadline'
+                                     else GoalStatus.STATUS_CANCELED)
+    assert server.get_clock().now().nanoseconds == 0
+    if finish == 'deadline':
+        assert any(0. < f.collection_progress < 1. for f in snapshots)
+    assert_clean(rig)
