@@ -1,5 +1,6 @@
 """Delayed poses use real retained odometry, without reusing prior-goal poses."""
 import json
+import time
 from unittest.mock import Mock
 
 from geometry_msgs.msg import PoseStamped
@@ -31,7 +32,7 @@ def pose_at(message, shift_ns=0):
     return pose
 
 
-def test_next_window_replays_odometry_and_logs_exact_match(rclpy_context):
+def test_next_window_replays_odometry_and_summarizes_exact_match(rclpy_context, monkeypatch):
     node = ClusterPosesActionNode()
     try:
         start(node)
@@ -42,17 +43,22 @@ def test_next_window_replays_odometry_and_logs_exact_match(rclpy_context):
         start(node)
         assert node._persistent_odom_subscription is subscription
         assert node._num_collected() == 0  # No previous-goal detection samples.
-        publisher = Mock()
-        node.sync_diagnostics.publisher = publisher
+        logger = Mock()
+        monkeypatch.setattr(node, 'get_logger', lambda: logger)
+        node.sync_diagnostics.last_log = time.monotonic() - 5.
         pose = pose_at(old, 12_000_000)
         node._pose_subscribers[0].signalMessage(pose)
         assert node._num_collected() == 1
         matched_odom, matched_pose = node._stream_data[0][0]
         assert matched_odom is old and matched_pose is pose
-        diagnostic = json.loads(publisher.publish.call_args.args[0].data)
-        assert diagnostic['odom_minus_observation_s'] == -.012
-        assert diagnostic['observation_arrival_age_s'] > .7
-        assert node.sync_diagnostics.summary()['/history/pose']['matches'] == 1
+        summary = node.sync_diagnostics.summary()
+        diagnostic = summary['/history/pose']
+        assert diagnostic['matches'] == 1
+        assert diagnostic['abs_delta_ms_p50_p95_max'] == [12., 12., 12.]
+        assert diagnostic['arrival_age_ms_p50_p95_max'][0] > 700.
+        logger.info.assert_any_call('Accepted timestamp matches: ' + json.dumps(summary))
+        node.sync_diagnostics.record(pose, old, '/history/pose')
+        logger.info.assert_called_once()  # New pairs do not log again before the interval.
         old_relay = node._odom_relay
         node._cleanup_subscribers()
         node._reset_collection()
