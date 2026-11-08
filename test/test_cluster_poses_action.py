@@ -115,7 +115,8 @@ def assert_clean(rig):
     assert server._action_timer.is_canceled()
 
 
-def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig):
+@pytest.mark.parametrize('next_streaming', [False, True])
+def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig, next_streaming):
     rig['tf_pub'].publish(identity_tf_static())
     spin_for(rig['executor'], .2)
     snapshots = []
@@ -132,7 +133,12 @@ def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig):
     assert result.result().result.cluster_results.results
     assert_clean(rig)
     spin_for(rig['executor'], .2)  # Drain in-flight publications before next goal.
-    sent = rig['stream_client'].send_goal_async(streaming_goal(.5))
+    next_goal = streaming_goal(.5)
+    next_client = rig['stream_client'] if next_streaming else rig['action_client']
+    if not next_streaming:
+        next_goal = ClusterPosesAction.Goal(
+            params=next_goal.params, collection_duration=next_goal.collection_duration)
+    sent = next_client.send_goal_async(next_goal)
     assert spin_until_done(rig['executor'], sent, 3.)
     result = sent.result().get_result_async()
     assert spin_until_done(rig['executor'], result, 3.)

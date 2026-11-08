@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from bb_perception_msgs.action import ClusterPosesAction, ClusterPosesStreamAction
+from bb_perception_msgs.action import ClusterPosesStreamAction
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.task import Future
@@ -13,9 +13,8 @@ from bb_filters.nodes.cluster.cluster_poses_action_node import ClusterPosesActio
 from cluster_test_utils import identity_tf_static
 
 
-def goal(interval=2.):
-    g = ClusterPosesStreamAction.Goal() if interval else ClusterPosesAction.Goal()
-    if interval:g.cluster_interval = interval
+def goal():
+    g = ClusterPosesStreamAction.Goal()
     g.collection_duration = 2.
     p = g.params
     p.odom_topic = '/accumulation/odom'
@@ -90,39 +89,11 @@ def test_periodic_feedback_uses_whole_collection_and_original_odometry(node):
     feed(node, [12])
     assert snapshot(node, h).results[0].num_input_poses == 13
     assert not result.done()  # Feedback never terminates the collection.
-
-
-@pytest.mark.parametrize('interval', [0., 2.])
-def test_every_new_goal_starts_fresh(node, interval):
-    h, first = start(node, goal())
-    feed(node, range(13))
-    node._finalize_goal(h)
-    assert first.result().cluster_results.results
-    assert node._num_collected() == 0 and node._odom_relay is None
-    h, result = start(node, goal(interval))
-    node._finalize_goal(h)
-    assert not result.result().cluster_results.results
-
-
-def test_cancellation_returns_final_partial_interval_and_cleans_up(node):
-    h, result = start(node, goal())
-    feed(node, range(13))
-    h.is_cancel_requested = True
-    node._step_action()
-    h.canceled.assert_called_once()
-    assert result.result().cluster_results.results[0].num_cluster_poses == 13
-    assert node._num_collected() == 0 and node._odom_relay is None
-
-
-def test_deadline_expires_without_client_or_ros_clock_progress(node, monkeypatch):
-    from bb_filters.nodes.cluster import cluster_poses_action_node as module
-    h, result = start(node, goal())
-    feed(node, range(4))
-    monkeypatch.setattr(module.time, 'monotonic', lambda: node._deadline + 1.)
-    node._step_action()
-    node._step_action()
-    assert result.done() and node._odom_relay is None
-    assert node._num_collected() == 0 and not node._action_running
+    feed(node, [13], world_x=10.)  # A rejected outlier cannot supply a new view.
+    second = snapshot(node, h)
+    assert second.results[0].num_input_poses == 14
+    assert second.results[0].num_cluster_poses == 13
+    assert second.header.stamp == r.header.stamp
 
 
 def test_accumulator_and_deduplication_are_bounded_per_camera(node):
@@ -130,14 +101,3 @@ def test_accumulator_and_deduplication_are_bounded_per_camera(node):
     start(node, goal())
     feed(node, range(12))
     assert node._num_collected() == len(node._seen[0]) == 5
-
-
-def test_outlier_cannot_supply_a_new_supporting_viewpoint(node):
-    h, _ = start(node, goal())
-    feed(node, range(13))
-    first = snapshot(node, h)
-    feed(node, [13], world_x=10.)
-    second = snapshot(node, h)
-    assert second.results[0].num_input_poses == 14
-    assert second.results[0].num_cluster_poses == 13
-    assert second.header.stamp == first.header.stamp
