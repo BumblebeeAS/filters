@@ -7,12 +7,13 @@ import tf2_ros
 from bb_filters.utils.cluster.cluster import (
     ClusterResult,
     ClusterSortKey,
-    get_all_clusters,
+    cluster_positions,
     sort_clusters,
 )
 from bb_filters.utils.pose import get_average_pose
 from bb_perception_msgs.msg import ClusterPoseResult, ClusterPoseResultArray
 from frames.utils.transform_ros_msgs import transform_pose_to_odom
+from frames.utils.sync_diagnostics import SyncDiagnostics
 from geometry_msgs.msg import (
     Pose,
     PoseArray,
@@ -34,7 +35,6 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from rclpy.time import Time
-from sklearn.cluster import HDBSCAN
 from tf2_msgs.msg import TFMessage
 
 
@@ -128,6 +128,9 @@ class ClusterPosesNode(Node):
         self._pose_subscribers: list[Subscriber] = []
         self._time_synchronizers: list[ApproximateTimeSynchronizer] = []
         self._max_detection_age_s = 0.0
+        self._owns_odom_subscriber = True
+        self.sync_diagnostics = SyncDiagnostics(self)
+        self._pose_topic_names = []
 
         # Declare parameters
         output_pose_array_topic = (
@@ -159,6 +162,10 @@ class ClusterPosesNode(Node):
     ) -> None:
         self._stream_data[stream_index].append((odom_msg, pose_msg))
 
+    def _collect_synchronized_pose(self, odom_msg, pose_msg, stream_index):
+        self.sync_diagnostics.record(pose_msg, odom_msg, self._pose_topic_names[stream_index])
+        self._collect_pose(odom_msg, pose_msg, stream_index)
+
     def _num_collected(self) -> int:
         return sum(len(stream) for stream in self._stream_data)
 
@@ -186,7 +193,10 @@ class ClusterPosesNode(Node):
             return False
 
         odom_child_frame = synchronized_data[0][0].child_frame_id
-        camera_frames = {pose.header.frame_id for _, pose in synchronized_data}
+        # Odometry-frame position measurements already include vehicle motion.
+        # They need no camera extrinsic and must not be transformed a second time.
+        camera_frames = {pose.header.frame_id for odom, pose in synchronized_data
+                         if pose.header.frame_id != odom.header.frame_id}
         for camera_frame_id in camera_frames:
             if camera_frame_id in self._camera_to_odom_transforms:
                 continue
@@ -221,6 +231,7 @@ class ClusterPosesNode(Node):
         sync_tolerance: float,
         sync_queue_size: int | None = None,
         max_detection_age_s: float = 0.0,
+        odom_filter=None,
     ) -> None:
         """Subscribe to one odom topic and N pose topics.
 
@@ -234,12 +245,11 @@ class ClusterPosesNode(Node):
         self._max_detection_age_s = float(max_detection_age_s)
         self._stream_data = [[] for _ in pose_topics]
         qsize = int(sync_queue_size or self._sync_queue_size)
-        self._odom_subscriber = Subscriber(
-            self,
-            Odometry,
-            odom_topic,
-            qos_profile=qos_profile_sensor_data,
-        )
+        self._pose_topic_names = list(pose_topics)
+        self.sync_diagnostics.clear()
+        self._owns_odom_subscriber = odom_filter is None
+        self._odom_subscriber = odom_filter if odom_filter is not None else Subscriber(
+            self, Odometry, odom_topic, qos_profile=qos_profile_sensor_data)
         for stream_index, topic in enumerate(pose_topics):
             pose_sub = Subscriber(
                 self,
@@ -253,12 +263,12 @@ class ClusterPosesNode(Node):
                 queue_size=qsize,
                 slop=float(sync_tolerance),
             )
-            time_synchronizer.registerCallback(self._collect_pose, stream_index)
+            time_synchronizer.registerCallback(self._collect_synchronized_pose, stream_index)
             self._time_synchronizers.append(time_synchronizer)
 
     def _cleanup_subscribers(self) -> None:
         subs: list[Subscriber] = []
-        if self._odom_subscriber is not None:
+        if self._odom_subscriber is not None and self._owns_odom_subscriber:
             subs.append(self._odom_subscriber)
         subs.extend(self._pose_subscribers)
         for sub in subs:
@@ -284,6 +294,10 @@ class ClusterPosesNode(Node):
         validate_stream_frame_ids(frame_ids, len(self._stream_data))
         if len(frame_ids) == 1:
             merged = [pair for stream in self._stream_data for pair in stream]
+            # Camera streams are appended independently, not in timestamp order.
+            # The final pose supplies the cluster timestamp and age-filter anchor;
+            # it must be the newest sample, not the last sample of the last camera.
+            merged.sort(key=lambda pair: Time.from_msg(pair[1].header.stamp).nanoseconds)
             return [(merged, frame_ids[0])]
         return list(zip(self._stream_data, frame_ids))
 
@@ -292,6 +306,7 @@ class ClusterPosesNode(Node):
         frame_ids: list[str],
         params: ClusterParams,
         publish_tfs: bool,
+        inlier_header: bool = False,
     ) -> tuple[list[tuple[Pose, ClusterResult]], int, object]:
         """Cluster each output stream independently and aggregate the results.
 
@@ -310,7 +325,16 @@ class ClusterPosesNode(Node):
             total_collected += collected
             if not clustered:
                 continue
-            last_header = transformed_poses[-1].header
+            if inlier_header:
+                # Search diversity must reference an observation supporting the
+                # chosen estimate, not a newer rejected outlier from another view.
+                if last_header is None:
+                    members = clustered[0][1].idxs
+                    last_header = max(
+                        (transformed_poses[i].header for i in members),
+                        key=lambda h: Time.from_msg(h.stamp).nanoseconds)
+            else:
+                last_header = transformed_poses[-1].header
             if publish_tfs:
                 self._publish_results(clustered, transformed_poses, frame_id)
             aggregated.extend(clustered)
@@ -357,7 +381,7 @@ class ClusterPosesNode(Node):
             return [], [], total_collected
 
         transformed_poses = [
-            transform_pose_to_odom(
+            pose_msg if pose_msg.header.frame_id == odom_msg.header.frame_id else transform_pose_to_odom(
                 odom_msg,
                 pose_msg,
                 self._camera_to_odom_transforms[pose_msg.header.frame_id],
@@ -412,13 +436,6 @@ class ClusterPosesNode(Node):
             self.get_logger().error("Not enough poses for clustering")
             return []
 
-        hdbscan = HDBSCAN(
-            min_cluster_size=int(params.min_cluster_size),
-            min_samples=int(params.min_samples),
-            cluster_selection_epsilon=float(params.cluster_selection_epsilon),
-            allow_single_cluster=True,
-            store_centers="centroid",
-        )
         positions = np.array(
             [
                 attrgetter("x", "y", "z")(pose.pose.position)
@@ -443,7 +460,10 @@ class ClusterPosesNode(Node):
             self.get_logger().warning(clustering_input_msg)
         else:
             self.get_logger().info(clustering_input_msg)
-        clusters = get_all_clusters(hdbscan, positions)
+        clusters = cluster_positions(
+            positions, min_cluster_size=params.min_cluster_size,
+            min_samples=params.min_samples,
+            cluster_selection_epsilon=params.cluster_selection_epsilon)
         if not clusters:
             self.get_logger().error("No clusters found")
             return []

@@ -120,6 +120,19 @@ def _build_cluster_result(
     )
 
 
+def cluster_positions(positions, *, min_cluster_size=5, min_samples=1,
+                      cluster_selection_epsilon=.1):
+    """Shared position-only clustering for ROS collectors and labelled observations."""
+    positions = np.asarray(positions, dtype=float)
+    if len(positions) < max(min_cluster_size, min_samples):
+        return []
+    model = HDBSCAN(
+        min_cluster_size=int(min_cluster_size), min_samples=int(min_samples),
+        cluster_selection_epsilon=float(cluster_selection_epsilon),
+        allow_single_cluster=True, store_centers='centroid')
+    return get_all_clusters(model, positions)
+
+
 def get_largest_cluster(hdbscan: HDBSCAN, positions: np.ndarray) -> ClusterResult:
     """Fit HDBSCAN and return the largest cluster."""
     clusters = get_all_clusters(hdbscan, positions)

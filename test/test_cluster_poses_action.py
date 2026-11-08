@@ -35,7 +35,7 @@ def rig(rclpy_context):
     action_client = ActionClient(client_node, ClusterPosesAction, ACTION_NAME)
 
     spin_for(executor, 0.05)
-    assert action_client.server_is_ready(), "action server should be ready intraprocess"
+    assert action_client.wait_for_server(timeout_sec=2.0), "action server discovery timed out"
 
     yield {
         "executor": executor,
@@ -88,3 +88,42 @@ def test_action_succeeds(rig):
     assert top.num_cluster_poses > 0
     assert top.num_cluster_poses <= top.num_input_poses
     assert abs(top.clustered_pose.position.x - EXPECTED_CLUSTER_X) < 0.05
+
+
+def test_action_accumulates_across_evaluations_and_resets_for_new_search(rig):
+    rig['tf_pub'].publish(identity_tf_static())
+    spin_for(rig['executor'], .2)
+    request = ClusterPosesAction.Goal()
+    request.accumulation_id = 'one-spiral'
+    request.collection_duration = .3
+    p = request.params
+    p.odom_topic, p.pose_stamped_topics = ODOM_TOPIC, [POSE_TOPIC]
+    p.clustered_child_frame_ids = ['test/spiral_accumulation']
+    p.sync_tolerance = .05
+    p.min_poses = p.min_cluster_size = 5
+    p.min_samples = 1
+    p.cluster_selection_epsilon = .1
+
+    def evaluate():
+        sent = rig['action_client'].send_goal_async(request)
+        assert spin_until_done(rig['executor'], sent, 3.)
+        handle = sent.result()
+        assert handle.accepted
+        result = handle.get_result_async()
+        assert spin_until_done(rig['executor'], result, 5.)
+        return result.result().result.cluster_results
+
+    rig['publish_timer'].reset()
+    try:
+        first = evaluate()
+    finally:
+        rig['publish_timer'].cancel()
+    assert first.results and first.results[0].num_input_poses >= 5
+    # No new observations are published. Same search still returns the prior
+    # accumulated evidence; a different search must not inherit any of it.
+    second = evaluate()
+    assert second.results
+    assert second.results[0].num_input_poses >= first.results[0].num_input_poses
+    request.accumulation_id = 'another-spiral'
+    third = evaluate()
+    assert not third.results
