@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from bb_perception_msgs.action import ClusterPosesAction
+from bb_perception_msgs.action import ClusterPosesAction, ClusterPosesStreamAction
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.task import Future
@@ -14,8 +14,8 @@ from cluster_test_utils import identity_tf_static
 
 
 def goal(interval=2.):
-    g = ClusterPosesAction.Goal()
-    g.cluster_interval = interval
+    g = ClusterPosesStreamAction.Goal() if interval else ClusterPosesAction.Goal()
+    if interval:g.cluster_interval = interval
     g.collection_duration = 2.
     p = g.params
     p.odom_topic = '/accumulation/odom'

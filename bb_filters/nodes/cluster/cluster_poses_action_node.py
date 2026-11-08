@@ -13,7 +13,7 @@ from frames.utils.sync_diagnostics import stamp_ns
 
 import rclpy
 from bb_filters.utils.cluster.cluster import ClusterSortKey
-from bb_perception_msgs.action import ClusterPosesAction
+from bb_perception_msgs.action import ClusterPosesAction, ClusterPosesStreamAction
 from bb_filters.nodes.cluster.cluster_poses_node import (
     ClusterParams,
     ClusterPosesNode,
@@ -30,7 +30,8 @@ from rclpy.task import Future
 class ClusterPosesActionNode(ClusterPosesNode):
     """ROS node that runs pose collection and clustering as an action."""
 
-    def __init__(self, node_name="cluster_poses_action_node", action_name="cluster_poses") -> None:
+    def __init__(self, node_name="cluster_poses_action_node", action_name="cluster_poses",
+                 stream_action_name="stream_cluster_poses") -> None:
         super().__init__(node_name)
 
         self._action_server = ActionServer(
@@ -41,6 +42,17 @@ class ClusterPosesActionNode(ClusterPosesNode):
             goal_callback=self._goal_callback,
             cancel_callback=lambda _: CancelResponse.ACCEPT,
         )
+
+        # Two interfaces share one collector and one exclusive goal slot.
+        self._stream_action_server = ActionServer(
+            self,
+            ClusterPosesStreamAction,
+            self.declare_parameter("stream_action_name", stream_action_name).value,
+            execute_callback=self._execute_callback,
+            goal_callback=self._goal_callback,
+            cancel_callback=lambda _: CancelResponse.ACCEPT,
+        )
+        self._action_type = ClusterPosesAction
 
         # One live odometry subscription survives consecutive action windows.
         # Per-goal relays prevent old synchronizers from receiving future data.
@@ -113,9 +125,8 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self._odom_relay = None
         super()._cleanup_subscribers()
 
-    @staticmethod
-    def _empty_result(sort_key: int = 0) -> ClusterPosesAction.Result:
-        result = ClusterPosesAction.Result()
+    def _empty_result(self, sort_key: int = 0):
+        result = self._action_type.Result()
         result.cluster_results.sort_key = int(sort_key)
         result.cluster_results.results = []
         return result
@@ -155,20 +166,24 @@ class ClusterPosesActionNode(ClusterPosesNode):
             seen.add(key)
         super()._collect_pose(odom_msg, pose_msg, stream_index)
 
-    def _goal_callback(self, _goal_request: ClusterPosesAction.Goal) -> GoalResponse:
+    def _goal_callback(self, goal_request) -> GoalResponse:
         self.get_logger().info("Received new goal request")
+        streaming = isinstance(goal_request, ClusterPosesStreamAction.Goal)
         if (self._action_running
-                or not math.isfinite(_goal_request.collection_duration)
-                or (_goal_request.cluster_interval > 0 and _goal_request.collection_duration <= 0)
-                or not math.isfinite(_goal_request.cluster_interval)
-                or _goal_request.cluster_interval < 0):
+                or not math.isfinite(goal_request.collection_duration)
+                or (streaming and (goal_request.collection_duration <= 0
+                    or not math.isfinite(goal_request.cluster_interval)
+                    or goal_request.cluster_interval <= 0))):
             return GoalResponse.REJECT
+        # Reserve on acceptance, before execute is scheduled. This also prevents
+        # simultaneous requests on the two endpoints from sharing collection.
+        self._action_running = True
         return GoalResponse.ACCEPT
 
     async def _execute_callback(
         self,
         goal_handle: ServerGoalHandle,
-    ) -> ClusterPosesAction.Result:
+    ):
         self.get_logger().info("Executing goal...")
         self._action_running = True
         self._goal_handle = goal_handle
@@ -190,7 +205,10 @@ class ClusterPosesActionNode(ClusterPosesNode):
         return await self._result_future
 
     def _start_goal(self, goal_handle: ServerGoalHandle) -> None:
-        goal: ClusterPosesAction.Goal = goal_handle.request
+        goal = goal_handle.request
+        self._action_type = (ClusterPosesStreamAction
+                             if isinstance(goal, ClusterPosesStreamAction.Goal)
+                             else ClusterPosesAction)
         self.get_logger().info(
             f"Accepted cluster goal for {float(goal.collection_duration):.2f}s"
         )
@@ -198,14 +216,14 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self._cleanup_subscribers()
         self._reset_collection()
         self._seen = []
-        self._cluster_interval = float(goal.cluster_interval)
+        self._cluster_interval = float(getattr(goal, "cluster_interval", 0.))
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = seconds_to_duration(float(goal.collection_duration))
         # Streaming searches expire even if ROS time pauses or the client dies.
         self._deadline = time.monotonic() + float(goal.collection_duration)
         self._next_cluster = time.monotonic() + self._cluster_interval
 
-        feedback = ClusterPosesAction.Feedback()
+        feedback = self._action_type.Feedback()
         feedback.current_status = "Setting up subscribers"
         feedback.collection_progress = 0.0
         feedback.poses_collected_so_far = 0
@@ -260,7 +278,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
             return
 
         duration_ns = max(self._collection_duration.nanoseconds, 1)
-        feedback = ClusterPosesAction.Feedback()
+        feedback = self._action_type.Feedback()
         feedback.current_status = "Collecting synchronized messages"
         feedback.collection_progress = min(elapsed.nanoseconds / duration_ns, 1.0)
         feedback.poses_collected_so_far = self._num_collected()
@@ -284,7 +302,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
     def _finalize_goal(self, goal_handle: ServerGoalHandle) -> None:
         self._cleanup_subscribers()
         self.sync_diagnostics.log_summary()
-        feedback = ClusterPosesAction.Feedback()
+        feedback = self._action_type.Feedback()
         feedback.current_status = "Finalizing clustering"
         feedback.collection_progress = 1.0
         feedback.poses_collected_so_far = self._num_collected()
@@ -303,7 +321,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
         )
         self._finish_action("succeeded", result)
 
-    def _finish_action(self, status: str, result: ClusterPosesAction.Result) -> None:
+    def _finish_action(self, status: str, result) -> None:
         goal_handle = self._goal_handle
         result_future = self._result_future
         if goal_handle is None or result_future is None or result_future.done():

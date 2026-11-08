@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 import rclpy
-from bb_perception_msgs.action import ClusterPosesAction
+from bb_perception_msgs.action import ClusterPosesAction, ClusterPosesStreamAction
 from bb_perception_msgs.msg import ClusterPosesRequest
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
@@ -36,6 +36,7 @@ def rig(rclpy_context):
     publishers = attach_synthetic_publishers(client_node, ODOM_TOPIC, [POSE_TOPIC])
     action_client = ActionClient(client_node, ClusterPosesAction, ACTION_NAME)
 
+    stream_client = ActionClient(client_node, ClusterPosesStreamAction, '/stream_cluster_poses')
     spin_for(executor, 0.05)
     assert action_client.wait_for_server(timeout_sec=2.0), "action server discovery timed out"
 
@@ -45,6 +46,7 @@ def rig(rclpy_context):
         "tf_pub": publishers.tf,
         "publish_timer": publishers.publish_timer,
         "action_client": action_client,
+        "stream_client": stream_client,
     }
 
     executor.shutdown()
@@ -93,7 +95,7 @@ def test_action_succeeds(rig):
 
 
 def streaming_goal(duration=1.2):
-    request = ClusterPosesAction.Goal()
+    request = ClusterPosesStreamAction.Goal()
     request.cluster_interval = .3
     request.collection_duration = duration
     p = request.params
@@ -118,7 +120,7 @@ def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig):
     spin_for(rig['executor'], .2)
     snapshots = []
     rig['publish_timer'].reset()
-    sent = rig['action_client'].send_goal_async(
+    sent = rig['stream_client'].send_goal_async(
         streaming_goal(), feedback_callback=lambda msg: snapshots.append(msg.feedback))
     assert spin_until_done(rig['executor'], sent, 3.)
     result = sent.result().get_result_async()
@@ -130,7 +132,7 @@ def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig):
     assert result.result().result.cluster_results.results
     assert_clean(rig)
     spin_for(rig['executor'], .2)  # Drain in-flight publications before next goal.
-    sent = rig['action_client'].send_goal_async(streaming_goal(.5))
+    sent = rig['stream_client'].send_goal_async(streaming_goal(.5))
     assert spin_until_done(rig['executor'], sent, 3.)
     result = sent.result().get_result_async()
     assert spin_until_done(rig['executor'], result, 3.)
@@ -145,7 +147,7 @@ def test_cancel_returns_final_snapshot_before_first_periodic_evaluation(rig):
     rig['tf_pub'].publish(identity_tf_static())
     spin_for(rig['executor'], .2)
     rig['publish_timer'].reset()
-    sent = rig['action_client'].send_goal_async(request)
+    sent = rig['stream_client'].send_goal_async(request)
     assert spin_until_done(rig['executor'], sent, 3.)
     handle = sent.result()
     result = handle.get_result_async()
@@ -162,14 +164,43 @@ def test_cancel_returns_final_snapshot_before_first_periodic_evaluation(rig):
 def test_orphaned_collection_expires_even_without_client_cleanup(rig, failure):
     server = rig['server']
     server._start_goal = Mock(wraps=server._start_goal)
-    sent = rig['action_client'].send_goal_async(streaming_goal(.6))
+    sent = rig['stream_client'].send_goal_async(streaming_goal(.6))
     if failure == 'lost_acceptance_reply':
         # Server still sees the request, but the client never receives acceptance.
-        rig['action_client']._remove_pending_goal_request(sent)
+        rig['stream_client']._remove_pending_goal_request(sent)
     else:
         assert spin_until_done(rig['executor'], sent, 3.)
         assert sent.result().accepted
-        rig['action_client'].destroy()
+        rig['stream_client'].destroy()
     spin_for(rig['executor'], 1.5)
     server._start_goal.assert_called_once()
+    assert_clean(rig)
+
+
+@pytest.mark.parametrize('first_streaming', [False, True])
+def test_endpoints_share_one_exclusive_goal_slot_and_release_after_cancel(rig, first_streaming):
+    stream = streaming_goal(10.)
+    ordinary = ClusterPosesAction.Goal(params=stream.params, collection_duration=10.)
+    first_client, first_goal = ((rig['stream_client'], stream) if first_streaming
+                                else (rig['action_client'], ordinary))
+    next_client, next_goal = ((rig['action_client'], ordinary) if first_streaming
+                              else (rig['stream_client'], stream))
+    first = first_client.send_goal_async(first_goal)
+    assert spin_until_done(rig['executor'], first, 3.)
+    assert first.result().accepted
+    # An accepted action owns the collector until its terminal result.
+    blocked = next_client.send_goal_async(next_goal)
+    assert spin_until_done(rig['executor'], blocked, 3.)
+    assert not blocked.result().accepted
+    terminal = first.result().get_result_async()
+    cancel = first.result().cancel_goal_async()
+    assert spin_until_done(rig['executor'], cancel, 3.)
+    assert spin_until_done(rig['executor'], terminal, 3.)
+    assert_clean(rig)
+    next_goal.collection_duration = .2
+    following = next_client.send_goal_async(next_goal)
+    assert spin_until_done(rig['executor'], following, 3.)
+    assert following.result().accepted
+    result = following.result().get_result_async()
+    assert spin_until_done(rig['executor'], result, 3.)
     assert_clean(rig)
