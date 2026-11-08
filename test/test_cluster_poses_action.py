@@ -1,5 +1,7 @@
 """In-process integration test for ClusterPosesActionNode."""
 
+from unittest.mock import Mock
+
 import pytest
 import rclpy
 from bb_perception_msgs.action import ClusterPosesAction
@@ -39,13 +41,13 @@ def rig(rclpy_context):
 
     yield {
         "executor": executor,
+        "server": action_node,
         "tf_pub": publishers.tf,
         "publish_timer": publishers.publish_timer,
         "action_client": action_client,
     }
 
     executor.shutdown()
-    action_client.destroy()
     client_node.destroy_node()
     action_node.destroy_node()
 
@@ -90,12 +92,10 @@ def test_action_succeeds(rig):
     assert abs(top.clustered_pose.position.x - EXPECTED_CLUSTER_X) < 0.05
 
 
-def test_action_accumulates_across_evaluations_and_resets_for_new_search(rig):
-    rig['tf_pub'].publish(identity_tf_static())
-    spin_for(rig['executor'], .2)
+def streaming_goal(duration=1.2):
     request = ClusterPosesAction.Goal()
-    request.accumulation_id = 'one-spiral'
-    request.collection_duration = .3
+    request.cluster_interval = .3
+    request.collection_duration = duration
     p = request.params
     p.odom_topic, p.pose_stamped_topics = ODOM_TOPIC, [POSE_TOPIC]
     p.clustered_child_frame_ids = ['test/spiral_accumulation']
@@ -103,27 +103,73 @@ def test_action_accumulates_across_evaluations_and_resets_for_new_search(rig):
     p.min_poses = p.min_cluster_size = 5
     p.min_samples = 1
     p.cluster_selection_epsilon = .1
+    return request
 
-    def evaluate():
-        sent = rig['action_client'].send_goal_async(request)
-        assert spin_until_done(rig['executor'], sent, 3.)
-        handle = sent.result()
-        assert handle.accepted
-        result = handle.get_result_async()
-        assert spin_until_done(rig['executor'], result, 5.)
-        return result.result().result.cluster_results
 
+def assert_clean(rig):
+    server = rig['server']
+    assert not server._action_running
+    assert server._odom_relay is None and server._num_collected() == 0
+    assert server._action_timer.is_canceled()
+
+
+def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig):
+    rig['tf_pub'].publish(identity_tf_static())
+    spin_for(rig['executor'], .2)
+    snapshots = []
     rig['publish_timer'].reset()
-    try:
-        first = evaluate()
-    finally:
-        rig['publish_timer'].cancel()
-    assert first.results and first.results[0].num_input_poses >= 5
-    # No new observations are published. Same search still returns the prior
-    # accumulated evidence; a different search must not inherit any of it.
-    second = evaluate()
-    assert second.results
-    assert second.results[0].num_input_poses >= first.results[0].num_input_poses
-    request.accumulation_id = 'another-spiral'
-    third = evaluate()
-    assert not third.results
+    sent = rig['action_client'].send_goal_async(
+        streaming_goal(), feedback_callback=lambda msg: snapshots.append(msg.feedback))
+    assert spin_until_done(rig['executor'], sent, 3.)
+    result = sent.result().get_result_async()
+    assert spin_until_done(rig['executor'], result, 5.)
+    rig['publish_timer'].cancel()
+    counts = [s.cluster_results.results[0].num_input_poses
+              for s in snapshots if s.cluster_results.results]
+    assert len(counts) >= 2 and counts[-1] > counts[0]
+    assert result.result().result.cluster_results.results
+    assert_clean(rig)
+    spin_for(rig['executor'], .2)  # Drain in-flight publications before next goal.
+    sent = rig['action_client'].send_goal_async(streaming_goal(.5))
+    assert spin_until_done(rig['executor'], sent, 3.)
+    result = sent.result().get_result_async()
+    assert spin_until_done(rig['executor'], result, 3.)
+    assert not result.result().result.cluster_results.results
+    assert_clean(rig)
+
+
+def test_cancel_returns_final_snapshot_before_first_periodic_evaluation(rig):
+    from action_msgs.msg import GoalStatus
+    request = streaming_goal(10.)
+    request.cluster_interval = 5.
+    rig['tf_pub'].publish(identity_tf_static())
+    spin_for(rig['executor'], .2)
+    rig['publish_timer'].reset()
+    sent = rig['action_client'].send_goal_async(request)
+    assert spin_until_done(rig['executor'], sent, 3.)
+    handle = sent.result()
+    result = handle.get_result_async()
+    spin_for(rig['executor'], .6)
+    cancel = handle.cancel_goal_async()
+    assert spin_until_done(rig['executor'], cancel, 3.)
+    assert spin_until_done(rig['executor'], result, 3.)
+    assert result.result().status == GoalStatus.STATUS_CANCELED
+    assert result.result().result.cluster_results.results
+    assert_clean(rig)
+
+
+@pytest.mark.parametrize('failure', ['lost_acceptance_reply', 'client_disappears'])
+def test_orphaned_collection_expires_even_without_client_cleanup(rig, failure):
+    server = rig['server']
+    server._start_goal = Mock(wraps=server._start_goal)
+    sent = rig['action_client'].send_goal_async(streaming_goal(.6))
+    if failure == 'lost_acceptance_reply':
+        # Server still sees the request, but the client never receives acceptance.
+        rig['action_client']._remove_pending_goal_request(sent)
+    else:
+        assert spin_until_done(rig['executor'], sent, 3.)
+        assert sent.result().accepted
+        rig['action_client'].destroy()
+    spin_for(rig['executor'], 1.5)
+    server._start_goal.assert_called_once()
+    assert_clean(rig)

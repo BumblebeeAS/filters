@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import traceback
+import math
 import time
 from collections import deque
 
@@ -50,12 +51,9 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self._persistent_odom_topic = None
         self._odom_relay = None
 
-        self._session_id = ''
-        self._session_parameters = None
-        self._session_idle_since = None
-        self._accumulation_capacity = 10000  # Per topic; bounds long-running searches.
-        self._session_seen = []
-        self._session_timer = self.create_timer(1., self._expire_idle_session)
+        self._accumulation_capacity = 10000  # Per topic; bounds streaming searches.
+        self._seen = []
+        self._cluster_interval = 0.
 
         # State for current goal execution
         self._action_running = False
@@ -134,32 +132,20 @@ class ClusterPosesActionNode(ClusterPosesNode):
             sort_key=ClusterSortKey(int(params.sort_key)),
         )
 
-    def _reset_goal_state(self, keep_collection=False) -> None:
+    def _reset_goal_state(self) -> None:
         self._goal_handle = None
         self._result_future = None
         self._goal_phase = "idle"
-        if keep_collection:
-            self._session_idle_since = time.monotonic()
-        else:
-            self._session_id = ''
-            self._session_parameters = None
-            self._session_idle_since = None
-            self._session_seen = []
-            self._reset_collection()
-
-    def _expire_idle_session(self):
-        if (not self._action_running and self._session_idle_since is not None
-                and time.monotonic() - self._session_idle_since >= 10.):
-            self.get_logger().info('Closing inactive clustering accumulation session')
-            self._cleanup_subscribers()
-            self._reset_goal_state()
+        self._seen = []
+        self._cluster_interval = 0.
+        self._reset_collection()
 
     def _collect_pose(self, odom_msg, pose_msg, stream_index):
-        if self._session_id:
-            # Re-evaluating an accumulator must never count duplicate messages
+        if self._cluster_interval > 0:
+            # Periodic snapshots must never count duplicate messages
             # as new evidence. Keep timestamps independently for each camera.
             key = (pose_msg.header.frame_id, stamp_ns(pose_msg))
-            seen = self._session_seen[stream_index]
+            seen = self._seen[stream_index]
             if key in seen:
                 return
             stream = self._stream_data[stream_index]
@@ -171,7 +157,11 @@ class ClusterPosesActionNode(ClusterPosesNode):
 
     def _goal_callback(self, _goal_request: ClusterPosesAction.Goal) -> GoalResponse:
         self.get_logger().info("Received new goal request")
-        if self._action_running:
+        if (self._action_running
+                or not math.isfinite(_goal_request.collection_duration)
+                or (_goal_request.cluster_interval > 0 and _goal_request.collection_duration <= 0)
+                or not math.isfinite(_goal_request.cluster_interval)
+                or _goal_request.cluster_interval < 0):
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
@@ -205,21 +195,15 @@ class ClusterPosesActionNode(ClusterPosesNode):
             f"Accepted cluster goal for {float(goal.collection_duration):.2f}s"
         )
 
-        # Reuse one subscriber set and accumulated observations for this search.
-        # Normal goals (empty ID), new searches, or changed params always reset.
-        session = goal.accumulation_id
-        signature = repr(goal.params)
-        reuse = (bool(session) and session == self._session_id
-                 and signature == self._session_parameters and self._odom_relay is not None)
-        if not reuse:
-            self._cleanup_subscribers()
-            self._reset_collection()
-            self._session_seen = []
-        self._session_id = session
-        self._session_parameters = signature if session else None
-        self._session_idle_since = None
+        self._cleanup_subscribers()
+        self._reset_collection()
+        self._seen = []
+        self._cluster_interval = float(goal.cluster_interval)
         self._collection_start_time = self.get_clock().now()
         self._collection_duration = seconds_to_duration(float(goal.collection_duration))
+        # Streaming searches expire even if ROS time pauses or the client dies.
+        self._deadline = time.monotonic() + float(goal.collection_duration)
+        self._next_cluster = time.monotonic() + self._cluster_interval
 
         feedback = ClusterPosesAction.Feedback()
         feedback.current_status = "Setting up subscribers"
@@ -231,21 +215,17 @@ class ClusterPosesActionNode(ClusterPosesNode):
             list(goal.params.clustered_child_frame_ids),
             len(goal.params.pose_stamped_topics),
         )
-        if reuse:
-            self.sync_diagnostics.clear()
-            self.get_logger().info(f'Re-evaluating {self._num_collected()} accumulated poses')
-        else:
-            self._start_subscribers(
-                odom_topic=goal.params.odom_topic,
-                pose_topics=list(goal.params.pose_stamped_topics),
-                sync_tolerance=float(goal.params.sync_tolerance),
-                sync_queue_size=int(goal.params.sync_queue_size),
-                max_detection_age_s=float(goal.params.max_detection_age_s),
-            )
-            if session:
-                self._stream_data = [deque(maxlen=self._accumulation_capacity)
-                                     for _ in goal.params.pose_stamped_topics]
-                self._session_seen = [set() for _ in goal.params.pose_stamped_topics]
+        self._start_subscribers(
+            odom_topic=goal.params.odom_topic,
+            pose_topics=list(goal.params.pose_stamped_topics),
+            sync_tolerance=float(goal.params.sync_tolerance),
+            sync_queue_size=int(goal.params.sync_queue_size),
+            max_detection_age_s=float(goal.params.max_detection_age_s),
+        )
+        if self._cluster_interval > 0:
+            self._stream_data = [deque(maxlen=self._accumulation_capacity)
+                                 for _ in goal.params.pose_stamped_topics]
+            self._seen = [set() for _ in goal.params.pose_stamped_topics]
         self._goal_phase = "collecting"
 
     def _step_action(self) -> None:
@@ -254,7 +234,8 @@ class ClusterPosesActionNode(ClusterPosesNode):
 
         try:
             if self._goal_handle.is_cancel_requested:
-                self._finish_action("canceled", self._empty_result())
+                self._finish_action("canceled", self._snapshot(self._goal_handle, publish_tfs=False)
+                                    if self._cluster_interval > 0 else self._empty_result())
                 return
             if self._goal_phase == "collecting":
                 self._step_collection(self._goal_handle)
@@ -273,7 +254,8 @@ class ClusterPosesActionNode(ClusterPosesNode):
 
     def _step_collection(self, goal_handle: ServerGoalHandle) -> None:
         elapsed = self.get_clock().now() - self._collection_start_time
-        if elapsed >= self._collection_duration:
+        if (time.monotonic() >= self._deadline if self._cluster_interval > 0
+                else elapsed >= self._collection_duration):
             self._goal_phase = "finalizing"
             return
 
@@ -282,51 +264,46 @@ class ClusterPosesActionNode(ClusterPosesNode):
         feedback.current_status = "Collecting synchronized messages"
         feedback.collection_progress = min(elapsed.nanoseconds / duration_ns, 1.0)
         feedback.poses_collected_so_far = self._num_collected()
+        if self._cluster_interval > 0 and time.monotonic() >= self._next_cluster:
+            feedback.cluster_results = self._snapshot(goal_handle, publish_tfs=False).cluster_results
+            self._next_cluster = time.monotonic() + self._cluster_interval
         goal_handle.publish_feedback(feedback)
 
-    def _finalize_goal(self, goal_handle: ServerGoalHandle) -> None:
-        goal: ClusterPosesAction.Goal = goal_handle.request
+    def _snapshot(self, goal_handle, *, publish_tfs):
+        goal = goal_handle.request
         params = goal.params
+        clustered, total_collected, last_header = self._cluster_streams(
+            list(params.clustered_child_frame_ids), self._cluster_params(goal),
+            publish_tfs=publish_tfs, inlier_header=self._cluster_interval > 0)
+        result = self._empty_result(int(params.sort_key))
+        if clustered:
+            fill_cluster_result_array(result.cluster_results, clustered, total_collected,
+                                      last_header, int(params.sort_key))
+        return result
 
-        keep_collection = bool(goal.accumulation_id)
-        if not keep_collection:
-            self._cleanup_subscribers()
+    def _finalize_goal(self, goal_handle: ServerGoalHandle) -> None:
+        self._cleanup_subscribers()
         self.sync_diagnostics.log_summary()
-
         feedback = ClusterPosesAction.Feedback()
         feedback.current_status = "Finalizing clustering"
         feedback.collection_progress = 1.0
         feedback.poses_collected_so_far = self._num_collected()
         goal_handle.publish_feedback(feedback)
-
-        clustered, total_collected, last_header = self._cluster_streams(
-            list(params.clustered_child_frame_ids),
-            self._cluster_params(goal),
-            publish_tfs=True,
-            inlier_header=keep_collection,
-        )
-        if not clustered:
-            self._finish_action("aborted", self._empty_result(int(params.sort_key)),
-                                keep_collection=keep_collection)
+        # Streaming clients publish their frozen handoff only after cancellation
+        # drains. Do not overwrite that target with a later server snapshot.
+        result = self._snapshot(goal_handle, publish_tfs=self._cluster_interval == 0)
+        if not result.cluster_results.results:
+            self._finish_action("aborted", result)
             return
-
-        result = ClusterPosesAction.Result()
-        fill_cluster_result_array(
-            result.cluster_results,
-            clustered,
-            total_collected,
-            last_header,
-            int(params.sort_key),
-        )
+        total_collected = self._num_collected()
 
         self.get_logger().info(
             f"Clustering complete: {len(result.cluster_results.results)} cluster(s) "
             f"from {total_collected} poses"
         )
-        self._finish_action("succeeded", result, keep_collection=keep_collection)
+        self._finish_action("succeeded", result)
 
-    def _finish_action(self, status: str, result: ClusterPosesAction.Result,
-                       keep_collection=False) -> None:
+    def _finish_action(self, status: str, result: ClusterPosesAction.Result) -> None:
         goal_handle = self._goal_handle
         result_future = self._result_future
         if goal_handle is None or result_future is None or result_future.done():
@@ -341,11 +318,10 @@ class ClusterPosesActionNode(ClusterPosesNode):
 
         result_future.set_result(result)
         self._action_timer.cancel()
-        if not keep_collection:
-            self._cleanup_subscribers()
+        self._cleanup_subscribers()
         self._cleanup_cluster_pose_publishers()
         self._action_running = False
-        self._reset_goal_state(keep_collection=keep_collection)
+        self._reset_goal_state()
 
 
 def main(args=None) -> None:
