@@ -6,8 +6,8 @@ import pytest
 from bb_perception_msgs.action import ClusterPosesStreamAction
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from rclpy.task import Future
 from rclpy.time import Time
+from rclpy.action import GoalResponse
 
 from bb_filters.nodes.cluster.cluster_poses_action_node import ClusterPosesActionNode
 from cluster_test_utils import identity_tf_static
@@ -31,12 +31,10 @@ def start(node, request):
     handle = SimpleNamespace(request=request, publish_feedback=Mock(),
                              succeed=Mock(), abort=Mock(), canceled=Mock(),
                              is_cancel_requested=False)
-    node._action_running = True
-    node._goal_handle = handle
-    future = Future()
-    node._result_future = future
-    node._start_goal(handle)
-    return handle, future
+    assert node._accept_stream_goal(request) == GoalResponse.ACCEPT
+    node._goal.handle = handle
+    node._start_goal()
+    return handle, node._goal.future
 
 
 def feed(node, indices, world_x=1.):
@@ -55,7 +53,7 @@ def feed(node, indices, world_x=1.):
         pose.pose.position.x = world_x + i*.001 - odom.pose.pose.position.x
         pose.pose.position.y = 2.
         pose.pose.position.z = 3.
-        node._remember_odometry(odom)
+        node._odometry.remember(odom)
         node._pose_subscribers[0].signalMessage(pose)
 
 
@@ -68,8 +66,8 @@ def node(rclpy_context):
 
 
 def snapshot(node, handle):
-    node._next_cluster = 0.
-    node._step_collection(handle)
+    node._goal.next_cluster = 0.
+    node._step_collection()
     return handle.publish_feedback.call_args.args[0].cluster_results
 
 
@@ -100,4 +98,4 @@ def test_accumulator_and_deduplication_are_bounded_per_camera(node):
     node._accumulation_capacity = 5
     start(node, goal())
     feed(node, range(12))
-    assert node._num_collected() == len(node._seen[0]) == 5
+    assert node._num_collected() == len(node._goal.seen[0]) == 5

@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 import rclpy
+from action_msgs.msg import GoalStatus
 from bb_perception_msgs.action import ClusterPosesAction, ClusterPosesStreamAction
 from bb_perception_msgs.msg import ClusterPosesRequest
 from rclpy.action import ActionClient
@@ -110,8 +111,8 @@ def streaming_goal(duration=1.2):
 
 def assert_clean(rig):
     server = rig['server']
-    assert not server._action_running
-    assert server._odom_relay is None and server._num_collected() == 0
+    assert server._goal is None
+    assert server._odometry.relay is None and server._num_collected() == 0
     assert server._action_timer.is_canceled()
 
 
@@ -147,7 +148,6 @@ def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig, next_strea
 
 
 def test_cancel_returns_final_snapshot_before_first_periodic_evaluation(rig):
-    from action_msgs.msg import GoalStatus
     request = streaming_goal(10.)
     request.cluster_interval = 5.
     rig['tf_pub'].publish(identity_tf_static())
@@ -204,17 +204,19 @@ def test_endpoints_share_one_exclusive_goal_slot_and_release_after_cancel(rig, f
     assert spin_until_done(rig['executor'], terminal, 3.)
     assert_clean(rig)
     next_goal.collection_duration = .2
+    # A setup failure must also return the correct action result and free the slot.
+    next_goal.params.clustered_child_frame_ids = ['one', 'two']  # One input topic.
     following = next_client.send_goal_async(next_goal)
     assert spin_until_done(rig['executor'], following, 3.)
     assert following.result().accepted
     result = following.result().get_result_async()
     assert spin_until_done(rig['executor'], result, 3.)
+    assert result.result().status == GoalStatus.STATUS_ABORTED
     assert_clean(rig)
 
 
 @pytest.mark.parametrize('finish', ['deadline', 'cancel'])
 def test_streaming_cleanup_runs_when_ros_time_is_paused(rig, finish):
-    from action_msgs.msg import GoalStatus
     from rclpy.parameter import Parameter
     server = rig['server']
     server.set_parameters([Parameter('use_sim_time', value=True)])

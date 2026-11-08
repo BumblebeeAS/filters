@@ -36,12 +36,12 @@ def test_next_window_replays_odometry_and_summarizes_exact_match(rclpy_context, 
     node = ClusterPosesActionNode()
     try:
         start(node)
-        subscription = node._persistent_odom_subscription
+        subscription = node._odometry.subscription
         node._cleanup_subscribers()
         old = odometry(node, .75)
-        node._remember_odometry(old)  # Arrived while no collection was running.
+        node._odometry.remember(old)  # Arrived while no collection was running.
         start(node)
-        assert node._persistent_odom_subscription is subscription
+        assert node._odometry.subscription is subscription
         assert node._num_collected() == 0  # No previous-goal detection samples.
         logger = Mock()
         monkeypatch.setattr(node, 'get_logger', lambda: logger)
@@ -59,14 +59,14 @@ def test_next_window_replays_odometry_and_summarizes_exact_match(rclpy_context, 
         logger.info.assert_any_call('Accepted timestamp matches: ' + json.dumps(summary))
         node.sync_diagnostics.record(pose, old, '/history/pose')
         logger.info.assert_called_once()  # New pairs do not log again before the interval.
-        old_relay = node._odom_relay
+        old_relay = node._odometry.relay
         node._cleanup_subscribers()
         node._reset_collection()
         start(node)
         assert node._num_collected() == 0
-        assert node._odom_relay is not old_relay
+        assert node._odometry.relay is not old_relay
         # A live sample reaches only the new synchronizers, not old goal buffers.
-        node._remember_odometry(odometry(node, 0))
+        node._odometry.remember(odometry(node, 0))
         assert node._num_collected() == 0
     finally:
         node.destroy_node()
@@ -77,14 +77,14 @@ def test_history_does_not_bypass_slop_and_topic_switch_clears_it(rclpy_context):
     try:
         start(node)
         old = odometry(node, .7)
-        node._remember_odometry(old)
+        node._odometry.remember(old)
         node._cleanup_subscribers()
         start(node)
         node._pose_subscribers[0].signalMessage(pose_at(old, 100_000_000))
         assert node._num_collected() == 0
         node._cleanup_subscribers()
         start(node, '/different/odom')
-        assert not node._odom_history
+        assert not node._odometry.messages
         node._pose_subscribers[0].signalMessage(pose_at(old))
         assert node._num_collected() == 0
     finally:
@@ -96,16 +96,16 @@ def test_stale_history_and_clock_reset_are_bounded(rclpy_context):
     try:
         start(node)
         old = odometry(node, 10.)
-        node._remember_odometry(old)
+        node._odometry.remember(old)
         node._cleanup_subscribers()
         start(node)
         node._pose_subscribers[0].signalMessage(pose_at(old))
         assert node._num_collected() == 0
         fresh = odometry(node, 0.)
-        node._remember_odometry(fresh)
-        assert len(node._odom_history) == 1
+        node._odometry.remember(fresh)
+        assert len(node._odometry.messages) == 1
         backwards = odometry(node, 1.)
-        node._remember_odometry(backwards)
-        assert list(node._odom_history) == [backwards]
+        node._odometry.remember(backwards)
+        assert list(node._odometry.messages) == [backwards]
     finally:
         node.destroy_node()
