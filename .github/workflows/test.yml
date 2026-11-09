@@ -9,9 +9,9 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     container:
-      image: rostooling/setup-ros-docker:ubuntu-jammy-latest
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -24,5 +24,5 @@ jobs:
       - uses: ros-tooling/action-ros-ci@v0.3
         with:
           package-name: bb_filters
-          target-ros2-distro: humble
+          target-ros2-distro: jazzy
           vcs-repo-file-url: ${{ github.workspace }}/.github/workflows/deps.repos
