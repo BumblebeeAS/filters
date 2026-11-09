@@ -4,13 +4,10 @@ from unittest.mock import Mock
 
 import pytest
 from bb_perception_msgs.action import ClusterPosesStreamAction
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Odometry
 from rclpy.time import Time
 from rclpy.action import GoalResponse
 
-from bb_filters.nodes.cluster.cluster_poses_action_node import ClusterPosesActionNode
-from cluster_test_utils import identity_tf_static
+from cluster_test_utils import identity_tf_static, make_odom, make_pose
 
 
 def goal():
@@ -28,9 +25,7 @@ def goal():
 
 
 def start(node, request):
-    handle = SimpleNamespace(request=request, publish_feedback=Mock(),
-                             succeed=Mock(), abort=Mock(), canceled=Mock(),
-                             is_cancel_requested=False)
+    handle = SimpleNamespace(publish_feedback=Mock())
     assert node._accept_stream_goal(request) == GoalResponse.ACCEPT
     node._goal.handle = handle
     node._start_goal()
@@ -39,30 +34,18 @@ def start(node, request):
 
 def feed(node, indices, world_x=1.):
     for i in indices:
-        odom = Odometry()
-        odom.header.frame_id = 'odom'
-        odom.child_frame_id = 'base'
-        odom.header.stamp = Time(seconds=100 + i*.02).to_msg()
-        odom.pose.pose.orientation.w = 1.
+        odom = make_odom(Time(seconds=100 + i*.02).to_msg())
         odom.pose.pose.position.x = 50. + i*2.
-        pose = PoseStamped()
-        pose.header.frame_id = 'camera'
-        pose.header.stamp = odom.header.stamp
-        pose.pose.orientation.w = 1.
-        # Observe the same world pad from widely separated vehicle positions.
-        pose.pose.position.x = world_x + i*.001 - odom.pose.pose.position.x
-        pose.pose.position.y = 2.
-        pose.pose.position.z = 3.
+        # The same world pad observed from widely separated vehicle positions.
+        pose = make_pose(odom.header.stamp, world_x + i*.001 - odom.pose.pose.position.x, 2., 3.)
         node._odometry.remember(odom)
         node._pose_subscribers[0].signalMessage(pose)
 
 
 @pytest.fixture
-def node(rclpy_context):
-    n = ClusterPosesActionNode()
-    n._tf_buffer.set_transform_static(identity_tf_static().transforms[0], 'test')
-    yield n
-    n.destroy_node()
+def node(cluster_node):
+    cluster_node._tf_buffer.set_transform_static(identity_tf_static().transforms[0], 'test')
+    return cluster_node
 
 
 def snapshot(node, handle):

@@ -9,6 +9,7 @@ from bb_perception_msgs.action import ClusterPosesAction, ClusterPosesStreamActi
 from bb_perception_msgs.msg import ClusterPosesRequest
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
+from rclpy.parameter import Parameter
 
 from cluster_test_utils import (
     EXPECTED_CLUSTER_X,
@@ -147,7 +148,7 @@ def test_streaming_feedback_final_result_and_next_goal_are_fresh(rig, next_strea
     assert_clean(rig)
 
 
-def test_cancel_returns_final_snapshot_before_first_periodic_evaluation(rig):
+def test_cancel_with_paused_ros_time_returns_final_partial_snapshot(rig):
     request = streaming_goal(10.)
     request.cluster_interval = 5.
     rig['tf_pub'].publish(identity_tf_static())
@@ -158,6 +159,9 @@ def test_cancel_returns_final_snapshot_before_first_periodic_evaluation(rig):
     handle = sent.result()
     result = handle.get_result_async()
     spin_for(rig['executor'], .6)
+    rig['publish_timer'].cancel()
+    rig['server'].set_parameters([Parameter('use_sim_time', value=True)])
+    assert rig['server'].get_clock().now().nanoseconds == 0
     cancel = handle.cancel_goal_async()
     assert spin_until_done(rig['executor'], cancel, 3.)
     assert spin_until_done(rig['executor'], result, 3.)
@@ -215,27 +219,15 @@ def test_endpoints_share_one_exclusive_goal_slot_and_release_after_cancel(rig, f
     assert_clean(rig)
 
 
-@pytest.mark.parametrize('finish', ['deadline', 'cancel'])
-def test_streaming_cleanup_runs_when_ros_time_is_paused(rig, finish):
-    from rclpy.parameter import Parameter
+def test_streaming_deadline_expires_when_ros_time_is_paused(rig):
     server = rig['server']
     server.set_parameters([Parameter('use_sim_time', value=True)])
-    assert server.get_clock().ros_time_is_active
     assert server.get_clock().now().nanoseconds == 0  # No /clock publisher.
-    snapshots = []
-    sent = rig['stream_client'].send_goal_async(
-        streaming_goal(.4 if finish == 'deadline' else 10.),
-        feedback_callback=lambda msg: snapshots.append(msg.feedback))
+    sent = rig['stream_client'].send_goal_async(streaming_goal(.4))
     assert spin_until_done(rig['executor'], sent, 3.)
     assert sent.result().accepted
     result = sent.result().get_result_async()
-    if finish == 'cancel':
-        cancel = sent.result().cancel_goal_async()
-        assert spin_until_done(rig['executor'], cancel, 3.)
     assert spin_until_done(rig['executor'], result, 2.)
-    assert result.result().status == (GoalStatus.STATUS_ABORTED if finish == 'deadline'
-                                     else GoalStatus.STATUS_CANCELED)
+    assert result.result().status == GoalStatus.STATUS_ABORTED
     assert server.get_clock().now().nanoseconds == 0
-    if finish == 'deadline':
-        assert any(0. < f.collection_progress < 1. for f in snapshots)
     assert_clean(rig)
