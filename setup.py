@@ -16,6 +16,7 @@ setup(
         (f"share/{package_name}/urdf", glob("urdf/*.urdf.xacro")),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="Samuel Foo",
     maintainer_email="fooenzesamuel@gmail.com",
