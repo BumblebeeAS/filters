@@ -59,15 +59,14 @@ class CollectionGoal:
 class ClusterPosesActionNode(ClusterPosesNode):
     """Legacy and streaming action endpoints sharing one exclusive collector."""
 
-    def __init__(self, node_name="cluster_poses_action_node", action_name="cluster_poses",
-                 stream_action_name="stream_cluster_poses") -> None:
-        super().__init__(node_name)
+    def __init__(self, stream_action_name="stream_cluster_poses") -> None:
+        super().__init__("cluster_poses_action_node")
         self._goal: CollectionGoal | None = None
         self._odometry = OdometryHistory(self)
         self._accumulation_capacity = 10000  # Per topic; bounds streaming searches.
         self._action_server = ActionServer(
             self, ClusterPosesAction,
-            self.declare_parameter("action_name", action_name).value,
+            "cluster_poses",
             execute_callback=self._execute_callback,
             goal_callback=self._accept_legacy_goal,
             cancel_callback=lambda _: CancelResponse.ACCEPT,
