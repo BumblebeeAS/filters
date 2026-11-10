@@ -148,7 +148,18 @@ class ClusterPosesNode(Node):
             10,
         )
         self._cluster_pose_array_publishers: dict[str, Publisher] = {}
-        self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
+        # Not tf2_ros.StaticTransformBroadcaster: it keeps the first transform
+        # per child frame, so a re-cluster would republish the stale pose.
+        self._static_tfs: dict[str, TransformStamped] = {}
+        self._static_tf_publisher = self.create_publisher(
+            TFMessage,
+            "/tf_static",
+            QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+            ),
+        )
 
     def _handle_tf_static(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
@@ -497,7 +508,11 @@ class ClusterPosesNode(Node):
             transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
             transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
             transforms.append(transform_stamped)
-        self._static_tf_broadcaster.sendTransform(transforms)
+        for transform in transforms:
+            self._static_tfs[transform.child_frame_id] = transform
+        self._static_tf_publisher.publish(
+            TFMessage(transforms=list(self._static_tfs.values()))
+        )
 
     def _publish_cluster_pose_array(
         self,
