@@ -66,7 +66,7 @@ class ClusterPosesActionNode(ClusterPosesNode):
         self._accumulation_capacity = 10000  # Per topic; bounds streaming searches.
         self._action_server = ActionServer(
             self, ClusterPosesAction,
-            "cluster_poses",
+            self.declare_parameter("action_name", "cluster_poses").value,
             execute_callback=self._execute_callback,
             goal_callback=self._accept_legacy_goal,
             cancel_callback=lambda _: CancelResponse.ACCEPT,
