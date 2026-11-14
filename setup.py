@@ -22,6 +22,9 @@ setup(
     maintainer_email="fooenzesamuel@gmail.com",
     description="TODO: Package description",
     license="MIT",
+    entry_points={"console_scripts": [
+        "rolling_pose_cluster_node = bb_filters.nodes.cluster.rolling_pose_cluster_node:main",
+    ]},
     scripts=[
         "bb_filters/nodes/detected_object_3d_labelling.py",
         "bb_filters/nodes/detected_object_2d_filter_projection.py",
